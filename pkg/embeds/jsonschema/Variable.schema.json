@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Variable declares a named input available to overlay CEL expressions.",
+  "properties": {
+    "default": {
+      "description": "Optional default. If omitted, the variable is required at render time.\n Must be a scalar matching the declared type.",
+      "title": "Value"
+    },
+    "description": {
+      "description": "Optional human-readable description. Rendered as a JSDoc comment on\n the field in the generated veil-types.ts RegistryVariables interface\n so hook authors get inline documentation at their IDE cursor.",
+      "type": "string"
+    },
+    "enum": {
+      "description": "Optional set of permitted values. Only valid for `string` and `number`\n types. When present, the generated TypeScript field becomes a union\n (\"a\" | \"b\" | \"c\") instead of the broad scalar type, and values\n supplied via --var or VEIL_VAR_* are rejected at render time unless\n they match one of the listed entries.",
+      "items": {
+        "title": "Value"
+      },
+      "type": "array"
+    },
+    "type": {
+      "description": "Declared type: \"string\", \"number\", or \"bool\".",
+      "minLength": 1,
+      "pattern": "^(string|number|bool)$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "Variable",
+  "type": "object"
+}

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Kind defines a resource type in the registry (e.g. \"service\", \"cron\").",
+  "properties": {
+    "hooks": {
+      "additionalProperties": false,
+      "description": "Hook code files grouped by lifecycle point.",
+      "properties": {
+        "render": {
+          "description": "Hooks run during `veil render` (each exports a Hook whose optional\n `renderHook(ctx, fs)` transforms the bundle).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "title": "Hooks",
+      "type": "object"
+    },
+    "name": {
+      "description": "The name of this kind (e.g. \"service\", \"cron\").",
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema": {
+      "default": "",
+      "description": "Path to the JSON Schema that defines the spec shape.",
+      "type": "string"
+    },
+    "sources": {
+      "description": "Source configuration files that make up the kind.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "Kind",
+  "type": "object"
+}

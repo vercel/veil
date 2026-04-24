@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package veil.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/struct.proto";
+
+// Resource is a consumer's instantiation of a kind.
+message Resource {
+  // Standard metadata common to all resources.
+  Metadata metadata = 1 [(buf.validate.field).required = true];
+
+  // Resource-specific data validated against the kind's schema.
+  google.protobuf.Struct spec = 2;
+}
+
+// Metadata contains fields common to every resource.
+message Metadata {
+  // The name of this resource.
+  string name = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Conditional overlays applied based on CEL expressions.
+  repeated Overlay overlays = 2;
+
+  // Source files that have been ejected for local override.
+  repeated Override overrides = 3;
+
+  // The name of the kind this resource instantiates. Must match a kind
+  // present in one of the loaded registries.
+  string kind = 4 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+}
+
+// Overlay is a conditional data merge applied before transforms.
+message Overlay {
+  // CEL expression evaluated against the render context.
+  string match = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Path to the overlay file. Resolved relative to the resource file
+  // that declares this overlay, or used as-is when absolute.
+  string file = 2 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+}
+
+// Override maps a kind source file to a local replacement.
+message Override {
+  // Path of the source file in the kind being replaced.
+  string source = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Local path to the override file.
+  string path = 2 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+}

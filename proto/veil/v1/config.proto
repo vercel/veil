@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package veil.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/struct.proto";
+
+// VeilConfig is the contents of .veil/veil.json.
+message VeilConfig {
+  // Relative or absolute paths to kind definition files.
+  repeated string kinds = 1 [(buf.validate.field).repeated.min_items = 1];
+
+  // User-defined input variables keyed by name. Values are provided at
+  // render time via --var flags or VEIL_VAR_<NAME> environment variables.
+  map<string, Variable> variables = 2;
+
+  // Paths to additional compiled registry.json files to load at render
+  // time. Local builds are discovered automatically; use this to wire in
+  // shared or externally-distributed registries.
+  repeated string registries = 3;
+}
+
+// Variable declares a named input available to overlay CEL expressions.
+message Variable {
+  // Declared type: "string", "number", or "bool".
+  string type = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string.pattern = "^(string|number|bool)$"
+  ];
+
+  // Optional default. If omitted, the variable is required at render time.
+  // Must be a scalar matching the declared type.
+  optional google.protobuf.Value default = 2;
+
+  // Optional human-readable description. Rendered as a JSDoc comment on
+  // the field in the generated veil-types.ts RegistryVariables interface
+  // so hook authors get inline documentation at their IDE cursor.
+  optional string description = 3;
+
+  // Optional set of permitted values. Only valid for `string` and `number`
+  // types. When present, the generated TypeScript field becomes a union
+  // ("a" | "b" | "c") instead of the broad scalar type, and values
+  // supplied via --var or VEIL_VAR_* are rejected at render time unless
+  // they match one of the listed entries.
+  repeated google.protobuf.Value enum = 4;
+}
+
+// Kind defines a resource type in the registry (e.g. "service", "cron").
+message Kind {
+  // The name of this kind (e.g. "service", "cron").
+  string name = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Source configuration files that make up the kind.
+  repeated string sources = 2 [(buf.validate.field).repeated.min_items = 1];
+
+  // Hook code files grouped by lifecycle point.
+  Hooks hooks = 3;
+
+  // Path to the JSON Schema that defines the spec shape.
+  string schema = 5;
+}
+
+// Hooks groups a kind's hook files by lifecycle point. Each field is an
+// ordered list; the order determines invocation order at that lifecycle
+// point. Additional lifecycle points will be added as fields on this
+// message so the kind.json shape can extend without breaking changes.
+message Hooks {
+  // Hooks run during `veil render` (each exports a Hook whose optional
+  // `renderHook(ctx, fs)` transforms the bundle).
+  repeated string render = 1;
+}

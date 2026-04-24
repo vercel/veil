@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Metadata contains fields common to every resource.",
+  "properties": {
+    "kind": {
+      "description": "The name of the kind this resource instantiates. Must match a kind\n present in one of the loaded registries.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "name": {
+      "description": "The name of this resource.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "overlays": {
+      "description": "Conditional overlays applied based on CEL expressions.",
+      "items": {
+        "additionalProperties": false,
+        "description": "Overlay is a conditional data merge applied before transforms.",
+        "properties": {
+          "file": {
+            "description": "Path to the overlay file. Resolved relative to the resource file\n that declares this overlay, or used as-is when absolute.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "match": {
+            "description": "CEL expression evaluated against the render context.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "match",
+          "file"
+        ],
+        "title": "Overlay",
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "overrides": {
+      "description": "Source files that have been ejected for local override.",
+      "items": {
+        "additionalProperties": false,
+        "description": "Override maps a kind source file to a local replacement.",
+        "properties": {
+          "path": {
+            "description": "Local path to the override file.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "source": {
+            "description": "Path of the source file in the kind being replaced.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "path"
+        ],
+        "title": "Override",
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "name",
+    "kind"
+  ],
+  "title": "Metadata",
+  "type": "object"
+}

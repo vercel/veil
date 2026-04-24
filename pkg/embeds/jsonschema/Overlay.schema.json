@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Overlay is a conditional data merge applied before transforms.",
+  "properties": {
+    "file": {
+      "description": "Path to the overlay file. Resolved relative to the resource file\n that declares this overlay, or used as-is when absolute.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "match": {
+      "description": "CEL expression evaluated against the render context.",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "match",
+    "file"
+  ],
+  "title": "Overlay",
+  "type": "object"
+}

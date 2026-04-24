@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "CompiledRegistryEntry describes a single kind in a CompiledRegistry.",
+  "properties": {
+    "name": {
+      "description": "Name of the kind (matches the map key and CompiledKind.name).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "path": {
+      "description": "Relative path to the compiled kind.json (e.g. \"./worker/kind.json\").",
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema": {
+      "description": "Relative path to the kind's composite resource schema\n (e.g. \"./worker/kind.schema.json\").",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "path",
+    "schema"
+  ],
+  "title": "Compiled Registry Entry",
+  "type": "object"
+}

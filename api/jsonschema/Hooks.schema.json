@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Hooks groups a kind's hook files by lifecycle point. Each field is an\n ordered list; the order determines invocation order at that lifecycle\n point. Additional lifecycle points will be added as fields on this\n message so the kind.json shape can extend without breaking changes.",
+  "properties": {
+    "render": {
+      "description": "Hooks run during `veil render` (each exports a Hook whose optional\n `renderHook(ctx, fs)` transforms the bundle).",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "title": "Hooks",
+  "type": "object"
+}

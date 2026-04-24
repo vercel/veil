@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "VeilConfig is the contents of .veil/veil.json.",
+  "properties": {
+    "kinds": {
+      "description": "Relative or absolute paths to kind definition files.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "registries": {
+      "description": "Paths to additional compiled registry.json files to load at render\n time. Local builds are discovered automatically; use this to wire in\n shared or externally-distributed registries.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "variables": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "description": "Variable declares a named input available to overlay CEL expressions.",
+        "properties": {
+          "default": {
+            "description": "Optional default. If omitted, the variable is required at render time.\n Must be a scalar matching the declared type.",
+            "title": "Value"
+          },
+          "description": {
+            "description": "Optional human-readable description. Rendered as a JSDoc comment on\n the field in the generated veil-types.ts RegistryVariables interface\n so hook authors get inline documentation at their IDE cursor.",
+            "type": "string"
+          },
+          "enum": {
+            "description": "Optional set of permitted values. Only valid for `string` and `number`\n types. When present, the generated TypeScript field becomes a union\n (\"a\" | \"b\" | \"c\") instead of the broad scalar type, and values\n supplied via --var or VEIL_VAR_* are rejected at render time unless\n they match one of the listed entries.",
+            "items": {
+              "title": "Value"
+            },
+            "type": "array"
+          },
+          "type": {
+            "description": "Declared type: \"string\", \"number\", or \"bool\".",
+            "minLength": 1,
+            "pattern": "^(string|number|bool)$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "Variable",
+        "type": "object"
+      },
+      "description": "User-defined input variables keyed by name. Values are provided at\n render time via --var flags or VEIL_VAR_\u003cNAME\u003e environment variables.",
+      "propertyNames": {
+        "type": "string"
+      },
+      "type": "object"
+    }
+  },
+  "title": "Veil Config",
+  "type": "object"
+}
