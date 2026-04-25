@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "KindDefinition is a hand-authored kind.json — the source-side shape\n that `veil build` compiles into a published Kind (registry.proto).",
+  "properties": {
+    "dependents": {
+      "description": "Consumer kinds that may declare a dependency on this resource. Each\n entry binds a consumer kind to per-consumer hook(s) and a params\n schema. See SPEC.md \"Dependencies\" for the full design.",
+      "items": {
+        "additionalProperties": false,
+        "description": "DependentDefinition declares a consumer kind that may depend on this\n kind, the hook(s) that run when such a dependency is rendered, and the\n JSON Schema describing the `params` the consumer must supply.",
+        "patternProperties": {
+          "^(paramsPath)$": {
+            "description": "Path to the JSON Schema describing the `params` object that the\n consumer must supply when declaring this dependency. Resolved\n relative to the enclosing kind.json file.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "properties": {
+          "hooks": {
+            "description": "Hook code files that run when a resource of `kind` declares a\n dependency on this resource. At least one entry is required. Hooks\n run in declaration order. Paths are resolved relative to the\n enclosing kind.json file.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "description": "The consumer kind that may depend on this resource.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "params_path": {
+            "description": "Path to the JSON Schema describing the `params` object that the\n consumer must supply when declaring this dependency. Resolved\n relative to the enclosing kind.json file.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "params_path"
+        ],
+        "title": "Dependent Definition",
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "hooks": {
+      "additionalProperties": false,
+      "description": "Hook code files grouped by lifecycle point.",
+      "properties": {
+        "render": {
+          "description": "Hooks run during `veil render` (each exports a Hook whose optional\n `renderHook(ctx, fs)` transforms the bundle).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "title": "Hooks Definition",
+      "type": "object"
+    },
+    "name": {
+      "description": "The name of this kind (e.g. \"service\", \"cron\").",
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema": {
+      "default": "",
+      "description": "Path to the JSON Schema that defines the spec shape.",
+      "type": "string"
+    },
+    "sources": {
+      "description": "Source configuration files that make up the kind.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "Kind Definition",
+  "type": "object"
+}

@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package veil.v1;
+
+import "buf/validate/validate.proto";
+import "veil/v1/config.proto";
+
+// Kind is the compiled output of `veil build` for a single kind. It bundles
+// every source file's contents and every hook's minified code into a
+// single document, so rendering does not need access to the original
+// filesystem. Compare with KindDefinition (config.proto), which is the
+// hand-authored source-side shape that this is compiled from.
+message Kind {
+  // Name of the kind (matches KindDefinition.name).
+  string name = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Source files keyed by path relative to the kind directory. Values are
+  // the raw file contents.
+  map<string, string> sources = 2;
+
+  // Compiled hooks grouped by lifecycle point (matches
+  // KindDefinition.hooks).
+  Hooks hooks = 3;
+
+  // Input variable declarations copied from veil.json. Consumers resolve
+  // values from --var flags, VEIL_VAR_* env vars, or the declared default.
+  map<string, Variable> variables = 4;
+
+  // Compiled per-consumer dependent entries (one per consumer kind that
+  // may depend on this resource). Carries bundled hook code plus the
+  // inlined params JSON Schema so render does not need access to the
+  // original kind directory.
+  repeated Dependent dependents = 5;
+}
+
+// Hooks mirrors KindDefinition.hooks but holds compiled/bundled hook
+// entries rather than paths.
+message Hooks {
+  // Compiled hooks that run during `veil render`, in declaration order.
+  repeated Hook render = 1;
+}
+
+// Registry is the top-level index written to <out>/registry.json by
+// `veil build`. It maps kind name → entry describing how to find that kind's
+// compiled artifacts. Consumers (e.g. `veil render`) read this to discover
+// which kinds are available in a build artifact.
+message Registry {
+  // Kind name → entry pointing at the compiled kind document and its schema.
+  // All paths are resolved against the registry.json's own directory.
+  map<string, RegistryEntry> kinds = 1;
+}
+
+// RegistryEntry describes a single kind in a Registry.
+message RegistryEntry {
+  // Name of the kind (matches the map key and Kind.name).
+  string name = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Relative path to the compiled kind.json (e.g. "./worker/kind.json").
+  string path = 2 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Relative path to the kind's composite resource schema
+  // (e.g. "./worker/kind.schema.json").
+  string schema = 3 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+}
+
+// Hook is a single hook bundled and minified from its TS/JS source, with
+// all of its imports resolved and inlined.
+message Hook {
+  // Relative path from the kind directory (e.g. "hooks/hello-world.ts").
+  string name = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Minified JavaScript bundle, ES module format.
+  string content = 2 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+}
+
+// Dependent is the compiled form of a KindDefinition.dependents entry: each
+// hook source is bundled, and the params JSON Schema is embedded inline so
+// rendering does not need access to the original kind directory.
+message Dependent {
+  // The consumer kind that may depend on this resource (matches
+  // DependentDefinition.kind).
+  string kind = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Compiled, bundled dependent hooks in declaration order.
+  repeated Hook hooks = 2 [(buf.validate.field).repeated.min_items = 1];
+
+  // Inlined contents of the params JSON Schema (raw JSON text).
+  string params_schema = 3 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+}

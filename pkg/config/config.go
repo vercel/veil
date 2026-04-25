@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/goccy/go-json"
+	"google.golang.org/protobuf/types/known/structpb"
 
+	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/fsutil"
+	"github.com/vercel/veil/pkg/protoencode"
 )
 
 const (
@@ -22,47 +24,48 @@ const (
 	veilFile  = "veil.json"
 )
 
-// VariableType is the declared type of an input variable.
-type VariableType string
-
-const (
-	VariableTypeString VariableType = "string"
-	VariableTypeNumber VariableType = "number"
-	VariableTypeBool   VariableType = "bool"
-)
-
-// Variable declares a named input for use in overlay CEL expressions. Values
-// are supplied at render time via --var flags or VEIL_VAR_<NAME> env vars.
-type Variable struct {
-	Type        VariableType      `json:"type"`
-	Default     json.RawMessage   `json:"default,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Enum        []json.RawMessage `json:"enum,omitempty"`
+// Kind is a kind definition loaded from disk. It embeds the proto-generated
+// KindDefinition (so all wire fields — Name, Sources, Hooks, Schema,
+// Dependents — are accessible directly) and adds Dir for resolving the
+// kind's relative paths against the local filesystem.
+type Kind struct {
+	*veilv1.KindDefinition
+	Dir string
 }
 
-// HasDefault reports whether a default value was specified.
-func (v Variable) HasDefault() bool {
-	return len(v.Default) > 0
+// Registry is the set of kind definitions and project-level configuration
+// discovered from veil.json, plus the project root directory (which is not
+// part of any wire format).
+type Registry struct {
+	Root       string
+	Kinds      []Kind
+	Variables  map[string]*veilv1.Variable
+	Registries []string
 }
 
-// ParsedDefault returns the default decoded to its declared type, or (nil,
-// nil) if no default was set.
-func (v Variable) ParsedDefault() (any, error) {
-	if !v.HasDefault() {
+// HasDefault reports whether v has a default value declared.
+func HasDefault(v *veilv1.Variable) bool {
+	return v != nil && v.Default != nil
+}
+
+// ParsedDefault returns the default decoded to its declared type, or
+// (nil, nil) if no default was set.
+func ParsedDefault(v *veilv1.Variable) (any, error) {
+	if !HasDefault(v) {
 		return nil, nil
 	}
-	return ParseTypedValue(v.Type, v.Default)
+	return CoerceValue(v.Type, v.Default)
 }
 
 // ParsedEnum returns the enum values decoded to their declared type. Returns
 // (nil, nil) if no enum was specified.
-func (v Variable) ParsedEnum() ([]any, error) {
-	if len(v.Enum) == 0 {
+func ParsedEnum(v *veilv1.Variable) ([]any, error) {
+	if v == nil || len(v.Enum) == 0 {
 		return nil, nil
 	}
 	out := make([]any, 0, len(v.Enum))
-	for i, raw := range v.Enum {
-		parsed, err := ParseTypedValue(v.Type, raw)
+	for i, e := range v.Enum {
+		parsed, err := CoerceValue(v.Type, e)
 		if err != nil {
 			return nil, fmt.Errorf("enum[%d]: %w", i, err)
 		}
@@ -71,41 +74,62 @@ func (v Variable) ParsedEnum() ([]any, error) {
 	return out, nil
 }
 
-// VeilConfig is the contents of .veil/veil.json.
-type VeilConfig struct {
-	Kinds      []string            `json:"kinds"`
-	Variables  map[string]Variable `json:"variables,omitempty"`
-	Registries []string            `json:"registries,omitempty"`
+// CoerceValue decodes a structpb.Value into a Go value matching the
+// declared variable type.
+func CoerceValue(t veilv1.VariableType_Enum, val *structpb.Value) (any, error) {
+	if val == nil {
+		return nil, fmt.Errorf("expected %s, got null", t)
+	}
+	switch t {
+	case veilv1.VariableType_string:
+		s, ok := val.Kind.(*structpb.Value_StringValue)
+		if !ok {
+			return nil, fmt.Errorf("expected string, got %s", structKindName(val))
+		}
+		return s.StringValue, nil
+	case veilv1.VariableType_number:
+		n, ok := val.Kind.(*structpb.Value_NumberValue)
+		if !ok {
+			return nil, fmt.Errorf("expected number, got %s", structKindName(val))
+		}
+		return n.NumberValue, nil
+	case veilv1.VariableType_bool:
+		b, ok := val.Kind.(*structpb.Value_BoolValue)
+		if !ok {
+			return nil, fmt.Errorf("expected bool, got %s", structKindName(val))
+		}
+		return b.BoolValue, nil
+	default:
+		return nil, fmt.Errorf("unknown variable type %q", t)
+	}
 }
 
-// Kind is a kind definition loaded from the registry.
-type Kind struct {
-	Name    string   `json:"name"`
-	Sources []string `json:"sources"`
-	Hooks   Hooks    `json:"hooks,omitempty"`
-	Schema  string   `json:"schema,omitempty"`
-
-	// Dir is the directory containing this kind definition file.
-	// Used to resolve relative paths for sources, hooks, etc.
-	Dir string `json:"-"`
+// structKindName returns a human-readable label for a structpb.Value's
+// underlying type, used purely for error messages.
+func structKindName(val *structpb.Value) string {
+	switch val.Kind.(type) {
+	case *structpb.Value_StringValue:
+		return "string"
+	case *structpb.Value_NumberValue:
+		return "number"
+	case *structpb.Value_BoolValue:
+		return "bool"
+	case *structpb.Value_NullValue:
+		return "null"
+	case *structpb.Value_StructValue:
+		return "object"
+	case *structpb.Value_ListValue:
+		return "array"
+	default:
+		return "unknown"
+	}
 }
 
-// Hooks groups a kind's hook files by lifecycle point. New lifecycle
-// points are added as fields so kind.json can extend without breaking
-// existing consumers.
-type Hooks struct {
-	// Render is the ordered list of hooks invoked during `veil render`.
-	Render []string `json:"render,omitempty"`
-}
-
-// Registry is the set of kind definitions discovered from veil.json.
-type Registry struct {
-	// Root is the absolute path of the project root — the directory
-	// housing veil.json. Build artifacts live under <Root>/.veil/.
-	Root       string
-	Kinds      []Kind
-	Variables  map[string]Variable
-	Registries []string
+// MakeValue is a helper for constructing a structpb.Value from a Go value
+// — used by call sites (mostly tests) that want to build a Variable
+// programmatically rather than loading from JSON.
+func MakeValue(v any) (*structpb.Value, error) {
+	return structpb.NewValue(v)
 }
 
 // Discover walks upward from startDir to find a directory containing
@@ -161,54 +185,30 @@ func Load(configPath string) (*Registry, error) {
 	}, nil
 }
 
-// ParseTypedValue decodes raw JSON into a Go value matching the declared
-// variable type. number → float64, string → string, bool → bool.
-func ParseTypedValue(t VariableType, raw json.RawMessage) (any, error) {
-	switch t {
-	case VariableTypeString:
-		var v string
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return nil, fmt.Errorf("expected string, got %s", raw)
-		}
-		return v, nil
-	case VariableTypeNumber:
-		var v float64
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return nil, fmt.Errorf("expected number, got %s", raw)
-		}
-		return v, nil
-	case VariableTypeBool:
-		var v bool
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return nil, fmt.Errorf("expected bool, got %s", raw)
-		}
-		return v, nil
-	default:
-		return nil, fmt.Errorf("unknown variable type %q", t)
-	}
-}
-
-// validateVariables checks each variable's type is one of the supported set,
-// that any default value parses cleanly into that type, and that any
-// declared enum is well-formed (bool vars can't have an enum; each entry
-// must parse as the declared type; the default, if present, must be in the
+// validateVariables checks each variable's type is one of the supported
+// set, that any default value matches that type, and that any declared
+// enum is well-formed (bool vars can't have an enum; each entry must
+// match the declared type; the default, if present, must be in the
 // enum set).
-func validateVariables(vars map[string]Variable) error {
+func validateVariables(vars map[string]*veilv1.Variable) error {
 	for name, v := range vars {
+		if v == nil {
+			return fmt.Errorf(`variable %q: declaration is empty`, name)
+		}
 		switch v.Type {
-		case VariableTypeString, VariableTypeNumber, VariableTypeBool:
+		case veilv1.VariableType_string, veilv1.VariableType_number, veilv1.VariableType_bool:
 		default:
 			return fmt.Errorf(`variable %q: type must be "string", "number", or "bool" (got %q)`, name, v.Type)
 		}
-		if len(v.Enum) > 0 && v.Type == VariableTypeBool {
+		if len(v.Enum) > 0 && v.Type == veilv1.VariableType_bool {
 			return fmt.Errorf(`variable %q: enum is not supported for bool`, name)
 		}
-		enumVals, err := v.ParsedEnum()
+		enumVals, err := ParsedEnum(v)
 		if err != nil {
 			return fmt.Errorf("variable %q enum: %w", name, err)
 		}
-		if v.HasDefault() {
-			def, err := v.ParsedDefault()
+		if HasDefault(v) {
+			def, err := ParsedDefault(v)
 			if err != nil {
 				return fmt.Errorf("variable %q default: %w", name, err)
 			}
@@ -220,8 +220,31 @@ func validateVariables(vars map[string]Variable) error {
 	return nil
 }
 
+// validateDependents enforces structural rules on a kind's dependents
+// list: every entry needs a consumer kind, at least one hook, and a
+// params_path; consumer kinds may only appear once.
+func validateDependents(deps []*veilv1.DependentDefinition) error {
+	seen := make(map[string]bool, len(deps))
+	for i, d := range deps {
+		if d == nil || d.Kind == "" {
+			return fmt.Errorf("dependents[%d]: kind is required", i)
+		}
+		if seen[d.Kind] {
+			return fmt.Errorf("dependents[%d]: duplicate consumer kind %q", i, d.Kind)
+		}
+		seen[d.Kind] = true
+		if len(d.Hooks) == 0 {
+			return fmt.Errorf("dependents[%d] (%q): hooks must be non-empty", i, d.Kind)
+		}
+		if d.ParamsPath == "" {
+			return fmt.Errorf("dependents[%d] (%q): params_path is required", i, d.Kind)
+		}
+	}
+	return nil
+}
+
 // containsValue reports whether needle is present in haystack using
-// equality that mirrors ParseTypedValue's output types (string/float64/bool).
+// equality that mirrors CoerceValue's output types (string/float64/bool).
 func containsValue(haystack []any, needle any) bool {
 	for _, v := range haystack {
 		if v == needle {
@@ -242,13 +265,13 @@ func findProjectRoot(dir string) (string, error) {
 	return filepath.Dir(found), nil
 }
 
-func loadConfig(path string) (*VeilConfig, error) {
+func loadConfig(path string) (*veilv1.VeilConfigDefinition, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var cfg VeilConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	var cfg veilv1.VeilConfigDefinition
+	if err := protoencode.Unmarshal.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -259,13 +282,15 @@ func loadKind(path string) (Kind, error) {
 	if err != nil {
 		return Kind{}, err
 	}
-	var k Kind
-	if err := json.Unmarshal(data, &k); err != nil {
+	var pk veilv1.KindDefinition
+	if err := protoencode.Unmarshal.Unmarshal(data, &pk); err != nil {
 		return Kind{}, err
 	}
-	if k.Name == "" {
+	if pk.Name == "" {
 		return Kind{}, fmt.Errorf("kind at %s is missing required field \"name\"", path)
 	}
-	k.Dir = filepath.Dir(path)
-	return k, nil
+	if err := validateDependents(pk.Dependents); err != nil {
+		return Kind{}, fmt.Errorf("kind at %s: %w", path, err)
+	}
+	return Kind{KindDefinition: &pk, Dir: filepath.Dir(path)}, nil
 }

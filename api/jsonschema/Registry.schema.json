@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "CompiledRegistry is the top-level index written to \u003cout\u003e/registry.json by\n `veil build`. It maps kind name → entry describing how to find that kind's\n compiled artifacts. Consumers (e.g. `veil render`) read this to discover\n which kinds are available in a build artifact.",
+  "description": "Registry is the top-level index written to \u003cout\u003e/registry.json by\n `veil build`. It maps kind name → entry describing how to find that kind's\n compiled artifacts. Consumers (e.g. `veil render`) read this to discover\n which kinds are available in a build artifact.",
   "properties": {
     "kinds": {
       "additionalProperties": {
         "additionalProperties": false,
-        "description": "CompiledRegistryEntry describes a single kind in a CompiledRegistry.",
+        "description": "RegistryEntry describes a single kind in a Registry.",
         "properties": {
           "name": {
-            "description": "Name of the kind (matches the map key and CompiledKind.name).",
+            "description": "Name of the kind (matches the map key and Kind.name).",
             "minLength": 1,
             "type": "string"
           },
@@ -29,7 +29,7 @@
           "path",
           "schema"
         ],
-        "title": "Compiled Registry Entry",
+        "title": "Registry Entry",
         "type": "object"
       },
       "description": "Kind name → entry pointing at the compiled kind document and its schema.\n All paths are resolved against the registry.json's own directory.",
@@ -39,6 +39,6 @@
       "type": "object"
     }
   },
-  "title": "Compiled Registry",
+  "title": "Registry",
   "type": "object"
 }

@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "CompiledRegistryEntry describes a single kind in a CompiledRegistry.",
+  "description": "RegistryEntry describes a single kind in a Registry.",
   "properties": {
     "name": {
-      "description": "Name of the kind (matches the map key and CompiledKind.name).",
+      "description": "Name of the kind (matches the map key and Kind.name).",
       "minLength": 1,
       "type": "string"
     },
@@ -24,6 +24,6 @@
     "path",
     "schema"
   ],
-  "title": "Compiled Registry Entry",
+  "title": "Registry Entry",
   "type": "object"
 }

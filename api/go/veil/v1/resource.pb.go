@@ -29,7 +29,11 @@ type Resource struct {
 	// Standard metadata common to all resources.
 	Metadata *Metadata `protobuf:"bytes,1,opt,name=metadata,proto3" json:"metadata,omitempty"`
 	// Resource-specific data validated against the kind's schema.
-	Spec          *structpb.Struct `protobuf:"bytes,2,opt,name=spec,proto3" json:"spec,omitempty"`
+	Spec *structpb.Struct `protobuf:"bytes,2,opt,name=spec,proto3" json:"spec,omitempty"`
+	// Other resources this one depends on. Each entry triggers the target
+	// kind's `dependent` hook(s) against this resource's bundle during
+	// render. See SPEC.md "Dependencies".
+	Dependencies  []*Dependency `protobuf:"bytes,3,rep,name=dependencies,proto3" json:"dependencies,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -78,6 +82,81 @@ func (x *Resource) GetSpec() *structpb.Struct {
 	return nil
 }
 
+func (x *Resource) GetDependencies() []*Dependency {
+	if x != nil {
+		return x.Dependencies
+	}
+	return nil
+}
+
+// Dependency declares that this resource depends on another resource.
+// The depended-on resource (target) authoritatively controls how this
+// resource talks to it via the target's `dependent` hooks.
+type Dependency struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The kind of the target resource.
+	Kind string `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	// The name of the target resource. The pair (kind, name) must resolve
+	// to a resource in the catalog at render time.
+	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// Arbitrary parameters the target's `dependent` hook receives. The
+	// shape is defined by the target kind's matching dependents entry.
+	Params        *structpb.Struct `protobuf:"bytes,3,opt,name=params,proto3" json:"params,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Dependency) Reset() {
+	*x = Dependency{}
+	mi := &file_veil_v1_resource_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Dependency) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Dependency) ProtoMessage() {}
+
+func (x *Dependency) ProtoReflect() protoreflect.Message {
+	mi := &file_veil_v1_resource_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Dependency.ProtoReflect.Descriptor instead.
+func (*Dependency) Descriptor() ([]byte, []int) {
+	return file_veil_v1_resource_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Dependency) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *Dependency) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Dependency) GetParams() *structpb.Struct {
+	if x != nil {
+		return x.Params
+	}
+	return nil
+}
+
 // Metadata contains fields common to every resource.
 type Metadata struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -96,7 +175,7 @@ type Metadata struct {
 
 func (x *Metadata) Reset() {
 	*x = Metadata{}
-	mi := &file_veil_v1_resource_proto_msgTypes[1]
+	mi := &file_veil_v1_resource_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -108,7 +187,7 @@ func (x *Metadata) String() string {
 func (*Metadata) ProtoMessage() {}
 
 func (x *Metadata) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_resource_proto_msgTypes[1]
+	mi := &file_veil_v1_resource_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -121,7 +200,7 @@ func (x *Metadata) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Metadata.ProtoReflect.Descriptor instead.
 func (*Metadata) Descriptor() ([]byte, []int) {
-	return file_veil_v1_resource_proto_rawDescGZIP(), []int{1}
+	return file_veil_v1_resource_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Metadata) GetName() string {
@@ -166,7 +245,7 @@ type Overlay struct {
 
 func (x *Overlay) Reset() {
 	*x = Overlay{}
-	mi := &file_veil_v1_resource_proto_msgTypes[2]
+	mi := &file_veil_v1_resource_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -178,7 +257,7 @@ func (x *Overlay) String() string {
 func (*Overlay) ProtoMessage() {}
 
 func (x *Overlay) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_resource_proto_msgTypes[2]
+	mi := &file_veil_v1_resource_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -191,7 +270,7 @@ func (x *Overlay) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Overlay.ProtoReflect.Descriptor instead.
 func (*Overlay) Descriptor() ([]byte, []int) {
-	return file_veil_v1_resource_proto_rawDescGZIP(), []int{2}
+	return file_veil_v1_resource_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Overlay) GetMatch() string {
@@ -221,7 +300,7 @@ type Override struct {
 
 func (x *Override) Reset() {
 	*x = Override{}
-	mi := &file_veil_v1_resource_proto_msgTypes[3]
+	mi := &file_veil_v1_resource_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -233,7 +312,7 @@ func (x *Override) String() string {
 func (*Override) ProtoMessage() {}
 
 func (x *Override) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_resource_proto_msgTypes[3]
+	mi := &file_veil_v1_resource_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -246,7 +325,7 @@ func (x *Override) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Override.ProtoReflect.Descriptor instead.
 func (*Override) Descriptor() ([]byte, []int) {
-	return file_veil_v1_resource_proto_rawDescGZIP(), []int{3}
+	return file_veil_v1_resource_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Override) GetSource() string {
@@ -267,10 +346,18 @@ var File_veil_v1_resource_proto protoreflect.FileDescriptor
 
 const file_veil_v1_resource_proto_rawDesc = "" +
 	"\n" +
-	"\x16veil/v1/resource.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"n\n" +
+	"\x16veil/v1/resource.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xa7\x01\n" +
 	"\bResource\x125\n" +
 	"\bmetadata\x18\x01 \x01(\v2\x11.veil.v1.MetadataB\x06\xbaH\x03\xc8\x01\x01R\bmetadata\x12+\n" +
-	"\x04spec\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x04spec\"\xa9\x01\n" +
+	"\x04spec\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x04spec\x127\n" +
+	"\fdependencies\x18\x03 \x03(\v2\x13.veil.v1.DependencyR\fdependencies\"}\n" +
+	"\n" +
+	"Dependency\x12\x1e\n" +
+	"\x04kind\x18\x01 \x01(\tB\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04kind\x12\x1e\n" +
+	"\x04name\x18\x02 \x01(\tB\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x12/\n" +
+	"\x06params\x18\x03 \x01(\v2\x17.google.protobuf.StructR\x06params\"\xa9\x01\n" +
 	"\bMetadata\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x12,\n" +
@@ -302,24 +389,27 @@ func file_veil_v1_resource_proto_rawDescGZIP() []byte {
 	return file_veil_v1_resource_proto_rawDescData
 }
 
-var file_veil_v1_resource_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_veil_v1_resource_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_veil_v1_resource_proto_goTypes = []any{
 	(*Resource)(nil),        // 0: veil.v1.Resource
-	(*Metadata)(nil),        // 1: veil.v1.Metadata
-	(*Overlay)(nil),         // 2: veil.v1.Overlay
-	(*Override)(nil),        // 3: veil.v1.Override
-	(*structpb.Struct)(nil), // 4: google.protobuf.Struct
+	(*Dependency)(nil),      // 1: veil.v1.Dependency
+	(*Metadata)(nil),        // 2: veil.v1.Metadata
+	(*Overlay)(nil),         // 3: veil.v1.Overlay
+	(*Override)(nil),        // 4: veil.v1.Override
+	(*structpb.Struct)(nil), // 5: google.protobuf.Struct
 }
 var file_veil_v1_resource_proto_depIdxs = []int32{
-	1, // 0: veil.v1.Resource.metadata:type_name -> veil.v1.Metadata
-	4, // 1: veil.v1.Resource.spec:type_name -> google.protobuf.Struct
-	2, // 2: veil.v1.Metadata.overlays:type_name -> veil.v1.Overlay
-	3, // 3: veil.v1.Metadata.overrides:type_name -> veil.v1.Override
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	2, // 0: veil.v1.Resource.metadata:type_name -> veil.v1.Metadata
+	5, // 1: veil.v1.Resource.spec:type_name -> google.protobuf.Struct
+	1, // 2: veil.v1.Resource.dependencies:type_name -> veil.v1.Dependency
+	5, // 3: veil.v1.Dependency.params:type_name -> google.protobuf.Struct
+	3, // 4: veil.v1.Metadata.overlays:type_name -> veil.v1.Overlay
+	4, // 5: veil.v1.Metadata.overrides:type_name -> veil.v1.Override
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_veil_v1_resource_proto_init() }
@@ -333,7 +423,7 @@ func file_veil_v1_resource_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_veil_v1_resource_proto_rawDesc), len(file_veil_v1_resource_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

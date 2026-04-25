@@ -13,45 +13,15 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/urfave/cli/v3"
 
+	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/build"
+	"github.com/vercel/veil/pkg/bundle"
 	"github.com/vercel/veil/pkg/config"
 	"github.com/vercel/veil/pkg/embeds"
 	"github.com/vercel/veil/pkg/interact"
-	"github.com/vercel/veil/pkg/runtime"
+	"github.com/vercel/veil/pkg/protoencode"
 	"github.com/vercel/veil/pkg/tsc"
 )
-
-// compiledKind mirrors veil.v1.CompiledKind for JSON output. Field names
-// match the proto-generated camelCase JSON shape.
-type compiledKind struct {
-	Name      string                     `json:"name"`
-	Sources   map[string]string          `json:"sources"`
-	Hooks     compiledHooks              `json:"hooks"`
-	Variables map[string]config.Variable `json:"variables,omitempty"`
-}
-
-// compiledHooks mirrors veil.v1.CompiledHooks — hook lists keyed by
-// lifecycle point.
-type compiledHooks struct {
-	Render []compiledHook `json:"render,omitempty"`
-}
-
-type compiledHook struct {
-	Name    string `json:"name"`
-	Content string `json:"content"`
-}
-
-// compiledRegistry mirrors veil.v1.CompiledRegistry for JSON output.
-type compiledRegistry struct {
-	Kinds map[string]compiledRegistryEntry `json:"kinds"`
-}
-
-// compiledRegistryEntry mirrors veil.v1.CompiledRegistryEntry.
-type compiledRegistryEntry struct {
-	Name   string `json:"name"`
-	Path   string `json:"path"`
-	Schema string `json:"schema"`
-}
 
 // Build returns the "build" command — compiles every kind into
 // <out>/<name>/kind.json (sources + minified hooks) and emits the composite
@@ -151,7 +121,7 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 		}
 	}
 
-	registry := compiledRegistry{Kinds: make(map[string]compiledRegistryEntry, len(reg.Kinds))}
+	registry := &veilv1.Registry{Kinds: make(map[string]*veilv1.RegistryEntry, len(reg.Kinds))}
 
 	var errs []error
 	for _, k := range reg.Kinds {
@@ -196,12 +166,12 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 		}
 
 		jsonPath := filepath.Join(kindDir, "kind.json")
-		if err := writeJSON(jsonPath, ck); err != nil {
+		if err := protoencode.WriteFile(jsonPath, ck); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", k.Name, err))
 			continue
 		}
 
-		registry.Kinds[k.Name] = compiledRegistryEntry{
+		registry.Kinds[k.Name] = &veilv1.RegistryEntry{
 			Name:   k.Name,
 			Path:   "./" + filepath.ToSlash(filepath.Join(k.Name, "kind.json")),
 			Schema: "./" + filepath.ToSlash(filepath.Join(k.Name, "kind.schema.json")),
@@ -220,7 +190,7 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 	}
 
 	registryPath := filepath.Join(outDir, "registry.json")
-	if err := writeJSON(registryPath, registry); err != nil {
+	if err := protoencode.WriteFile(registryPath, registry); err != nil {
 		return fmt.Errorf("writing registry: %w", err)
 	}
 	if p != nil {
@@ -230,11 +200,12 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 	return nil
 }
 
-// compileKind reads a kind's sources and bundles+minifies each transform,
-// returning a compiledKind ready for JSON serialization. `variables` is the
-// project-level variable declaration from veil.json, copied verbatim so the
-// compiled document is self-contained at render time.
-func compileKind(k config.Kind, variables map[string]config.Variable, projectRoot string, fsys fs.FS) (*compiledKind, error) {
+// compileKind reads a kind's sources, bundles+minifies each render hook,
+// bundles each per-consumer dependent hook, and inlines per-consumer params
+// schemas. `variables` is the project-level variable declaration from
+// veil.json, copied verbatim so the compiled document is self-contained at
+// render time.
+func compileKind(k config.Kind, variables map[string]*veilv1.Variable, projectRoot string, fsys fs.FS) (*veilv1.Kind, error) {
 	sources := make(map[string]string, len(k.Sources))
 	for _, src := range k.Sources {
 		abs := src
@@ -252,23 +223,29 @@ func compileKind(k config.Kind, variables map[string]config.Variable, projectRoo
 		sources[filepath.ToSlash(key)] = string(data)
 	}
 
-	render, err := compileHookList(k, projectRoot, fsys, k.Hooks.Render)
+	render, err := compileHookList(k, projectRoot, fsys, k.GetHooks().GetRender())
 	if err != nil {
 		return nil, err
 	}
 
-	return &compiledKind{
-		Name:      k.Name,
-		Sources:   sources,
-		Hooks:     compiledHooks{Render: render},
-		Variables: variables,
+	dependents, err := compileDependents(k, projectRoot, fsys)
+	if err != nil {
+		return nil, err
+	}
+
+	return &veilv1.Kind{
+		Name:       k.Name,
+		Sources:    sources,
+		Hooks:      &veilv1.Hooks{Render: render},
+		Variables:  variables,
+		Dependents: dependents,
 	}, nil
 }
 
 // compileHookList bundles+minifies every hook path in paths, resolving
 // each entrypoint relative to the kind's project root.
-func compileHookList(k config.Kind, projectRoot string, fsys fs.FS, paths []string) ([]compiledHook, error) {
-	hooks := make([]compiledHook, 0, len(paths))
+func compileHookList(k config.Kind, projectRoot string, fsys fs.FS, paths []string) ([]*veilv1.Hook, error) {
+	hooks := make([]*veilv1.Hook, 0, len(paths))
 	for _, h := range paths {
 		abs := h
 		if !filepath.IsAbs(abs) {
@@ -278,7 +255,7 @@ func compileHookList(k config.Kind, projectRoot string, fsys fs.FS, paths []stri
 		if err != nil {
 			return nil, fmt.Errorf("resolving hook entrypoint for %s: %w", h, err)
 		}
-		code, err := runtime.Bundle(filepath.ToSlash(entrypoint), fsys, runtime.BundleOptions{
+		code, err := bundle.Bundle(filepath.ToSlash(entrypoint), fsys, bundle.Options{
 			Minify:     true,
 			GlobalName: "__veilMod",
 		})
@@ -289,7 +266,7 @@ func compileHookList(k config.Kind, projectRoot string, fsys fs.FS, paths []stri
 		if err != nil {
 			return nil, fmt.Errorf("resolving hook name for %s: %w", h, err)
 		}
-		hooks = append(hooks, compiledHook{
+		hooks = append(hooks, &veilv1.Hook{
 			Name:    filepath.ToSlash(name),
 			Content: code,
 		})
@@ -297,11 +274,46 @@ func compileHookList(k config.Kind, projectRoot string, fsys fs.FS, paths []stri
 	return hooks, nil
 }
 
+// compileDependents bundles each per-consumer dependent entry's hooks and
+// inlines the params JSON Schema referenced by params_path. Returns nil
+// when the kind declares no dependents.
+func compileDependents(k config.Kind, projectRoot string, fsys fs.FS) ([]*veilv1.Dependent, error) {
+	if len(k.Dependents) == 0 {
+		return nil, nil
+	}
+	out := make([]*veilv1.Dependent, 0, len(k.Dependents))
+	for _, d := range k.Dependents {
+		hooks, err := compileHookList(k, projectRoot, fsys, d.Hooks)
+		if err != nil {
+			return nil, fmt.Errorf("dependents[%q]: %w", d.Kind, err)
+		}
+		paramsAbs := d.ParamsPath
+		if !filepath.IsAbs(paramsAbs) {
+			paramsAbs = filepath.Join(k.Dir, d.ParamsPath)
+		}
+		paramsRaw, err := os.ReadFile(paramsAbs)
+		if err != nil {
+			return nil, fmt.Errorf("dependents[%q]: reading params_path %s: %w", d.Kind, d.ParamsPath, err)
+		}
+		// Validate it parses as JSON; embed verbatim text to preserve formatting.
+		var probe map[string]any
+		if err := json.Unmarshal(paramsRaw, &probe); err != nil {
+			return nil, fmt.Errorf("dependents[%q]: params_path %s is not valid JSON: %w", d.Kind, d.ParamsPath, err)
+		}
+		out = append(out, &veilv1.Dependent{
+			Kind:         d.Kind,
+			Hooks:        hooks,
+			ParamsSchema: string(paramsRaw),
+		})
+	}
+	return out, nil
+}
+
 // writeKindTypes emits veil-types.ts alongside the hook .ts files in
 // hooks/src/ so `import … from './veil-types'` resolves naturally and
 // the package.json sitting one level up at hooks/ stays separate from
 // the source code.
-func writeKindTypes(k config.Kind, variables map[string]config.Variable) error {
+func writeKindTypes(k config.Kind, variables map[string]*veilv1.Variable) error {
 	ts, err := build.VeilTypes(k, variables)
 	if err != nil {
 		return err
@@ -336,7 +348,12 @@ func validateKind(k config.Kind) error {
 		}
 	}
 	check("source", k.Sources)
-	check("render hook", k.Hooks.Render)
+	check("render hook", k.GetHooks().GetRender())
+
+	for _, d := range k.Dependents {
+		check(fmt.Sprintf("dependent[%q] hook", d.Kind), d.Hooks)
+		check(fmt.Sprintf("dependent[%q] params_path", d.Kind), []string{d.ParamsPath})
+	}
 
 	return errors.Join(errs...)
 }

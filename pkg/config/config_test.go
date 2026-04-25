@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/suite"
+
+	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 )
 
 type DiscoverSuite struct {
@@ -103,22 +105,22 @@ func (s *DiscoverSuite) TestLoadsVariablesWithDefaults() {
 	s.Require().Len(reg.Variables, 4)
 
 	env := reg.Variables["env"]
-	s.Equal(VariableTypeString, env.Type)
-	s.True(env.HasDefault())
-	defVal, err := env.ParsedDefault()
+	s.Equal(veilv1.VariableType_string, env.Type)
+	s.True(HasDefault(env))
+	defVal, err := ParsedDefault(env)
 	s.Require().NoError(err)
 	s.Equal("dev", defVal)
 
 	region := reg.Variables["region"]
-	s.False(region.HasDefault())
+	s.False(HasDefault(region))
 
 	replicas := reg.Variables["replicas"]
-	rv, err := replicas.ParsedDefault()
+	rv, err := ParsedDefault(replicas)
 	s.Require().NoError(err)
 	s.Equal(float64(3), rv)
 
 	debug := reg.Variables["debug"]
-	dv, err := debug.ParsedDefault()
+	dv, err := ParsedDefault(debug)
 	s.Require().NoError(err)
 	s.Equal(false, dv)
 }
@@ -147,7 +149,7 @@ func (s *DiscoverSuite) TestAcceptsEnumOnStringAndNumber() {
 	reg, err := Load(path)
 	s.Require().NoError(err)
 	env := reg.Variables["env"]
-	vals, err := env.ParsedEnum()
+	vals, err := ParsedEnum(env)
 	s.Require().NoError(err)
 	s.Equal([]any{"dev", "staging", "prod"}, vals)
 }

@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "VariableType is a wrapper message that holds the Variable.type enum.\n Wrapping it in a message gives the Go-generated identifiers a clean\n nested form (VariableType_Enum_*) and lets the JSON wire format use\n lowercase value names (\"string\", \"number\", \"bool\") that match the\n veil.json shape users have been writing since day one.",
+  "properties": {},
+  "title": "Variable Type",
+  "type": "object"
+}

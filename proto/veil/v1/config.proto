@@ -5,8 +5,11 @@ package veil.v1;
 import "buf/validate/validate.proto";
 import "google/protobuf/struct.proto";
 
-// VeilConfig is the contents of .veil/veil.json.
-message VeilConfig {
+// VeilConfigDefinition is the contents of .veil/veil.json — the
+// hand-authored source-side project configuration. The "Definition"
+// suffix marks it as a local-file shape; types under registry.proto
+// (Kind, Registry, …) are the corresponding published forms.
+message VeilConfigDefinition {
   // Relative or absolute paths to kind definition files.
   repeated string kinds = 1 [(buf.validate.field).repeated.min_items = 1];
 
@@ -20,13 +23,45 @@ message VeilConfig {
   repeated string registries = 3;
 }
 
+// VariableType is a wrapper message that holds the Variable.type enum.
+// Wrapping it in a message gives the Go-generated identifiers a clean
+// nested form (VariableType_Enum_*) and lets the JSON wire format use
+// lowercase value names ("string", "number", "bool") that match the
+// veil.json shape users have been writing since day one.
+message VariableType {
+  // Enum is the set of legal types for a declared variable. Values are
+  // intentionally lowercase to preserve the existing JSON wire format —
+  // protojson serializes enum values as their declared identifier, so
+  // anything else would change every veil.json on disk.
+  //
+  // buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+  // buf:lint:ignore ENUM_VALUE_PREFIX
+  // buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
+  enum Enum {
+    // buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+    // buf:lint:ignore ENUM_VALUE_PREFIX
+    // buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
+    unspecified = 0;
+    // buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+    // buf:lint:ignore ENUM_VALUE_PREFIX
+    string = 1;
+    // buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+    // buf:lint:ignore ENUM_VALUE_PREFIX
+    number = 2;
+    // buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+    // buf:lint:ignore ENUM_VALUE_PREFIX
+    bool = 3;
+  }
+}
+
 // Variable declares a named input available to overlay CEL expressions.
+// Lives in both the local VeilConfigDefinition and the published Kind
+// (carried verbatim through compilation), so it has no Definition
+// suffix — the same shape applies in both contexts.
 message Variable {
-  // Declared type: "string", "number", or "bool".
-  string type = 1 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).string.pattern = "^(string|number|bool)$"
-  ];
+  // Declared type. Must be one of the legal VariableType.Enum values
+  // (the `unspecified` zero is rejected at load time).
+  VariableType.Enum type = 1 [(buf.validate.field).enum.defined_only = true];
 
   // Optional default. If omitted, the variable is required at render time.
   // Must be a scalar matching the declared type.
@@ -45,8 +80,9 @@ message Variable {
   repeated google.protobuf.Value enum = 4;
 }
 
-// Kind defines a resource type in the registry (e.g. "service", "cron").
-message Kind {
+// KindDefinition is a hand-authored kind.json — the source-side shape
+// that `veil build` compiles into a published Kind (registry.proto).
+message KindDefinition {
   // The name of this kind (e.g. "service", "cron").
   string name = 1 [
     (buf.validate.field).string.min_len = 1,
@@ -57,18 +93,49 @@ message Kind {
   repeated string sources = 2 [(buf.validate.field).repeated.min_items = 1];
 
   // Hook code files grouped by lifecycle point.
-  Hooks hooks = 3;
+  HooksDefinition hooks = 3;
 
   // Path to the JSON Schema that defines the spec shape.
   string schema = 5;
+
+  // Consumer kinds that may declare a dependency on this resource. Each
+  // entry binds a consumer kind to per-consumer hook(s) and a params
+  // schema. See SPEC.md "Dependencies" for the full design.
+  repeated DependentDefinition dependents = 6;
 }
 
-// Hooks groups a kind's hook files by lifecycle point. Each field is an
-// ordered list; the order determines invocation order at that lifecycle
-// point. Additional lifecycle points will be added as fields on this
-// message so the kind.json shape can extend without breaking changes.
-message Hooks {
+// HooksDefinition groups a kind's hook files by lifecycle point. Each
+// field is an ordered list; the order determines invocation order at
+// that lifecycle point. Additional lifecycle points will be added as
+// fields on this message so the kind.json shape can extend without
+// breaking changes.
+message HooksDefinition {
   // Hooks run during `veil render` (each exports a Hook whose optional
   // `renderHook(ctx, fs)` transforms the bundle).
   repeated string render = 1;
+}
+
+// DependentDefinition declares a consumer kind that may depend on this
+// kind, the hook(s) that run when such a dependency is rendered, and the
+// JSON Schema describing the `params` the consumer must supply.
+message DependentDefinition {
+  // The consumer kind that may depend on this resource.
+  string kind = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Hook code files that run when a resource of `kind` declares a
+  // dependency on this resource. At least one entry is required. Hooks
+  // run in declaration order. Paths are resolved relative to the
+  // enclosing kind.json file.
+  repeated string hooks = 2 [(buf.validate.field).repeated.min_items = 1];
+
+  // Path to the JSON Schema describing the `params` object that the
+  // consumer must supply when declaring this dependency. Resolved
+  // relative to the enclosing kind.json file.
+  string params_path = 3 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
 }

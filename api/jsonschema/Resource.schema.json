@@ -3,6 +3,37 @@
   "additionalProperties": false,
   "description": "Resource is a consumer's instantiation of a kind.",
   "properties": {
+    "dependencies": {
+      "description": "Other resources this one depends on. Each entry triggers the target\n kind's `dependent` hook(s) against this resource's bundle during\n render. See SPEC.md \"Dependencies\".",
+      "items": {
+        "additionalProperties": false,
+        "description": "Dependency declares that this resource depends on another resource.\n The depended-on resource (target) authoritatively controls how this\n resource talks to it via the target's `dependent` hooks.",
+        "properties": {
+          "kind": {
+            "description": "The kind of the target resource.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "description": "The name of the target resource. The pair (kind, name) must resolve\n to a resource in the catalog at render time.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "params": {
+            "description": "Arbitrary parameters the target's `dependent` hook receives. The\n shape is defined by the target kind's matching dependents entry.",
+            "title": "Struct",
+            "type": "object"
+          }
+        },
+        "required": [
+          "kind",
+          "name"
+        ],
+        "title": "Dependency",
+        "type": "object"
+      },
+      "type": "array"
+    },
     "metadata": {
       "additionalProperties": false,
       "description": "Standard metadata common to all resources.",

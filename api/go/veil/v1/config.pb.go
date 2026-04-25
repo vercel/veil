@@ -23,8 +23,80 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// VeilConfig is the contents of .veil/veil.json.
-type VeilConfig struct {
+// Enum is the set of legal types for a declared variable. Values are
+// intentionally lowercase to preserve the existing JSON wire format —
+// protojson serializes enum values as their declared identifier, so
+// anything else would change every veil.json on disk.
+//
+// buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+// buf:lint:ignore ENUM_VALUE_PREFIX
+// buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
+type VariableType_Enum int32
+
+const (
+	// buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+	// buf:lint:ignore ENUM_VALUE_PREFIX
+	// buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
+	VariableType_unspecified VariableType_Enum = 0
+	// buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+	// buf:lint:ignore ENUM_VALUE_PREFIX
+	VariableType_string VariableType_Enum = 1
+	// buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+	// buf:lint:ignore ENUM_VALUE_PREFIX
+	VariableType_number VariableType_Enum = 2
+	// buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+	// buf:lint:ignore ENUM_VALUE_PREFIX
+	VariableType_bool VariableType_Enum = 3
+)
+
+// Enum value maps for VariableType_Enum.
+var (
+	VariableType_Enum_name = map[int32]string{
+		0: "unspecified",
+		1: "string",
+		2: "number",
+		3: "bool",
+	}
+	VariableType_Enum_value = map[string]int32{
+		"unspecified": 0,
+		"string":      1,
+		"number":      2,
+		"bool":        3,
+	}
+)
+
+func (x VariableType_Enum) Enum() *VariableType_Enum {
+	p := new(VariableType_Enum)
+	*p = x
+	return p
+}
+
+func (x VariableType_Enum) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (VariableType_Enum) Descriptor() protoreflect.EnumDescriptor {
+	return file_veil_v1_config_proto_enumTypes[0].Descriptor()
+}
+
+func (VariableType_Enum) Type() protoreflect.EnumType {
+	return &file_veil_v1_config_proto_enumTypes[0]
+}
+
+func (x VariableType_Enum) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use VariableType_Enum.Descriptor instead.
+func (VariableType_Enum) EnumDescriptor() ([]byte, []int) {
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{1, 0}
+}
+
+// VeilConfigDefinition is the contents of .veil/veil.json — the
+// hand-authored source-side project configuration. The "Definition"
+// suffix marks it as a local-file shape; types under registry.proto
+// (Kind, Registry, …) are the corresponding published forms.
+type VeilConfigDefinition struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Relative or absolute paths to kind definition files.
 	Kinds []string `protobuf:"bytes,1,rep,name=kinds,proto3" json:"kinds,omitempty"`
@@ -39,20 +111,20 @@ type VeilConfig struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *VeilConfig) Reset() {
-	*x = VeilConfig{}
+func (x *VeilConfigDefinition) Reset() {
+	*x = VeilConfigDefinition{}
 	mi := &file_veil_v1_config_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *VeilConfig) String() string {
+func (x *VeilConfigDefinition) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*VeilConfig) ProtoMessage() {}
+func (*VeilConfigDefinition) ProtoMessage() {}
 
-func (x *VeilConfig) ProtoReflect() protoreflect.Message {
+func (x *VeilConfigDefinition) ProtoReflect() protoreflect.Message {
 	mi := &file_veil_v1_config_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -64,37 +136,82 @@ func (x *VeilConfig) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use VeilConfig.ProtoReflect.Descriptor instead.
-func (*VeilConfig) Descriptor() ([]byte, []int) {
+// Deprecated: Use VeilConfigDefinition.ProtoReflect.Descriptor instead.
+func (*VeilConfigDefinition) Descriptor() ([]byte, []int) {
 	return file_veil_v1_config_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *VeilConfig) GetKinds() []string {
+func (x *VeilConfigDefinition) GetKinds() []string {
 	if x != nil {
 		return x.Kinds
 	}
 	return nil
 }
 
-func (x *VeilConfig) GetVariables() map[string]*Variable {
+func (x *VeilConfigDefinition) GetVariables() map[string]*Variable {
 	if x != nil {
 		return x.Variables
 	}
 	return nil
 }
 
-func (x *VeilConfig) GetRegistries() []string {
+func (x *VeilConfigDefinition) GetRegistries() []string {
 	if x != nil {
 		return x.Registries
 	}
 	return nil
 }
 
+// VariableType is a wrapper message that holds the Variable.type enum.
+// Wrapping it in a message gives the Go-generated identifiers a clean
+// nested form (VariableType_Enum_*) and lets the JSON wire format use
+// lowercase value names ("string", "number", "bool") that match the
+// veil.json shape users have been writing since day one.
+type VariableType struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VariableType) Reset() {
+	*x = VariableType{}
+	mi := &file_veil_v1_config_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VariableType) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VariableType) ProtoMessage() {}
+
+func (x *VariableType) ProtoReflect() protoreflect.Message {
+	mi := &file_veil_v1_config_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VariableType.ProtoReflect.Descriptor instead.
+func (*VariableType) Descriptor() ([]byte, []int) {
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{1}
+}
+
 // Variable declares a named input available to overlay CEL expressions.
+// Lives in both the local VeilConfigDefinition and the published Kind
+// (carried verbatim through compilation), so it has no Definition
+// suffix — the same shape applies in both contexts.
 type Variable struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Declared type: "string", "number", or "bool".
-	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// Declared type. Must be one of the legal VariableType.Enum values
+	// (the `unspecified` zero is rejected at load time).
+	Type VariableType_Enum `protobuf:"varint,1,opt,name=type,proto3,enum=veil.v1.VariableType_Enum" json:"type,omitempty"`
 	// Optional default. If omitted, the variable is required at render time.
 	// Must be a scalar matching the declared type.
 	Default *structpb.Value `protobuf:"bytes,2,opt,name=default,proto3,oneof" json:"default,omitempty"`
@@ -114,7 +231,7 @@ type Variable struct {
 
 func (x *Variable) Reset() {
 	*x = Variable{}
-	mi := &file_veil_v1_config_proto_msgTypes[1]
+	mi := &file_veil_v1_config_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -126,7 +243,7 @@ func (x *Variable) String() string {
 func (*Variable) ProtoMessage() {}
 
 func (x *Variable) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_config_proto_msgTypes[1]
+	mi := &file_veil_v1_config_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -139,14 +256,14 @@ func (x *Variable) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Variable.ProtoReflect.Descriptor instead.
 func (*Variable) Descriptor() ([]byte, []int) {
-	return file_veil_v1_config_proto_rawDescGZIP(), []int{1}
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *Variable) GetType() string {
+func (x *Variable) GetType() VariableType_Enum {
 	if x != nil {
 		return x.Type
 	}
-	return ""
+	return VariableType_unspecified
 }
 
 func (x *Variable) GetDefault() *structpb.Value {
@@ -170,36 +287,41 @@ func (x *Variable) GetEnum() []*structpb.Value {
 	return nil
 }
 
-// Kind defines a resource type in the registry (e.g. "service", "cron").
-type Kind struct {
+// KindDefinition is a hand-authored kind.json — the source-side shape
+// that `veil build` compiles into a published Kind (registry.proto).
+type KindDefinition struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The name of this kind (e.g. "service", "cron").
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Source configuration files that make up the kind.
 	Sources []string `protobuf:"bytes,2,rep,name=sources,proto3" json:"sources,omitempty"`
 	// Hook code files grouped by lifecycle point.
-	Hooks *Hooks `protobuf:"bytes,3,opt,name=hooks,proto3" json:"hooks,omitempty"`
+	Hooks *HooksDefinition `protobuf:"bytes,3,opt,name=hooks,proto3" json:"hooks,omitempty"`
 	// Path to the JSON Schema that defines the spec shape.
-	Schema        string `protobuf:"bytes,5,opt,name=schema,proto3" json:"schema,omitempty"`
+	Schema string `protobuf:"bytes,5,opt,name=schema,proto3" json:"schema,omitempty"`
+	// Consumer kinds that may declare a dependency on this resource. Each
+	// entry binds a consumer kind to per-consumer hook(s) and a params
+	// schema. See SPEC.md "Dependencies" for the full design.
+	Dependents    []*DependentDefinition `protobuf:"bytes,6,rep,name=dependents,proto3" json:"dependents,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Kind) Reset() {
-	*x = Kind{}
-	mi := &file_veil_v1_config_proto_msgTypes[2]
+func (x *KindDefinition) Reset() {
+	*x = KindDefinition{}
+	mi := &file_veil_v1_config_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Kind) String() string {
+func (x *KindDefinition) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Kind) ProtoMessage() {}
+func (*KindDefinition) ProtoMessage() {}
 
-func (x *Kind) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_config_proto_msgTypes[2]
+func (x *KindDefinition) ProtoReflect() protoreflect.Message {
+	mi := &file_veil_v1_config_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -210,44 +332,52 @@ func (x *Kind) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Kind.ProtoReflect.Descriptor instead.
-func (*Kind) Descriptor() ([]byte, []int) {
-	return file_veil_v1_config_proto_rawDescGZIP(), []int{2}
+// Deprecated: Use KindDefinition.ProtoReflect.Descriptor instead.
+func (*KindDefinition) Descriptor() ([]byte, []int) {
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *Kind) GetName() string {
+func (x *KindDefinition) GetName() string {
 	if x != nil {
 		return x.Name
 	}
 	return ""
 }
 
-func (x *Kind) GetSources() []string {
+func (x *KindDefinition) GetSources() []string {
 	if x != nil {
 		return x.Sources
 	}
 	return nil
 }
 
-func (x *Kind) GetHooks() *Hooks {
+func (x *KindDefinition) GetHooks() *HooksDefinition {
 	if x != nil {
 		return x.Hooks
 	}
 	return nil
 }
 
-func (x *Kind) GetSchema() string {
+func (x *KindDefinition) GetSchema() string {
 	if x != nil {
 		return x.Schema
 	}
 	return ""
 }
 
-// Hooks groups a kind's hook files by lifecycle point. Each field is an
-// ordered list; the order determines invocation order at that lifecycle
-// point. Additional lifecycle points will be added as fields on this
-// message so the kind.json shape can extend without breaking changes.
-type Hooks struct {
+func (x *KindDefinition) GetDependents() []*DependentDefinition {
+	if x != nil {
+		return x.Dependents
+	}
+	return nil
+}
+
+// HooksDefinition groups a kind's hook files by lifecycle point. Each
+// field is an ordered list; the order determines invocation order at
+// that lifecycle point. Additional lifecycle points will be added as
+// fields on this message so the kind.json shape can extend without
+// breaking changes.
+type HooksDefinition struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Hooks run during `veil render` (each exports a Hook whose optional
 	// `renderHook(ctx, fs)` transforms the bundle).
@@ -256,21 +386,21 @@ type Hooks struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Hooks) Reset() {
-	*x = Hooks{}
-	mi := &file_veil_v1_config_proto_msgTypes[3]
+func (x *HooksDefinition) Reset() {
+	*x = HooksDefinition{}
+	mi := &file_veil_v1_config_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Hooks) String() string {
+func (x *HooksDefinition) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Hooks) ProtoMessage() {}
+func (*HooksDefinition) ProtoMessage() {}
 
-func (x *Hooks) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_config_proto_msgTypes[3]
+func (x *HooksDefinition) ProtoReflect() protoreflect.Message {
+	mi := &file_veil_v1_config_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -281,49 +411,137 @@ func (x *Hooks) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Hooks.ProtoReflect.Descriptor instead.
-func (*Hooks) Descriptor() ([]byte, []int) {
-	return file_veil_v1_config_proto_rawDescGZIP(), []int{3}
+// Deprecated: Use HooksDefinition.ProtoReflect.Descriptor instead.
+func (*HooksDefinition) Descriptor() ([]byte, []int) {
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *Hooks) GetRender() []string {
+func (x *HooksDefinition) GetRender() []string {
 	if x != nil {
 		return x.Render
 	}
 	return nil
 }
 
+// DependentDefinition declares a consumer kind that may depend on this
+// kind, the hook(s) that run when such a dependency is rendered, and the
+// JSON Schema describing the `params` the consumer must supply.
+type DependentDefinition struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The consumer kind that may depend on this resource.
+	Kind string `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	// Hook code files that run when a resource of `kind` declares a
+	// dependency on this resource. At least one entry is required. Hooks
+	// run in declaration order. Paths are resolved relative to the
+	// enclosing kind.json file.
+	Hooks []string `protobuf:"bytes,2,rep,name=hooks,proto3" json:"hooks,omitempty"`
+	// Path to the JSON Schema describing the `params` object that the
+	// consumer must supply when declaring this dependency. Resolved
+	// relative to the enclosing kind.json file.
+	ParamsPath    string `protobuf:"bytes,3,opt,name=params_path,json=paramsPath,proto3" json:"params_path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DependentDefinition) Reset() {
+	*x = DependentDefinition{}
+	mi := &file_veil_v1_config_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DependentDefinition) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DependentDefinition) ProtoMessage() {}
+
+func (x *DependentDefinition) ProtoReflect() protoreflect.Message {
+	mi := &file_veil_v1_config_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DependentDefinition.ProtoReflect.Descriptor instead.
+func (*DependentDefinition) Descriptor() ([]byte, []int) {
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *DependentDefinition) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *DependentDefinition) GetHooks() []string {
+	if x != nil {
+		return x.Hooks
+	}
+	return nil
+}
+
+func (x *DependentDefinition) GetParamsPath() string {
+	if x != nil {
+		return x.ParamsPath
+	}
+	return ""
+}
+
 var File_veil_v1_config_proto protoreflect.FileDescriptor
 
 const file_veil_v1_config_proto_rawDesc = "" +
 	"\n" +
-	"\x14veil/v1/config.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xdf\x01\n" +
-	"\n" +
-	"VeilConfig\x12\x1e\n" +
-	"\x05kinds\x18\x01 \x03(\tB\b\xbaH\x05\x92\x01\x02\b\x01R\x05kinds\x12@\n" +
-	"\tvariables\x18\x02 \x03(\v2\".veil.v1.VeilConfig.VariablesEntryR\tvariables\x12\x1e\n" +
+	"\x14veil/v1/config.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xf3\x01\n" +
+	"\x14VeilConfigDefinition\x12\x1e\n" +
+	"\x05kinds\x18\x01 \x03(\tB\b\xbaH\x05\x92\x01\x02\b\x01R\x05kinds\x12J\n" +
+	"\tvariables\x18\x02 \x03(\v2,.veil.v1.VeilConfigDefinition.VariablesEntryR\tvariables\x12\x1e\n" +
 	"\n" +
 	"registries\x18\x03 \x03(\tR\n" +
 	"registries\x1aO\n" +
 	"\x0eVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +
-	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\"\xe6\x01\n" +
-	"\bVariable\x124\n" +
-	"\x04type\x18\x01 \x01(\tB \xbaH\x1d\xc8\x01\x01r\x182\x16^(string|number|bool)$R\x04type\x125\n" +
+	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\"I\n" +
+	"\fVariableType\"9\n" +
+	"\x04Enum\x12\x0f\n" +
+	"\vunspecified\x10\x00\x12\n" +
+	"\n" +
+	"\x06string\x10\x01\x12\n" +
+	"\n" +
+	"\x06number\x10\x02\x12\b\n" +
+	"\x04bool\x10\x03\"\xea\x01\n" +
+	"\bVariable\x128\n" +
+	"\x04type\x18\x01 \x01(\x0e2\x1a.veil.v1.VariableType.EnumB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04type\x125\n" +
 	"\adefault\x18\x02 \x01(\v2\x16.google.protobuf.ValueH\x00R\adefault\x88\x01\x01\x12%\n" +
 	"\vdescription\x18\x03 \x01(\tH\x01R\vdescription\x88\x01\x01\x12*\n" +
 	"\x04enum\x18\x04 \x03(\v2\x16.google.protobuf.ValueR\x04enumB\n" +
 	"\n" +
 	"\b_defaultB\x0e\n" +
-	"\f_description\"\x88\x01\n" +
-	"\x04Kind\x12\x1e\n" +
+	"\f_description\"\xda\x01\n" +
+	"\x0eKindDefinition\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x12\"\n" +
-	"\asources\x18\x02 \x03(\tB\b\xbaH\x05\x92\x01\x02\b\x01R\asources\x12$\n" +
-	"\x05hooks\x18\x03 \x01(\v2\x0e.veil.v1.HooksR\x05hooks\x12\x16\n" +
-	"\x06schema\x18\x05 \x01(\tR\x06schema\"\x1f\n" +
-	"\x05Hooks\x12\x16\n" +
-	"\x06render\x18\x01 \x03(\tR\x06renderB\x85\x01\n" +
+	"\asources\x18\x02 \x03(\tB\b\xbaH\x05\x92\x01\x02\b\x01R\asources\x12.\n" +
+	"\x05hooks\x18\x03 \x01(\v2\x18.veil.v1.HooksDefinitionR\x05hooks\x12\x16\n" +
+	"\x06schema\x18\x05 \x01(\tR\x06schema\x12<\n" +
+	"\n" +
+	"dependents\x18\x06 \x03(\v2\x1c.veil.v1.DependentDefinitionR\n" +
+	"dependents\")\n" +
+	"\x0fHooksDefinition\x12\x16\n" +
+	"\x06render\x18\x01 \x03(\tR\x06render\"\x82\x01\n" +
+	"\x13DependentDefinition\x12\x1e\n" +
+	"\x04kind\x18\x01 \x01(\tB\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04kind\x12\x1e\n" +
+	"\x05hooks\x18\x02 \x03(\tB\b\xbaH\x05\x92\x01\x02\b\x01R\x05hooks\x12+\n" +
+	"\vparams_path\x18\x03 \x01(\tB\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\n" +
+	"paramsPathB\x85\x01\n" +
 	"\vcom.veil.v1B\vConfigProtoP\x01Z,github.com/vercel/veil/api/go/veil/v1;veilv1\xa2\x02\x03VXX\xaa\x02\aVeil.V1\xca\x02\aVeil\\V1\xe2\x02\x13Veil\\V1\\GPBMetadata\xea\x02\bVeil::V1b\x06proto3"
 
 var (
@@ -338,26 +556,32 @@ func file_veil_v1_config_proto_rawDescGZIP() []byte {
 	return file_veil_v1_config_proto_rawDescData
 }
 
-var file_veil_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_veil_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_veil_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_veil_v1_config_proto_goTypes = []any{
-	(*VeilConfig)(nil),     // 0: veil.v1.VeilConfig
-	(*Variable)(nil),       // 1: veil.v1.Variable
-	(*Kind)(nil),           // 2: veil.v1.Kind
-	(*Hooks)(nil),          // 3: veil.v1.Hooks
-	nil,                    // 4: veil.v1.VeilConfig.VariablesEntry
-	(*structpb.Value)(nil), // 5: google.protobuf.Value
+	(VariableType_Enum)(0),       // 0: veil.v1.VariableType.Enum
+	(*VeilConfigDefinition)(nil), // 1: veil.v1.VeilConfigDefinition
+	(*VariableType)(nil),         // 2: veil.v1.VariableType
+	(*Variable)(nil),             // 3: veil.v1.Variable
+	(*KindDefinition)(nil),       // 4: veil.v1.KindDefinition
+	(*HooksDefinition)(nil),      // 5: veil.v1.HooksDefinition
+	(*DependentDefinition)(nil),  // 6: veil.v1.DependentDefinition
+	nil,                          // 7: veil.v1.VeilConfigDefinition.VariablesEntry
+	(*structpb.Value)(nil),       // 8: google.protobuf.Value
 }
 var file_veil_v1_config_proto_depIdxs = []int32{
-	4, // 0: veil.v1.VeilConfig.variables:type_name -> veil.v1.VeilConfig.VariablesEntry
-	5, // 1: veil.v1.Variable.default:type_name -> google.protobuf.Value
-	5, // 2: veil.v1.Variable.enum:type_name -> google.protobuf.Value
-	3, // 3: veil.v1.Kind.hooks:type_name -> veil.v1.Hooks
-	1, // 4: veil.v1.VeilConfig.VariablesEntry.value:type_name -> veil.v1.Variable
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	7, // 0: veil.v1.VeilConfigDefinition.variables:type_name -> veil.v1.VeilConfigDefinition.VariablesEntry
+	0, // 1: veil.v1.Variable.type:type_name -> veil.v1.VariableType.Enum
+	8, // 2: veil.v1.Variable.default:type_name -> google.protobuf.Value
+	8, // 3: veil.v1.Variable.enum:type_name -> google.protobuf.Value
+	5, // 4: veil.v1.KindDefinition.hooks:type_name -> veil.v1.HooksDefinition
+	6, // 5: veil.v1.KindDefinition.dependents:type_name -> veil.v1.DependentDefinition
+	3, // 6: veil.v1.VeilConfigDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
+	7, // [7:7] is the sub-list for method output_type
+	7, // [7:7] is the sub-list for method input_type
+	7, // [7:7] is the sub-list for extension type_name
+	7, // [7:7] is the sub-list for extension extendee
+	0, // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_veil_v1_config_proto_init() }
@@ -365,19 +589,20 @@ func file_veil_v1_config_proto_init() {
 	if File_veil_v1_config_proto != nil {
 		return
 	}
-	file_veil_v1_config_proto_msgTypes[1].OneofWrappers = []any{}
+	file_veil_v1_config_proto_msgTypes[2].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_veil_v1_config_proto_rawDesc), len(file_veil_v1_config_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   5,
+			NumEnums:      1,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_veil_v1_config_proto_goTypes,
 		DependencyIndexes: file_veil_v1_config_proto_depIdxs,
+		EnumInfos:         file_veil_v1_config_proto_enumTypes,
 		MessageInfos:      file_veil_v1_config_proto_msgTypes,
 	}.Build()
 	File_veil_v1_config_proto = out.File

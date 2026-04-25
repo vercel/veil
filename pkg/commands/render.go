@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/goccy/go-json"
 	"github.com/urfave/cli/v3"
 
 	"github.com/vercel/veil/pkg/config"
 	"github.com/vercel/veil/pkg/interact"
 	"github.com/vercel/veil/pkg/logging"
+	"github.com/vercel/veil/pkg/registry"
 	"github.com/vercel/veil/pkg/render"
 	"github.com/vercel/veil/pkg/variables"
 )
@@ -83,7 +83,7 @@ func runRender(ctx context.Context, c *cli.Command) error {
 		}
 	}
 
-	reg, err := loadRegistry(c.String("config"))
+	reg, err := registry.LoadProject(c.String("config"))
 	if err != nil {
 		return err
 	}
@@ -105,7 +105,7 @@ func runRender(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	kinds, err := loadCompiledRegistries(registries)
+	kindReg, err := registry.FromIndex(registries)
 	if err != nil {
 		return err
 	}
@@ -120,11 +120,11 @@ func runRender(ctx context.Context, c *cli.Command) error {
 	}
 
 	result, err := render.Render(render.Options{
-		Dir:           path,
-		OutDir:        outDir,
-		Root:          reg.Root,
-		RegistryKinds: kinds,
-		Variables:     vars,
+		Dir:       path,
+		OutDir:    outDir,
+		Root:      reg.Root,
+		Registry:  kindReg,
+		Variables: vars,
 	})
 	if err != nil {
 		return err
@@ -203,43 +203,6 @@ func absPaths(paths []string, baseDir string) ([]string, error) {
 			base = cwd
 		}
 		out = append(out, filepath.Clean(filepath.Join(base, p)))
-	}
-	return out, nil
-}
-
-// loadCompiledRegistries reads every registry.json and returns a merged map
-// from kind name to the absolute path of its compiled kind.json. Duplicate
-// kind names across registries are rejected.
-func loadCompiledRegistries(paths []string) (map[string]string, error) {
-	out := make(map[string]string)
-	for _, p := range paths {
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return nil, fmt.Errorf("loading registry %s: %w", p, err)
-		}
-		var r struct {
-			Kinds map[string]struct {
-				Path string `json:"path"`
-			} `json:"kinds"`
-		}
-		if err := json.Unmarshal(data, &r); err != nil {
-			return nil, fmt.Errorf("parsing registry %s: %w", p, err)
-		}
-		dir := filepath.Dir(p)
-		for name, entry := range r.Kinds {
-			if entry.Path == "" {
-				return nil, fmt.Errorf("registry %s: kind %q is missing \"path\"", p, name)
-			}
-			resolved := entry.Path
-			if !filepath.IsAbs(resolved) {
-				resolved = filepath.Join(dir, resolved)
-			}
-			resolved = filepath.Clean(resolved)
-			if existing, ok := out[name]; ok {
-				return nil, fmt.Errorf("kind %q provided by multiple registries: %s and %s", name, existing, resolved)
-			}
-			out[name] = resolved
-		}
 	}
 	return out, nil
 }

@@ -7,12 +7,14 @@ import (
 
 	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/suite"
+
+	"github.com/vercel/veil/pkg/registry"
 )
 
 type RenderSuite struct {
 	suite.Suite
-	root    string
-	regPath string
+	root     string
+	registry registry.Registry
 }
 
 func TestRenderSuite(t *testing.T) {
@@ -62,7 +64,19 @@ func (s *RenderSuite) SetupTest() {
 	}
 	s.writeJSON(filepath.Join(kindDir, "kind.schema.json"), schema)
 
-	s.regPath = filepath.Join(kindDir, "kind.json")
+	regJSON := filepath.Join(s.root, "r", "registry.json")
+	s.writeJSON(regJSON, map[string]any{
+		"kinds": map[string]any{
+			"worker": map[string]any{
+				"name":   "worker",
+				"path":   "./worker/kind.json",
+				"schema": "./worker/kind.schema.json",
+			},
+		},
+	})
+	reg, err := registry.FromIndex([]string{regJSON})
+	s.Require().NoError(err)
+	s.registry = reg
 }
 
 func (s *RenderSuite) writeJSON(path string, v any) {
@@ -81,10 +95,10 @@ func (s *RenderSuite) TestHappyPathRendersBundle() {
 
 	out := filepath.Join(s.root, "out")
 	result, err := Render(Options{
-		Dir:           dir,
-		OutDir:        out,
-		RegistryKinds: map[string]string{"worker": s.regPath},
-		Variables:     map[string]any{},
+		Dir:       dir,
+		OutDir:    out,
+		Registry:  s.registry,
+		Variables: map[string]any{},
 	})
 	s.Require().NoError(err)
 	s.Require().Len(result.Rendered, 1)
@@ -119,10 +133,10 @@ func (s *RenderSuite) TestOverlayMergesMatchingSpec() {
 
 	out := filepath.Join(s.root, "out")
 	_, err := Render(Options{
-		Dir:           dir,
-		OutDir:        out,
-		RegistryKinds: map[string]string{"worker": s.regPath},
-		Variables:     map[string]any{"env": "staging"},
+		Dir:       dir,
+		OutDir:    out,
+		Registry:  s.registry,
+		Variables: map[string]any{"env": "staging"},
 	})
 	s.Require().NoError(err)
 	// Bundle is produced; the fact that it succeeded and schema.spec.replicas
@@ -152,10 +166,10 @@ func (s *RenderSuite) TestOverlaySkippedWhenMatchFalse() {
 	})
 
 	_, err := Render(Options{
-		Dir:           dir,
-		OutDir:        filepath.Join(s.root, "out"),
-		RegistryKinds: map[string]string{"worker": s.regPath},
-		Variables:     map[string]any{"env": "production"}, // not staging
+		Dir:       dir,
+		OutDir:    filepath.Join(s.root, "out"),
+		Registry:  s.registry,
+		Variables: map[string]any{"env": "production"}, // not staging
 	})
 	s.Require().NoError(err)
 }
@@ -169,10 +183,10 @@ func (s *RenderSuite) TestSchemaValidationFailure() {
 	})
 
 	_, err := Render(Options{
-		Dir:           dir,
-		OutDir:        filepath.Join(s.root, "out"),
-		RegistryKinds: map[string]string{"worker": s.regPath},
-		Variables:     map[string]any{},
+		Dir:       dir,
+		OutDir:    filepath.Join(s.root, "out"),
+		Registry:  s.registry,
+		Variables: map[string]any{},
 	})
 	s.Require().Error(err)
 	s.Contains(err.Error(), "schema validation")
@@ -208,10 +222,10 @@ func (s *RenderSuite) TestSchemaValidationCatchesMissingRequiredField() {
 	})
 
 	_, err := Render(Options{
-		Dir:           dir,
-		OutDir:        filepath.Join(s.root, "out"),
-		RegistryKinds: map[string]string{"worker": s.regPath},
-		Variables:     map[string]any{},
+		Dir:       dir,
+		OutDir:    filepath.Join(s.root, "out"),
+		Registry:  s.registry,
+		Variables: map[string]any{},
 	})
 	s.Require().Error(err)
 	s.Contains(err.Error(), "schema validation")
@@ -227,10 +241,10 @@ func (s *RenderSuite) TestSchemaValidationCatchesWrongType() {
 	})
 
 	_, err := Render(Options{
-		Dir:           dir,
-		OutDir:        filepath.Join(s.root, "out"),
-		RegistryKinds: map[string]string{"worker": s.regPath},
-		Variables:     map[string]any{},
+		Dir:       dir,
+		OutDir:    filepath.Join(s.root, "out"),
+		Registry:  s.registry,
+		Variables: map[string]any{},
 	})
 	s.Require().Error(err)
 	s.Contains(err.Error(), "schema validation")
@@ -258,10 +272,10 @@ func (s *RenderSuite) TestSchemaValidationAfterOverlayMerge() {
 	})
 
 	_, err := Render(Options{
-		Dir:           dir,
-		OutDir:        filepath.Join(s.root, "out"),
-		RegistryKinds: map[string]string{"worker": s.regPath},
-		Variables:     map[string]any{"env": "staging"},
+		Dir:       dir,
+		OutDir:    filepath.Join(s.root, "out"),
+		Registry:  s.registry,
+		Variables: map[string]any{"env": "staging"},
 	})
 	s.Require().Error(err)
 	s.Contains(err.Error(), "schema validation")
@@ -276,10 +290,10 @@ func (s *RenderSuite) TestUnknownKindErrors() {
 	})
 
 	_, err := Render(Options{
-		Dir:           dir,
-		OutDir:        filepath.Join(s.root, "out"),
-		RegistryKinds: map[string]string{"worker": s.regPath},
-		Variables:     map[string]any{},
+		Dir:       dir,
+		OutDir:    filepath.Join(s.root, "out"),
+		Registry:  s.registry,
+		Variables: map[string]any{},
 	})
 	s.Require().Error(err)
 	s.Contains(err.Error(), `kind "unknown" not found`)
@@ -310,10 +324,10 @@ func (s *RenderSuite) TestSetOutputPathRoutesToNewLocation() {
 
 	out := filepath.Join(s.root, "out")
 	_, err := Render(Options{
-		Dir:           dir,
-		OutDir:        out,
-		RegistryKinds: map[string]string{"worker": s.regPath},
-		Variables:     map[string]any{},
+		Dir:       dir,
+		OutDir:    out,
+		Registry:  s.registry,
+		Variables: map[string]any{},
 	})
 	s.Require().NoError(err)
 
@@ -345,10 +359,10 @@ func (s *RenderSuite) TestDeleteSkipsOutput() {
 
 	out := filepath.Join(s.root, "out")
 	_, err := Render(Options{
-		Dir:           dir,
-		OutDir:        out,
-		RegistryKinds: map[string]string{"worker": s.regPath},
-		Variables:     map[string]any{},
+		Dir:       dir,
+		OutDir:    out,
+		Registry:  s.registry,
+		Variables: map[string]any{},
 	})
 	s.Require().NoError(err)
 
@@ -379,10 +393,10 @@ func (s *RenderSuite) TestPathCollisionErrors() {
 	})
 
 	_, err := Render(Options{
-		Dir:           dir,
-		OutDir:        filepath.Join(s.root, "out"),
-		RegistryKinds: map[string]string{"worker": s.regPath},
-		Variables:     map[string]any{},
+		Dir:       dir,
+		OutDir:    filepath.Join(s.root, "out"),
+		Registry:  s.registry,
+		Variables: map[string]any{},
 	})
 	s.Require().Error(err)
 	s.Contains(err.Error(), "path collision")

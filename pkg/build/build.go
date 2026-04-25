@@ -19,6 +19,7 @@ import (
 
 	"github.com/goccy/go-json"
 
+	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/config"
 	"github.com/vercel/veil/pkg/typegen"
 )
@@ -27,7 +28,7 @@ import (
 // Spec interface, RegistryVariables, host API types (Std, Os, Fetch …),
 // File, FS (with one generated File-returning accessor per declared
 // source), RenderHookContext, and Hook.
-func VeilTypes(k config.Kind, variables map[string]config.Variable) (string, error) {
+func VeilTypes(k config.Kind, variables map[string]*veilv1.Variable) (string, error) {
 	specInterface, err := specInterface(k)
 	if err != nil {
 		return "", err
@@ -317,7 +318,7 @@ func fsInterface(k config.Kind) (string, error) {
 // variablesInterface emits the RegistryVariables interface. Keys are
 // sorted for deterministic output. Descriptions → JSDoc. Enums → union
 // literal types.
-func variablesInterface(variables map[string]config.Variable) (string, error) {
+func variablesInterface(variables map[string]*veilv1.Variable) (string, error) {
 	var b strings.Builder
 	b.WriteString("export interface RegistryVariables {\n")
 	names := make([]string, 0, len(variables))
@@ -327,8 +328,8 @@ func variablesInterface(variables map[string]config.Variable) (string, error) {
 	sort.Strings(names)
 	for _, name := range names {
 		v := variables[name]
-		if v.Description != "" {
-			b.WriteString(tsDocComment(v.Description, "  "))
+		if desc := v.GetDescription(); desc != "" {
+			b.WriteString(tsDocComment(desc, "  "))
 		}
 		tsType, err := tsTypeForVariable(v)
 		if err != nil {
@@ -365,9 +366,9 @@ func tsDocComment(desc, indent string) string {
 
 // tsTypeForVariable returns the TS type expression for a variable,
 // honoring any declared enum (union literal) over the broad scalar type.
-func tsTypeForVariable(v config.Variable) (string, error) {
+func tsTypeForVariable(v *veilv1.Variable) (string, error) {
 	if len(v.Enum) > 0 {
-		parsed, err := v.ParsedEnum()
+		parsed, err := config.ParsedEnum(v)
 		if err != nil {
 			return "", err
 		}
@@ -385,11 +386,11 @@ func tsTypeForVariable(v config.Variable) (string, error) {
 		return strings.Join(parts, " | "), nil
 	}
 	switch v.Type {
-	case config.VariableTypeString:
+	case veilv1.VariableType_string:
 		return "string", nil
-	case config.VariableTypeNumber:
+	case veilv1.VariableType_number:
 		return "number", nil
-	case config.VariableTypeBool:
+	case veilv1.VariableType_bool:
 		return "boolean", nil
 	default:
 		return "unknown", nil

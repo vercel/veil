@@ -26,6 +26,7 @@ import (
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/hook"
 	"github.com/vercel/veil/pkg/interact"
+	"github.com/vercel/veil/pkg/registry"
 )
 
 // resourceJSON is the protojson marshal/unmarshal config used wherever we
@@ -57,9 +58,10 @@ type Options struct {
 	// caller's CWD.
 	Root string
 
-	// RegistryKinds maps kind name → absolute path to the compiled kind.json.
-	// Typically produced by loading one or more registry.json files.
-	RegistryKinds map[string]string
+	// Registry resolves compiled kinds on demand. The render pipeline asks
+	// it for each resource's kind by name; the registry handles index
+	// resolution, lazy loading, and caching internally.
+	Registry registry.Registry
 
 	// Variables is the resolved map of input variable values, keyed by name.
 	// Exposed to overlay CEL expressions (as `var.<name>`) and hook context
@@ -85,24 +87,6 @@ type RenderedResource struct {
 type LoadedResource struct {
 	*veilv1.Resource
 	Path string
-}
-
-// CompiledKind is the render-time view of a compiled kind.json artifact.
-type CompiledKind struct {
-	Name    string            `json:"name"`
-	Sources map[string]string `json:"sources"`
-	Hooks   CompiledHooks     `json:"hooks"`
-}
-
-// CompiledHooks groups compiled hook lists by lifecycle point.
-type CompiledHooks struct {
-	Render []CompiledHook `json:"render,omitempty"`
-}
-
-// CompiledHook is one hook in a compiled kind.
-type CompiledHook struct {
-	Name    string `json:"name"`
-	Content string `json:"content"`
 }
 
 // Render executes the full pipeline for every resource discovered in
@@ -223,22 +207,21 @@ func renderResource(r LoadedResource, root string, opts Options) (RenderedResour
 	kindName := r.GetMetadata().GetKind()
 	resourceName := r.GetMetadata().GetName()
 
-	kindPath, ok := opts.RegistryKinds[kindName]
-	if !ok {
-		return RenderedResource{}, fmt.Errorf("kind %q not found in any loaded registry", kindName)
+	if opts.Registry == nil {
+		return RenderedResource{}, fmt.Errorf("no registry configured")
 	}
-
-	compiled, err := loadCompiledKind(kindPath)
+	loaded, err := opts.Registry.LoadKind(kindName)
 	if err != nil {
 		return RenderedResource{}, err
 	}
+	kind := loaded.Kind
+	schemaPath := loaded.SchemaPath
 
 	mergedSpec, err := applyOverlays(r, opts.Variables)
 	if err != nil {
 		return RenderedResource{}, fmt.Errorf("overlays: %w", err)
 	}
 
-	schemaPath := filepath.Join(filepath.Dir(kindPath), "kind.schema.json")
 	specSchema, err := loadSpecSubschema(schemaPath)
 	if err != nil {
 		return RenderedResource{}, fmt.Errorf("loading spec schema: %w", err)
@@ -262,8 +245,8 @@ func renderResource(r LoadedResource, root string, opts Options) (RenderedResour
 	// flows through the hook pipeline. Identity starts as the declared
 	// source path; hooks may remap the destination via File.setOutputPath
 	// without changing identity.
-	bundle := make(hook.Bundle, len(compiled.Sources))
-	for k, v := range compiled.Sources {
+	bundle := make(hook.Bundle, len(kind.Sources))
+	for k, v := range kind.Sources {
 		bundle[k] = hook.File{Path: k, Content: v}
 	}
 
@@ -277,10 +260,10 @@ func renderResource(r LoadedResource, root string, opts Options) (RenderedResour
 		"vars":     opts.Variables,
 		"root":     root,
 	}
-	for _, h := range compiled.Hooks.Render {
+	for _, h := range kind.GetHooks().GetRender() {
 		newBundle, err := invokeHook(h, kindName, resourceName, ctx, bundle)
 		if err != nil {
-			return RenderedResource{}, fmt.Errorf("hook %s: %w", h.Name, err)
+			return RenderedResource{}, fmt.Errorf("hook %s: %w", h.GetName(), err)
 		}
 		bundle = newBundle
 	}
@@ -338,8 +321,9 @@ func resourceToMap(r *veilv1.Resource) (map[string]any, error) {
 // the same scoped slog logger; warn/error calls are additionally
 // surfaced on the user's terminal via interact.Default() so they're
 // visible without --debug.
-func invokeHook(h CompiledHook, kindName, resourceName string, ctx any, bundle hook.Bundle) (hook.Bundle, error) {
-	logger := slog.Default().With("kind", kindName, "resource", resourceName, "hook", h.Name)
+func invokeHook(h *veilv1.Hook, kindName, resourceName string, ctx any, bundle hook.Bundle) (hook.Bundle, error) {
+	hookName := h.GetName()
+	logger := slog.Default().With("kind", kindName, "resource", resourceName, "hook", hookName)
 
 	logger.Info("running hook")
 	start := time.Now()
@@ -348,13 +332,13 @@ func invokeHook(h CompiledHook, kindName, resourceName string, ctx any, bundle h
 		p := interact.Default()
 		switch level {
 		case "warn":
-			p.Warnf("WARN [%s/%s/%s] %s", kindName, resourceName, h.Name, msg)
+			p.Warnf("WARN [%s/%s/%s] %s", kindName, resourceName, hookName, msg)
 		case "error":
-			p.Errorf("ERROR [%s/%s/%s] %s", kindName, resourceName, h.Name, msg)
+			p.Errorf("ERROR [%s/%s/%s] %s", kindName, resourceName, hookName, msg)
 		}
 	}
 
-	hk, err := hook.New(h.Content, hook.WithLogger(logger), hook.WithDisplay(display))
+	hk, err := hook.New(h.GetContent(), hook.WithLogger(logger), hook.WithDisplay(display))
 	if err != nil {
 		logger.Error("hook failed", "stage", "init", "duration", time.Since(start).String(), "err", err.Error())
 		return nil, err
@@ -368,18 +352,6 @@ func invokeHook(h CompiledHook, kindName, resourceName string, ctx any, bundle h
 	}
 	logger.Info("hook completed", "duration", time.Since(start).String())
 	return out, nil
-}
-
-func loadCompiledKind(path string) (*CompiledKind, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading compiled kind %s: %w", path, err)
-	}
-	var ck CompiledKind
-	if err := json.Unmarshal(data, &ck); err != nil {
-		return nil, fmt.Errorf("parsing compiled kind %s: %w", path, err)
-	}
-	return &ck, nil
 }
 
 // applyOverlays compiles and evaluates each overlay's CEL match expression

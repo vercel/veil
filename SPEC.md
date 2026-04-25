@@ -636,10 +636,6 @@ The embedded schemas are available via `veil schema {config,kind,resource,metada
 
 # CLI commands
 
-## `veil gen`
-
-Runs hooks on a resource and generates the output files. (Not yet implemented.)
-
 ## `veil build`
 
 Compiles every kind in the registry into a self-contained JSON document and writes a top-level
@@ -736,10 +732,6 @@ $ veil eject ./service.json sources/service/deployment.yaml --out ./custom/deplo
 
 After ejecting, the developer owns that file entirely. It is used as the starting point for the hook
 pipeline in place of the resource definition's source.
-
-## `veil validate`
-
-Runs schema validation without writing output files. Useful in CI to catch errors early.
 
 ## `veil schema <type>`
 

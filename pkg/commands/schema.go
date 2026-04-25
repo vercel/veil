@@ -18,15 +18,15 @@ func Schema() *cli.Command {
 				Name:  "config",
 				Usage: "Print the JSON schema for .veil/veil.json",
 				Action: func(_ context.Context, _ *cli.Command) error {
-					fmt.Println(string(embeds.VeilConfigSchema))
+					fmt.Println(string(embeds.VeilConfigDefinitionSchema))
 					return nil
 				},
 			},
 			{
-				Name:  "kind",
-				Usage: "Print the JSON schema for a kind definition",
+				Name:  "kind-definition",
+				Usage: "Print the JSON schema for a hand-authored kind.json",
 				Action: func(_ context.Context, _ *cli.Command) error {
-					fmt.Println(string(embeds.KindSchema))
+					fmt.Println(string(embeds.KindDefinitionSchema))
 					return nil
 				},
 			},
@@ -47,10 +47,10 @@ func Schema() *cli.Command {
 				},
 			},
 			{
-				Name:  "compiled-kind",
-				Usage: "Print the JSON schema for a compiled kind (veil build output)",
+				Name:  "kind",
+				Usage: "Print the JSON schema for a published, compiled Kind (veil build output)",
 				Action: func(_ context.Context, _ *cli.Command) error {
-					fmt.Println(string(embeds.CompiledKindSchema))
+					fmt.Println(string(embeds.KindSchema))
 					return nil
 				},
 			},

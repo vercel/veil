@@ -12,6 +12,33 @@ message Resource {
 
   // Resource-specific data validated against the kind's schema.
   google.protobuf.Struct spec = 2;
+
+  // Other resources this one depends on. Each entry triggers the target
+  // kind's `dependent` hook(s) against this resource's bundle during
+  // render. See SPEC.md "Dependencies".
+  repeated Dependency dependencies = 3;
+}
+
+// Dependency declares that this resource depends on another resource.
+// The depended-on resource (target) authoritatively controls how this
+// resource talks to it via the target's `dependent` hooks.
+message Dependency {
+  // The kind of the target resource.
+  string kind = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // The name of the target resource. The pair (kind, name) must resolve
+  // to a resource in the catalog at render time.
+  string name = 2 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Arbitrary parameters the target's `dependent` hook receives. The
+  // shape is defined by the target kind's matching dependents entry.
+  google.protobuf.Struct params = 3;
 }
 
 // Metadata contains fields common to every resource.

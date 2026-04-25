@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/config"
 )
 
@@ -25,7 +26,7 @@ const EnvPrefix = "VEIL_VAR_"
 // and the ways to provide it. CLI pairs referencing undeclared variables are
 // rejected; environment variables that don't match a declaration are ignored
 // (the env is often shared across projects).
-func Resolve(decls map[string]config.Variable, cliPairs []string, envGet func(string) (string, bool)) (map[string]any, error) {
+func Resolve(decls map[string]*veilv1.Variable, cliPairs []string, envGet func(string) (string, bool)) (map[string]any, error) {
 	cli, err := parseCLIVars(cliPairs)
 	if err != nil {
 		return nil, err
@@ -38,7 +39,7 @@ func Resolve(decls map[string]config.Variable, cliPairs []string, envGet func(st
 
 	out := make(map[string]any, len(decls))
 	for name, decl := range decls {
-		enumVals, err := decl.ParsedEnum()
+		enumVals, err := config.ParsedEnum(decl)
 		if err != nil {
 			return nil, fmt.Errorf("variable %q enum: %w", name, err)
 		}
@@ -68,8 +69,8 @@ func Resolve(decls map[string]config.Variable, cliPairs []string, envGet func(st
 				continue
 			}
 		}
-		if decl.HasDefault() {
-			v, err := decl.ParsedDefault()
+		if config.HasDefault(decl) {
+			v, err := config.ParsedDefault(decl)
 			if err != nil {
 				return nil, fmt.Errorf("variable %q default: %w", name, err)
 			}
@@ -116,17 +117,17 @@ func parseCLIVars(pairs []string) (map[string]string, error) {
 }
 
 // coerce converts a raw string (from CLI or env) into the declared type.
-func coerce(t config.VariableType, raw string) (any, error) {
+func coerce(t veilv1.VariableType_Enum, raw string) (any, error) {
 	switch t {
-	case config.VariableTypeString:
+	case veilv1.VariableType_string:
 		return raw, nil
-	case config.VariableTypeNumber:
+	case veilv1.VariableType_number:
 		n, err := strconv.ParseFloat(raw, 64)
 		if err != nil {
 			return nil, fmt.Errorf("expected number, got %q", raw)
 		}
 		return n, nil
-	case config.VariableTypeBool:
+	case veilv1.VariableType_bool:
 		b, err := strconv.ParseBool(raw)
 		if err != nil {
 			return nil, fmt.Errorf("expected bool, got %q", raw)

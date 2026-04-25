@@ -3,15 +3,17 @@ package embeds
 
 import _ "embed"
 
-// VeilConfigSchema is the dereferenced JSON Schema for VeilConfig.
+// VeilConfigDefinitionSchema is the dereferenced JSON Schema for the
+// hand-authored veil.json (VeilConfigDefinition).
 //
-//go:embed jsonschema/VeilConfig.schema.json
-var VeilConfigSchema []byte
+//go:embed jsonschema/VeilConfigDefinition.schema.json
+var VeilConfigDefinitionSchema []byte
 
-// KindSchema is the dereferenced JSON Schema for Kind.
+// KindDefinitionSchema is the dereferenced JSON Schema for the
+// hand-authored kind.json (KindDefinition).
 //
-//go:embed jsonschema/Kind.schema.json
-var KindSchema []byte
+//go:embed jsonschema/KindDefinition.schema.json
+var KindDefinitionSchema []byte
 
 // ResourceSchema is the dereferenced JSON Schema for Resource.
 //
@@ -23,7 +25,8 @@ var ResourceSchema []byte
 //go:embed jsonschema/Metadata.schema.json
 var MetadataSchema []byte
 
-// CompiledKindSchema is the dereferenced JSON Schema for CompiledKind.
+// KindSchema is the dereferenced JSON Schema for the published, compiled
+// Kind document (the bundled output of `veil build`).
 //
-//go:embed jsonschema/CompiledKind.schema.json
-var CompiledKindSchema []byte
+//go:embed jsonschema/Kind.schema.json
+var KindSchema []byte

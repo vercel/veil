@@ -1,6 +1,9 @@
-// Package runtime bundles and executes hook TypeScript/JavaScript using
-// esbuild for transpilation and QuickJS for execution.
-package runtime
+// Package bundle resolves and bundles hook TypeScript/JavaScript via
+// esbuild — the single static asset that the QuickJS runtime ultimately
+// evaluates. Module resolution is filesystem-driven (it walks an fs.FS
+// the caller provides) so the same code path works for on-disk hooks
+// and for an in-memory test fixture.
+package bundle
 
 import (
 	"fmt"
@@ -10,11 +13,10 @@ import (
 	"strings"
 
 	"github.com/evanw/esbuild/pkg/api"
-	"github.com/fastschema/qjs"
 )
 
-// BundleOptions configures a Bundle call.
-type BundleOptions struct {
+// Options configures a Bundle call.
+type Options struct {
 	// Minify enables whitespace, identifier, and syntax minification.
 	Minify bool
 
@@ -26,7 +28,7 @@ type BundleOptions struct {
 // Bundle takes an entrypoint path and an fs.FS root, resolves all imports
 // (including bare specifiers from node_modules/ within the FS), transpiles
 // TypeScript, and returns a single bundled JavaScript string.
-func Bundle(entrypoint string, root fs.FS, opts BundleOptions) (string, error) {
+func Bundle(entrypoint string, root fs.FS, opts Options) (string, error) {
 	format := api.FormatESModule
 	if opts.GlobalName != "" {
 		format = api.FormatIIFE
@@ -68,29 +70,6 @@ func Bundle(entrypoint string, root fs.FS, opts BundleOptions) (string, error) {
 	}
 
 	return string(result.OutputFiles[0].Contents), nil
-}
-
-// Eval bundles an entrypoint from the given fs.FS and executes it, returning
-// the result as a string.
-func Eval(entrypoint string, root fs.FS) (string, error) {
-	js, err := Bundle(entrypoint, root, BundleOptions{})
-	if err != nil {
-		return "", err
-	}
-
-	rt, err := qjs.New()
-	if err != nil {
-		return "", fmt.Errorf("creating runtime: %w", err)
-	}
-	defer rt.Close()
-
-	val, err := rt.Eval("bundle.js", qjs.Code(js))
-	if err != nil {
-		return "", fmt.Errorf("eval: %w", err)
-	}
-	defer val.Free()
-
-	return val.String(), nil
 }
 
 // fsPlugin returns an esbuild plugin that resolves and loads all files from

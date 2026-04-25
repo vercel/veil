@@ -6,6 +6,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/evanw/esbuild v0.28.0
 	github.com/fastschema/qjs v0.0.6
+	github.com/go-sourcemap/sourcemap v2.1.4+incompatible
 	github.com/google/cel-go v0.28.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.11.1
@@ -14,8 +15,6 @@ require (
 	golang.org/x/term v0.40.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
-
-require github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260209202127-80ab13bee0bf.1 // indirect

@@ -68,10 +68,8 @@ func NewApp() *cli.Command {
 		},
 		Commands: []*cli.Command{
 			Render(),
-			Gen(),
 			New(),
 			Build(),
-			Validate(),
 			Eject(),
 			Schema(),
 		},
