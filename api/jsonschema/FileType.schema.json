@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "FileType is the wrapper message for the Metadata.file_type enum.\n Wrapping it in a message gives the Go-generated identifiers a clean\n nested form (FileType_Enum_*) and lets the JSON wire format use\n lowercase value names (\"definition\", \"overlay\").",
+  "properties": {},
+  "title": "File Type",
+  "type": "object"
+}

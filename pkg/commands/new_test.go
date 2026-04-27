@@ -70,8 +70,9 @@ func (s *NewSuite) TestNewKindAutoInitsVeilJSONAndScaffoldsAllFiles() {
 	s.Contains(string(types), "os: Os;")
 	s.Contains(string(types), "fetch: Fetch;")
 	s.Contains(string(types), "export type Fetch =")
-	s.Contains(string(types), "resource: Resource<WorkerSpec>;")
-	s.Contains(string(types), "export interface Resource<Spec> {")
+	s.Contains(string(types), "resource: Resource<WorkerSpec, Dependency>;")
+	s.Contains(string(types), "export interface Resource<Spec, Deps = never> {")
+	s.Contains(string(types), "export type Dependency = never;")
 	s.Contains(string(types), "export interface Metadata {")
 	s.Contains(string(types), "kind: string;")
 	s.Contains(string(types), "name: string;")
@@ -112,7 +113,7 @@ func (s *NewSuite) TestNewKindAutoInitsVeilJSONAndScaffoldsAllFiles() {
 	s.Equal([]any{"./sources/source.txt"}, kind["sources"])
 	hooksField, ok := kind["hooks"].(map[string]any)
 	s.Require().True(ok)
-	s.Equal([]any{"./hooks/src/hello-world.ts"}, hooksField["render"])
+	s.Equal([]any{map[string]any{"path": "./hooks/src/hello-world.ts"}}, hooksField["render"])
 
 	veil := s.readJSON(filepath.Join(s.root, "veil.json"))
 	s.Equal([]any{"./.veil/kinds/worker/kind.json"}, veil["kinds"])
@@ -186,7 +187,10 @@ func (s *NewSuite) TestNewHookAppendsToKind() {
 	kind := s.readJSON(filepath.Join(s.root, ".veil", "kinds", "worker", "kind.json"))
 	hooksField, ok := kind["hooks"].(map[string]any)
 	s.Require().True(ok)
-	s.Equal([]any{"./hooks/src/hello-world.ts", "./hooks/src/annotate.ts"}, hooksField["render"])
+	s.Equal([]any{
+		map[string]any{"path": "./hooks/src/hello-world.ts"},
+		map[string]any{"path": "./hooks/src/annotate.ts"},
+	}, hooksField["render"])
 }
 
 func (s *NewSuite) TestNewHookRequiresKindFlag() {
@@ -212,7 +216,7 @@ func (s *NewSuite) TestNewHookRollsBackOnBuildFailure() {
 	s.Require().NoError(os.WriteFile(kindJSONPath, []byte(`{
   "name": "worker",
   "sources": ["./sources/source.txt"],
-  "hooks": {"render": ["./hooks/src/hello-world.ts", "./hooks/src/missing.ts"]},
+  "hooks": {"render": [{"path": "./hooks/src/hello-world.ts"}, {"path": "./hooks/src/missing.ts"}]},
   "schema": "./schema.json"
 }`), 0644))
 

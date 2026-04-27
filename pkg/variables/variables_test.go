@@ -46,7 +46,7 @@ func (s *ResolveSuite) TestCLIFlagBeatsEnvAndDefault() {
 		"env": s.decl(veilv1.VariableType_string, "dev"),
 	}
 	env := map[string]string{"VEIL_VAR_ENV": "staging"}
-	out, err := Resolve(decls, []string{"env=prod"}, mapEnv(env))
+	out, err := Resolve(decls, map[string]string{"env": "prod"}, mapEnv(env))
 	s.Require().NoError(err)
 	s.Equal("prod", out["env"])
 }
@@ -89,7 +89,7 @@ func (s *ResolveSuite) TestCoerceNumberAndBool() {
 		"replicas": s.decl(veilv1.VariableType_number, nil),
 		"debug":    s.decl(veilv1.VariableType_bool, nil),
 	}
-	out, err := Resolve(decls, []string{"replicas=5", "debug=true"}, mapEnv(nil))
+	out, err := Resolve(decls, map[string]string{"replicas": "5", "debug": "true"}, mapEnv(nil))
 	s.Require().NoError(err)
 	s.Equal(float64(5), out["replicas"])
 	s.Equal(true, out["debug"])
@@ -99,7 +99,7 @@ func (s *ResolveSuite) TestCoerceFailsForBadNumber() {
 	decls := map[string]*veilv1.Variable{
 		"replicas": s.decl(veilv1.VariableType_number, nil),
 	}
-	_, err := Resolve(decls, []string{"replicas=lots"}, mapEnv(nil))
+	_, err := Resolve(decls, map[string]string{"replicas": "lots"}, mapEnv(nil))
 	s.Require().Error(err)
 	s.Contains(err.Error(), "expected number")
 }
@@ -108,7 +108,7 @@ func (s *ResolveSuite) TestUnknownCLIVarRejected() {
 	decls := map[string]*veilv1.Variable{
 		"env": s.decl(veilv1.VariableType_string, "dev"),
 	}
-	_, err := Resolve(decls, []string{"regiion=iad1"}, mapEnv(nil))
+	_, err := Resolve(decls, map[string]string{"regiion": "iad1"}, mapEnv(nil))
 	s.Require().Error(err)
 	s.Contains(err.Error(), "not declared")
 }
@@ -123,20 +123,11 @@ func (s *ResolveSuite) TestUnknownEnvVarIgnored() {
 	s.Equal("dev", out["env"])
 }
 
-func (s *ResolveSuite) TestInvalidCLIPair() {
-	decls := map[string]*veilv1.Variable{
-		"env": s.decl(veilv1.VariableType_string, "dev"),
-	}
-	_, err := Resolve(decls, []string{"novalue"}, mapEnv(nil))
-	s.Require().Error(err)
-	s.Contains(err.Error(), "expected name=value")
-}
-
 func (s *ResolveSuite) TestEnumAcceptsAllowedString() {
 	decls := map[string]*veilv1.Variable{
 		"env": s.enumVar(veilv1.VariableType_string, "dev", "staging", "prod"),
 	}
-	out, err := Resolve(decls, []string{"env=staging"}, mapEnv(nil))
+	out, err := Resolve(decls, map[string]string{"env": "staging"}, mapEnv(nil))
 	s.Require().NoError(err)
 	s.Equal("staging", out["env"])
 }
@@ -145,7 +136,7 @@ func (s *ResolveSuite) TestEnumRejectsUnlistedString() {
 	decls := map[string]*veilv1.Variable{
 		"env": s.enumVar(veilv1.VariableType_string, "dev", "prod"),
 	}
-	_, err := Resolve(decls, []string{"env=staging"}, mapEnv(nil))
+	_, err := Resolve(decls, map[string]string{"env": "staging"}, mapEnv(nil))
 	s.Require().Error(err)
 	s.Contains(err.Error(), "not in declared enum")
 }
@@ -164,20 +155,22 @@ func (s *ResolveSuite) TestEnumAcceptsNumber() {
 	decls := map[string]*veilv1.Variable{
 		"replicas": s.enumVar(veilv1.VariableType_number, float64(1), float64(3), float64(5)),
 	}
-	out, err := Resolve(decls, []string{"replicas=3"}, mapEnv(nil))
+	out, err := Resolve(decls, map[string]string{"replicas": "3"}, mapEnv(nil))
 	s.Require().NoError(err)
 	s.Equal(float64(3), out["replicas"])
 
-	_, err = Resolve(decls, []string{"replicas=2"}, mapEnv(nil))
+	_, err = Resolve(decls, map[string]string{"replicas": "2"}, mapEnv(nil))
 	s.Require().Error(err)
 	s.Contains(err.Error(), "not in declared enum")
 }
 
 func (s *ResolveSuite) TestValueWithEqualsSign() {
+	// Values with = pass through Resolve untouched — urfave's StringMap
+	// handles the name=value split at the CLI layer.
 	decls := map[string]*veilv1.Variable{
 		"conn": s.decl(veilv1.VariableType_string, nil),
 	}
-	out, err := Resolve(decls, []string{"conn=host=db;port=5432"}, mapEnv(nil))
+	out, err := Resolve(decls, map[string]string{"conn": "host=db;port=5432"}, mapEnv(nil))
 	s.Require().NoError(err)
 	s.Equal("host=db;port=5432", out["conn"])
 }

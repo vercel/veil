@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "DependentDefinition declares a consumer kind that may depend on this\n kind, the hook(s) that run when such a dependency is rendered, and the\n JSON Schema describing the `params` the consumer must supply.",
+  "description": "DependentDefinition declares a consumer kind that may depend on this\n kind, the hook file path(s) that run when such a dependency is\n rendered, and the JSON Schema describing the `params` the consumer\n must supply.",
   "patternProperties": {
     "^(paramsPath)$": {
       "description": "Path to the JSON Schema describing the `params` object that the\n consumer must supply when declaring this dependency. Resolved\n relative to the enclosing kind.json file.",
@@ -10,13 +10,6 @@
     }
   },
   "properties": {
-    "hooks": {
-      "description": "Hook code files that run when a resource of `kind` declares a\n dependency on this resource. At least one entry is required. Hooks\n run in declaration order. Paths are resolved relative to the\n enclosing kind.json file.",
-      "items": {
-        "type": "string"
-      },
-      "type": "array"
-    },
     "kind": {
       "description": "The consumer kind that may depend on this resource.",
       "minLength": 1,
@@ -26,6 +19,13 @@
       "description": "Path to the JSON Schema describing the `params` object that the\n consumer must supply when declaring this dependency. Resolved\n relative to the enclosing kind.json file.",
       "minLength": 1,
       "type": "string"
+    },
+    "paths": {
+      "description": "Paths to hook files that run when a resource of `kind` declares a\n dependency on this resource. At least one entry is required. Hooks\n run in declaration order. Paths are resolved relative to the\n enclosing kind.json file.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
     }
   },
   "required": [

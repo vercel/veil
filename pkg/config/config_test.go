@@ -47,7 +47,7 @@ func (s *DiscoverSuite) TestFindsVeilJSONFromNestedDirectory() {
 	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
 		"name": "service",
 		"sources": ["./sources/deployment.yaml"],
-		"hooks": {"render": ["./hooks/inject-env.ts"]},
+		"hooks": {"render": [{"path": "./hooks/inject-env.ts"}]},
 		"schema": "./schemas/service.schema.json"
 	}`), 0644))
 	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"]}`)

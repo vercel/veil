@@ -1,13 +1,17 @@
-// Package render implements the `veil render` pipeline: discover resource
-// instances, resolve overlays via CEL, validate specs against their kind's
-// schema, execute hooks in order, and write the final bundle to disk.
+// Package render implements the `veil render` pipeline: load the entry
+// resource via the catalog, resolve overlays by matching each overlay's
+// `if` regex map against the resolved variables, validate the merged
+// spec against the kind's schema, execute hooks in order, follow
+// declared dependencies, and write the final bundle to disk.
 package render
 
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -15,36 +19,26 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
-	"github.com/google/cel-go/cel"
-	"github.com/google/cel-go/common/types"
-	"github.com/google/cel-go/common/types/ref"
 	"github.com/santhosh-tekuri/jsonschema/v6"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/hook"
 	"github.com/vercel/veil/pkg/interact"
+	"github.com/vercel/veil/pkg/protoencode"
 	"github.com/vercel/veil/pkg/registry"
+	"github.com/vercel/veil/pkg/resource"
 )
-
-// resourceJSON is the protojson marshal/unmarshal config used wherever we
-// move a Resource between disk, the validator, or the hook ctx. Discarding
-// unknown fields keeps user-authored JSON forgiving (extra annotations,
-// editor metadata, etc. don't break loading).
-var resourceJSON = struct {
-	Marshal   protojson.MarshalOptions
-	Unmarshal protojson.UnmarshalOptions
-}{
-	Marshal:   protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: false},
-	Unmarshal: protojson.UnmarshalOptions{DiscardUnknown: true},
-}
 
 // Options configures a Render call.
 type Options struct {
-	// Dir is the directory scanned for resource JSON files.
-	Dir string
+	// Kind and Name identify the entry-point resource. Render loads it
+	// via the Catalog and walks outward — overlays merged in, then
+	// dependent hooks invoked for each declared dependency (each of
+	// which is also loaded via the Catalog).
+	Kind string
+	Name string
 
 	// OutDir is the root directory where rendered bundles are written. Each
 	// instance gets a subdirectory named after metadata.name.
@@ -63,15 +57,21 @@ type Options struct {
 	// resolution, lazy loading, and caching internally.
 	Registry registry.Registry
 
-	// Variables is the resolved map of input variable values, keyed by name.
-	// Exposed to overlay CEL expressions (as `var.<name>`) and hook context
-	// (as `ctx.var.<name>`).
-	Variables map[string]any
-}
+	// FS is the read-only project filesystem rooted at the project
+	// root. Used to read overlay files, schemas, and any other
+	// auxiliary content the render pipeline pulls in. CLI typically
+	// passes os.DirFS(reg.Root); tests may pass an fstest.MapFS.
+	FS fs.FS
 
-// Result summarizes a Render invocation.
-type Result struct {
-	Rendered []RenderedResource
+	// Catalog resolves the entry-point resource and any dependency
+	// targets by (kind, name). Built from the same fs.FS, lazy and
+	// cached.
+	Catalog resource.Catalog
+
+	// Variables is the resolved map of input variable values, keyed by
+	// name. Each variable's stringified value is what an overlay's `if`
+	// regex matches against; hooks receive the same map as `ctx.vars`.
+	Variables map[string]any
 }
 
 // RenderedResource describes one successfully rendered resource.
@@ -81,20 +81,20 @@ type RenderedResource struct {
 	Files  []string
 }
 
-// LoadedResource pairs a proto-defined Resource with the absolute filesystem
-// path it was loaded from. The path is needed to resolve overlay file
-// references but isn't part of the Resource's wire shape.
-type LoadedResource struct {
-	*veilv1.Resource
-	Path string
-}
-
-// Render executes the full pipeline for every resource discovered in
-// opts.Dir.
-func Render(opts Options) (Result, error) {
-	resources, err := Discover(opts.Dir)
+// Render renders the resource identified by (opts.Kind, opts.Name).
+// The catalog supplies the entry-point resource and any dependency
+// targets it reaches. Overlays and dependent hooks fan out from this
+// single starting point.
+func Render(opts *Options) (*RenderedResource, error) {
+	if opts.Catalog == nil {
+		return nil, fmt.Errorf("no catalog configured")
+	}
+	if opts.Kind == "" || opts.Name == "" {
+		return nil, fmt.Errorf("kind and name are required")
+	}
+	r, err := opts.Catalog.LoadResource(opts.Kind, opts.Name)
 	if err != nil {
-		return Result{}, err
+		return nil, err
 	}
 
 	// chdir into the veil project root so hook-side std/os paths resolve
@@ -104,127 +104,48 @@ func Render(opts Options) (Result, error) {
 	if root != "" {
 		prev, err := os.Getwd()
 		if err != nil {
-			return Result{}, fmt.Errorf("getting cwd: %w", err)
+			return nil, fmt.Errorf("getting cwd: %w", err)
 		}
 		if err := os.Chdir(root); err != nil {
-			return Result{}, fmt.Errorf("chdir to root %s: %w", root, err)
+			return nil, fmt.Errorf("chdir to root %s: %w", root, err)
 		}
 		defer os.Chdir(prev)
 	} else {
 		root, _ = os.Getwd()
 	}
 
-	var res Result
-	for _, r := range resources {
-		rendered, err := renderResource(r, root, opts)
-		if err != nil {
-			return res, fmt.Errorf("%s: %w", r.GetMetadata().GetName(), err)
-		}
-		res.Rendered = append(res.Rendered, rendered)
-	}
-	return res, nil
-}
-
-// Discover loads Resources from a path. If path is a file, exactly that
-// file is loaded (and any parse/shape error surfaces — a file path is an
-// explicit request). If path is a directory, it is scanned non-recursively
-// for *.json files that parse as Resources (`metadata.kind`,
-// `metadata.name`, and non-null `spec`); other JSON files are silently
-// ignored, since the directory may contain overlays or unrelated config.
-func Discover(path string) ([]LoadedResource, error) {
-	info, err := os.Stat(path)
+	rendered, err := renderResource(r, root, opts)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", r.GetMetadata().GetName(), err)
 	}
-	if !info.IsDir() {
-		r, err := loadResource(path)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateResourceShape(r, path); err != nil {
-			return nil, err
-		}
-		return []LoadedResource{r}, nil
-	}
-
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
-	}
-
-	var out []LoadedResource
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		fp := filepath.Join(path, e.Name())
-		r, err := loadResource(fp)
-		if err != nil {
-			continue // not valid JSON / not parseable as Resource; skip quietly
-		}
-		if r.GetMetadata().GetKind() == "" || r.GetMetadata().GetName() == "" || r.GetSpec() == nil {
-			continue // not a Resource shape; skip quietly
-		}
-		out = append(out, r)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].GetMetadata().GetName() < out[j].GetMetadata().GetName()
-	})
-	return out, nil
+	return rendered, nil
 }
 
-func loadResource(path string) (LoadedResource, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return LoadedResource{}, fmt.Errorf("reading %s: %w", path, err)
-	}
-	r := &veilv1.Resource{}
-	if err := resourceJSON.Unmarshal.Unmarshal(data, r); err != nil {
-		return LoadedResource{}, fmt.Errorf("parsing %s: %w", path, err)
-	}
-	abs, _ := filepath.Abs(path)
-	return LoadedResource{Resource: r, Path: abs}, nil
-}
-
-func validateResourceShape(r LoadedResource, path string) error {
-	var missing []string
-	if r.GetMetadata().GetKind() == "" {
-		missing = append(missing, "metadata.kind")
-	}
-	if r.GetMetadata().GetName() == "" {
-		missing = append(missing, "metadata.name")
-	}
-	if r.GetSpec() == nil {
-		missing = append(missing, "spec")
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("%s: not a resource — missing %s", path, strings.Join(missing, ", "))
-	}
-	return nil
-}
-
-func renderResource(r LoadedResource, root string, opts Options) (RenderedResource, error) {
+func renderResource(r *resource.Resource, root string, opts *Options) (*RenderedResource, error) {
 	kindName := r.GetMetadata().GetKind()
 	resourceName := r.GetMetadata().GetName()
+	logger := slog.Default().With("kind", kindName, "resource", resourceName, "path", r.Path)
 
 	if opts.Registry == nil {
-		return RenderedResource{}, fmt.Errorf("no registry configured")
+		return nil, fmt.Errorf("no registry configured")
 	}
+	logger.Debug("loading compiled kind")
 	loaded, err := opts.Registry.LoadKind(kindName)
 	if err != nil {
-		return RenderedResource{}, err
+		return nil, err
 	}
 	kind := loaded.Kind
 	schemaPath := loaded.SchemaPath
 
-	mergedSpec, err := applyOverlays(r, opts.Variables)
+	logger.Debug("applying overlays", "count", len(r.GetMetadata().GetOverlays()))
+	mergedSpec, err := applyOverlays(opts.FS, r, opts.Variables)
 	if err != nil {
-		return RenderedResource{}, fmt.Errorf("overlays: %w", err)
+		return nil, fmt.Errorf("overlays: %w", err)
 	}
 
 	specSchema, err := loadSpecSubschema(schemaPath)
 	if err != nil {
-		return RenderedResource{}, fmt.Errorf("loading spec schema: %w", err)
+		return nil, fmt.Errorf("loading spec schema: %w", err)
 	}
 	applySchemaDefaults(mergedSpec, specSchema)
 
@@ -234,11 +155,12 @@ func renderResource(r LoadedResource, root string, opts Options) (RenderedResour
 	// been applied.
 	resolved, err := resolveResource(r.Resource, mergedSpec)
 	if err != nil {
-		return RenderedResource{}, fmt.Errorf("building resolved resource: %w", err)
+		return nil, fmt.Errorf("building resolved resource: %w", err)
 	}
 
+	logger.Debug("validating spec against schema")
 	if err := validateResource(schemaPath, resolved); err != nil {
-		return RenderedResource{}, fmt.Errorf("schema validation: %w", err)
+		return nil, fmt.Errorf("schema validation: %w", err)
 	}
 
 	// Promote the flat source map to the identity → File structure that
@@ -252,7 +174,7 @@ func renderResource(r LoadedResource, root string, opts Options) (RenderedResour
 
 	resourceMap, err := resourceToMap(resolved)
 	if err != nil {
-		return RenderedResource{}, fmt.Errorf("encoding resource for hook ctx: %w", err)
+		return nil, fmt.Errorf("encoding resource for hook ctx: %w", err)
 	}
 
 	ctx := map[string]any{
@@ -260,10 +182,24 @@ func renderResource(r LoadedResource, root string, opts Options) (RenderedResour
 		"vars":     opts.Variables,
 		"root":     root,
 	}
-	for _, h := range kind.GetHooks().GetRender() {
-		newBundle, err := invokeHook(h, kindName, resourceName, ctx, bundle)
+	renderHooks := kind.GetHooks().GetRender()
+	logger.Info("running render hooks", "count", len(renderHooks))
+	for _, h := range renderHooks {
+		newBundle, err := invokeHook(logger, h, kindName, resourceName, ctx, bundle)
 		if err != nil {
-			return RenderedResource{}, fmt.Errorf("hook %s: %w", h.GetName(), err)
+			return nil, fmt.Errorf("hook %s: %w", h.GetName(), err)
+		}
+		bundle = newBundle
+	}
+
+	deps := resolved.GetDependencies()
+	if len(deps) > 0 {
+		logger.Info("applying dependencies", "count", len(deps))
+	}
+	for _, dep := range deps {
+		newBundle, err := applyDependency(logger, bundle, dep, kindName, resourceName, resourceMap, root, opts)
+		if err != nil {
+			return nil, fmt.Errorf("dependency %s/%s: %w", dep.GetKind(), dep.GetName(), err)
 		}
 		bundle = newBundle
 	}
@@ -271,10 +207,10 @@ func renderResource(r LoadedResource, root string, opts Options) (RenderedResour
 	outDir := filepath.Join(opts.OutDir, resourceName)
 	files, err := writeBundle(outDir, bundle)
 	if err != nil {
-		return RenderedResource{}, err
+		return nil, err
 	}
 
-	return RenderedResource{
+	return &RenderedResource{
 		Name:   resourceName,
 		OutDir: outDir,
 		Files:  files,
@@ -302,7 +238,7 @@ func resolveResource(r *veilv1.Resource, mergedSpec map[string]any) (*veilv1.Res
 // generic map, suitable for embedding in the hook ctx (which round-trips
 // through goccy/go-json).
 func resourceToMap(r *veilv1.Resource) (map[string]any, error) {
-	data, err := resourceJSON.Marshal.Marshal(r)
+	data, err := protoencode.Marshal.Marshal(r)
 	if err != nil {
 		return nil, err
 	}
@@ -313,17 +249,119 @@ func resourceToMap(r *veilv1.Resource) (map[string]any, error) {
 	return out, nil
 }
 
-// invokeHook constructs a Hook from compiled code, calls RenderHook, and
-// always closes the underlying runtime. Emits a "running hook" log line
-// before the call and "hook completed" (or "hook failed") after — all
-// scoped with kind, resource name, and hook name so a multi-resource
-// render is traceable. The hook's own `console.log` calls flow through
-// the same scoped slog logger; warn/error calls are additionally
-// surfaced on the user's terminal via interact.Default() so they're
-// visible without --debug.
-func invokeHook(h *veilv1.Hook, kindName, resourceName string, ctx any, bundle hook.Bundle) (hook.Bundle, error) {
+// applyDependency resolves one declared dependency from the consumer's
+// resource: it looks up the target in the catalog, applies the target's
+// own overlays + schema defaults so `ctx.self` matches what the target
+// would see at render time, then runs every dependent hook the target
+// kind registers for this consumer kind. Each hook receives the
+// consumer's bundle and may mutate it before returning.
+func applyDependency(parent *slog.Logger, bundle hook.Bundle, dep *veilv1.Dependency, consumerKind, consumerName string, consumerMap map[string]any, root string, opts *Options) (hook.Bundle, error) {
+	if opts.Catalog == nil {
+		return nil, fmt.Errorf("no catalog configured")
+	}
+	targetKind := dep.GetKind()
+	targetName := dep.GetName()
+	logger := parent.With("dep_kind", targetKind, "dep_name", targetName)
+
+	logger.Debug("resolving dependency target")
+	target, err := opts.Catalog.LoadResource(targetKind, targetName)
+	if err != nil {
+		return nil, err
+	}
+
+	resolvedTarget, err := resolveTargetResource(target, opts)
+	if err != nil {
+		return nil, fmt.Errorf("resolving target: %w", err)
+	}
+
+	loadedKind, err := opts.Registry.LoadKind(targetKind)
+	if err != nil {
+		return nil, fmt.Errorf("loading target kind: %w", err)
+	}
+
+	var dependentEntry *veilv1.DependentHook
+	for _, d := range loadedKind.Kind.GetHooks().GetDependents() {
+		if d.GetKind() == consumerKind {
+			dependentEntry = d
+			break
+		}
+	}
+	if dependentEntry == nil {
+		return nil, fmt.Errorf("target kind %q does not list %q as a valid consumer", targetKind, consumerKind)
+	}
+
+	targetMap, err := resourceToMap(resolvedTarget)
+	if err != nil {
+		return nil, fmt.Errorf("encoding target: %w", err)
+	}
+
+	var paramsMap map[string]any
+	if p := dep.GetParams(); p != nil {
+		paramsMap = p.AsMap()
+	}
+	depCtx := map[string]any{
+		"self":     targetMap,
+		"consumer": consumerMap,
+		"params":   paramsMap,
+		"vars":     opts.Variables,
+		"root":     root,
+	}
+
+	for _, h := range dependentEntry.GetHooks() {
+		newBundle, err := invokeHook(logger, h, targetKind, targetName, depCtx, bundle)
+		if err != nil {
+			return nil, fmt.Errorf("hook %s: %w", h.GetName(), err)
+		}
+		bundle = newBundle
+	}
+	return bundle, nil
+}
+
+// resolveTargetResource is the dependent-hook side of the same overlay
+// + spec-defaults pipeline that runs for the consumer in
+// renderResource. The resulting Resource is what `ctx.self` exposes to
+// the dependent hook — overlays applied, schema defaults filled in,
+// overlays cleared from metadata. No schema validation: targets are
+// inspected, not re-rendered.
+func resolveTargetResource(r *resource.Resource, opts *Options) (*veilv1.Resource, error) {
+	mergedSpec, err := applyOverlays(opts.FS, r, opts.Variables)
+	if err != nil {
+		return nil, fmt.Errorf("overlays: %w", err)
+	}
+	loaded, err := opts.Registry.LoadKind(r.GetMetadata().GetKind())
+	if err != nil {
+		return nil, fmt.Errorf("loading kind: %w", err)
+	}
+	specSchema, err := loadSpecSubschema(loaded.SchemaPath)
+	if err != nil {
+		return nil, fmt.Errorf("loading spec schema: %w", err)
+	}
+	applySchemaDefaults(mergedSpec, specSchema)
+	return resolveResource(r.Resource, mergedSpec)
+}
+
+// invokeHook constructs a Hook from compiled code, calls RenderHook,
+// and always closes the underlying runtime. The parent logger is
+// extended with the hook name so log lines stay traceable across
+// multi-hook renders. The hook's own console.log calls flow through
+// the same scoped logger; warn/error calls additionally surface on
+// the user's terminal via interact.Default().
+func invokeHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceName string, ctx any, bundle hook.Bundle) (hook.Bundle, error) {
 	hookName := h.GetName()
-	logger := slog.Default().With("kind", kindName, "resource", resourceName, "hook", hookName)
+	logger := parent.With("hook", hookName)
+
+	env, err := resolveHookEnv(h, kindName, resourceName, hookName)
+	if err != nil {
+		return nil, err
+	}
+	if len(env) > 0 {
+		names := make([]string, 0, len(env))
+		for k := range env {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		logger.Info("granting env access", "vars", names)
+	}
 
 	logger.Info("running hook")
 	start := time.Now()
@@ -338,7 +376,12 @@ func invokeHook(h *veilv1.Hook, kindName, resourceName string, ctx any, bundle h
 		}
 	}
 
-	hk, err := hook.New(h.GetContent(), hook.WithLogger(logger), hook.WithDisplay(display))
+	hk, err := hook.New(
+		h.GetContent(),
+		hook.WithLogger(logger),
+		hook.WithDisplay(display),
+		hook.WithEnv(env),
+	)
 	if err != nil {
 		logger.Error("hook failed", "stage", "init", "duration", time.Since(start).String(), "err", err.Error())
 		return nil, err
@@ -354,47 +397,64 @@ func invokeHook(h *veilv1.Hook, kindName, resourceName string, ctx any, bundle h
 	return out, nil
 }
 
-// applyOverlays compiles and evaluates each overlay's CEL match expression
-// against the resolved variables. Every matching overlay's spec is deep-merged
-// into the base spec in declaration order.
-func applyOverlays(r LoadedResource, vars map[string]any) (map[string]any, error) {
+// resolveHookEnv reads each declared env var off the host. If any
+// declared var is unset, the call returns an aggregated error listing
+// every missing name with its description so the user can fix them all
+// in one pass. The returned map contains only what the hook declared
+// (and only what was actually present), so the runtime exposure layer
+// can blindly forward it.
+func resolveHookEnv(h *veilv1.Hook, kindName, resourceName, hookName string) (map[string]string, error) {
+	declared := h.GetAccess().GetEnv()
+	if len(declared) == 0 {
+		return nil, nil
+	}
+	env := make(map[string]string, len(declared))
+	var missing []string
+	for _, e := range declared {
+		name := e.GetName()
+		if v, ok := os.LookupEnv(name); ok {
+			env[name] = v
+			continue
+		}
+		missing = append(missing, fmt.Sprintf("  - %s: %s", name, e.GetDescription()))
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf(
+			"hook %s/%s/%s requires environment variables that are not set on the host:\n%s",
+			kindName, resourceName, hookName, strings.Join(missing, "\n"),
+		)
+	}
+	return env, nil
+}
+
+// applyOverlays evaluates each overlay's `if` map against the resolved
+// variables. The overlay applies when every (varName, regex) entry
+// matches the corresponding variable's stringified value; matching
+// overlays' specs are deep-merged into the base spec in declaration
+// order.
+func applyOverlays(fsys fs.FS, r *resource.Resource, vars map[string]any) (map[string]any, error) {
 	baseSpec := r.GetSpec().AsMap()
 	overlays := r.GetMetadata().GetOverlays()
 	if len(overlays) == 0 {
 		return baseSpec, nil
 	}
 
-	env, err := cel.NewEnv(
-		cel.Variable("vars", cel.MapType(cel.StringType, cel.DynType)),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("building CEL env: %w", err)
-	}
-
-	activation := map[string]any{"vars": vars}
 	result := baseSpec
-	for _, ov := range overlays {
-		ast, iss := env.Compile(ov.GetMatch())
-		if iss.Err() != nil {
-			return nil, fmt.Errorf("overlay %q: %w", ov.GetMatch(), iss.Err())
-		}
-		prg, err := env.Program(ast)
+	for i, ov := range overlays {
+		matches, err := overlayMatches(ov.GetIf(), vars)
 		if err != nil {
-			return nil, fmt.Errorf("overlay %q: %w", ov.GetMatch(), err)
+			return nil, fmt.Errorf("overlay[%d]: %w", i, err)
 		}
-		out, _, err := prg.Eval(activation)
-		if err != nil {
-			return nil, fmt.Errorf("overlay %q: %w", ov.GetMatch(), err)
-		}
-		if !isTrue(out) {
+		if !matches {
 			continue
 		}
 
-		overlayPath := ov.GetFile()
-		if !filepath.IsAbs(overlayPath) {
-			overlayPath = filepath.Join(filepath.Dir(r.Path), overlayPath)
-		}
-		data, err := os.ReadFile(overlayPath)
+		// Overlay paths are fs.FS-relative (forward-slash, no leading
+		// dot), resolved against the resource's own directory so a
+		// resource at "services/api/api.json" with overlay "./staging.json"
+		// reads "services/api/staging.json".
+		overlayPath := path.Join(path.Dir(r.Path), filepath.ToSlash(ov.GetFile()))
+		data, err := fs.ReadFile(fsys, overlayPath)
 		if err != nil {
 			return nil, fmt.Errorf("reading overlay %s: %w", overlayPath, err)
 		}
@@ -407,6 +467,46 @@ func applyOverlays(r LoadedResource, vars map[string]any) (map[string]any, error
 		result = deepMerge(result, overlayDoc.Spec)
 	}
 	return result, nil
+}
+
+// overlayMatches reports whether every (varName, regex) entry in the
+// overlay's `if` map matches the corresponding resolved variable's
+// stringified value. An empty map is treated as "always matches".
+// Errors when a referenced variable is not declared, or when a pattern
+// fails to compile.
+func overlayMatches(conditions map[string]string, vars map[string]any) (bool, error) {
+	for name, pattern := range conditions {
+		val, ok := vars[name]
+		if !ok {
+			return false, fmt.Errorf("if[%q]: variable not declared in veil.json", name)
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return false, fmt.Errorf("if[%q]: invalid regex %q: %w", name, pattern, err)
+		}
+		if !re.MatchString(stringifyVar(val)) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// stringifyVar renders a resolved variable value as the string the
+// overlay regex matches against. Strings pass through; numbers and
+// bools format via fmt's defaults so callers can write
+// `replicas: "^[3-9]$"` against a numeric variable.
+func stringifyVar(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case bool:
+		if x {
+			return "true"
+		}
+		return "false"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 // loadSpecSubschema reads the composite kind.schema.json and returns its
@@ -583,14 +683,4 @@ func deepMerge(base, overlay map[string]any) map[string]any {
 		out[k] = cloneValue(v)
 	}
 	return out
-}
-
-func isTrue(v ref.Val) bool {
-	if v == nil {
-		return false
-	}
-	if b, ok := v.(types.Bool); ok {
-		return bool(b)
-	}
-	return false
 }

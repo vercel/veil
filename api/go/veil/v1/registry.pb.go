@@ -34,17 +34,12 @@ type Kind struct {
 	// Source files keyed by path relative to the kind directory. Values are
 	// the raw file contents.
 	Sources map[string]string `protobuf:"bytes,2,rep,name=sources,proto3" json:"sources,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Compiled hooks grouped by lifecycle point (matches
-	// KindDefinition.hooks).
+	// Compiled hooks grouped by lifecycle point — render hooks plus the
+	// per-consumer dependent block. Mirrors KindDefinition.hooks.
 	Hooks *Hooks `protobuf:"bytes,3,opt,name=hooks,proto3" json:"hooks,omitempty"`
 	// Input variable declarations copied from veil.json. Consumers resolve
 	// values from --var flags, VEIL_VAR_* env vars, or the declared default.
-	Variables map[string]*Variable `protobuf:"bytes,4,rep,name=variables,proto3" json:"variables,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Compiled per-consumer dependent entries (one per consumer kind that
-	// may depend on this resource). Carries bundled hook code plus the
-	// inlined params JSON Schema so render does not need access to the
-	// original kind directory.
-	Dependents    []*Dependent `protobuf:"bytes,5,rep,name=dependents,proto3" json:"dependents,omitempty"`
+	Variables     map[string]*Variable `protobuf:"bytes,4,rep,name=variables,proto3" json:"variables,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -107,19 +102,17 @@ func (x *Kind) GetVariables() map[string]*Variable {
 	return nil
 }
 
-func (x *Kind) GetDependents() []*Dependent {
-	if x != nil {
-		return x.Dependents
-	}
-	return nil
-}
-
 // Hooks mirrors KindDefinition.hooks but holds compiled/bundled hook
 // entries rather than paths.
 type Hooks struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Compiled hooks that run during `veil render`, in declaration order.
-	Render        []*Hook `protobuf:"bytes,1,rep,name=render,proto3" json:"render,omitempty"`
+	Render []*Hook `protobuf:"bytes,1,rep,name=render,proto3" json:"render,omitempty"`
+	// Compiled per-consumer dependent entries (one per consumer kind that
+	// may depend on this resource). Carries bundled hook code plus the
+	// inlined params JSON Schema so render does not need access to the
+	// original kind directory.
+	Dependents    []*DependentHook `protobuf:"bytes,2,rep,name=dependents,proto3" json:"dependents,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -157,6 +150,13 @@ func (*Hooks) Descriptor() ([]byte, []int) {
 func (x *Hooks) GetRender() []*Hook {
 	if x != nil {
 		return x.Render
+	}
+	return nil
+}
+
+func (x *Hooks) GetDependents() []*DependentHook {
+	if x != nil {
+		return x.Dependents
 	}
 	return nil
 }
@@ -276,14 +276,20 @@ func (x *RegistryEntry) GetSchema() string {
 	return ""
 }
 
-// Hook is a single hook bundled and minified from its TS/JS source, with
-// all of its imports resolved and inlined.
+// Hook is a single hook bundled and minified from its TS/JS source,
+// with all of its imports resolved and inlined. Used for both render-
+// lifecycle entries (Hooks.render) and dependent-lifecycle entries
+// (DependentHook.hooks); the shape is the same in either context.
 type Hook struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Relative path from the kind directory (e.g. "hooks/hello-world.ts").
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Minified JavaScript bundle, ES module format.
-	Content       string `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	Content string `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	// Host resources this hook is permitted to reach (carried forward
+	// from the kind.json hook entry). The render runner pre-flights each
+	// declared resource and exposes only what's listed to the hook.
+	Access        *HookAccess `protobuf:"bytes,3,opt,name=access,proto3" json:"access,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -332,10 +338,18 @@ func (x *Hook) GetContent() string {
 	return ""
 }
 
-// Dependent is the compiled form of a KindDefinition.dependents entry: each
-// hook source is bundled, and the params JSON Schema is embedded inline so
-// rendering does not need access to the original kind directory.
-type Dependent struct {
+func (x *Hook) GetAccess() *HookAccess {
+	if x != nil {
+		return x.Access
+	}
+	return nil
+}
+
+// DependentHook is the compiled form of a KindDefinition.dependents
+// entry: each hook source is bundled, and the params JSON Schema is
+// embedded inline so rendering does not need access to the original
+// kind directory.
+type DependentHook struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The consumer kind that may depend on this resource (matches
 	// DependentDefinition.kind).
@@ -348,20 +362,20 @@ type Dependent struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Dependent) Reset() {
-	*x = Dependent{}
+func (x *DependentHook) Reset() {
+	*x = DependentHook{}
 	mi := &file_veil_v1_registry_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Dependent) String() string {
+func (x *DependentHook) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Dependent) ProtoMessage() {}
+func (*DependentHook) ProtoMessage() {}
 
-func (x *Dependent) ProtoReflect() protoreflect.Message {
+func (x *DependentHook) ProtoReflect() protoreflect.Message {
 	mi := &file_veil_v1_registry_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -373,26 +387,26 @@ func (x *Dependent) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Dependent.ProtoReflect.Descriptor instead.
-func (*Dependent) Descriptor() ([]byte, []int) {
+// Deprecated: Use DependentHook.ProtoReflect.Descriptor instead.
+func (*DependentHook) Descriptor() ([]byte, []int) {
 	return file_veil_v1_registry_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *Dependent) GetKind() string {
+func (x *DependentHook) GetKind() string {
 	if x != nil {
 		return x.Kind
 	}
 	return ""
 }
 
-func (x *Dependent) GetHooks() []*Hook {
+func (x *DependentHook) GetHooks() []*Hook {
 	if x != nil {
 		return x.Hooks
 	}
 	return nil
 }
 
-func (x *Dependent) GetParamsSchema() string {
+func (x *DependentHook) GetParamsSchema() string {
 	if x != nil {
 		return x.ParamsSchema
 	}
@@ -403,24 +417,24 @@ var File_veil_v1_registry_proto protoreflect.FileDescriptor
 
 const file_veil_v1_registry_proto_rawDesc = "" +
 	"\n" +
-	"\x16veil/v1/registry.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x14veil/v1/config.proto\"\xff\x02\n" +
+	"\x16veil/v1/registry.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x14veil/v1/config.proto\"\xcb\x02\n" +
 	"\x04Kind\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x124\n" +
 	"\asources\x18\x02 \x03(\v2\x1a.veil.v1.Kind.SourcesEntryR\asources\x12$\n" +
 	"\x05hooks\x18\x03 \x01(\v2\x0e.veil.v1.HooksR\x05hooks\x12:\n" +
-	"\tvariables\x18\x04 \x03(\v2\x1c.veil.v1.Kind.VariablesEntryR\tvariables\x122\n" +
-	"\n" +
-	"dependents\x18\x05 \x03(\v2\x12.veil.v1.DependentR\n" +
-	"dependents\x1a:\n" +
+	"\tvariables\x18\x04 \x03(\v2\x1c.veil.v1.Kind.VariablesEntryR\tvariables\x1a:\n" +
 	"\fSourcesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aO\n" +
 	"\x0eVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +
-	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\".\n" +
+	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\"f\n" +
 	"\x05Hooks\x12%\n" +
-	"\x06render\x18\x01 \x03(\v2\r.veil.v1.HookR\x06render\"\x90\x01\n" +
+	"\x06render\x18\x01 \x03(\v2\r.veil.v1.HookR\x06render\x126\n" +
+	"\n" +
+	"dependents\x18\x02 \x03(\v2\x16.veil.v1.DependentHookR\n" +
+	"dependents\"\x90\x01\n" +
 	"\bRegistry\x122\n" +
 	"\x05kinds\x18\x01 \x03(\v2\x1c.veil.v1.Registry.KindsEntryR\x05kinds\x1aP\n" +
 	"\n" +
@@ -433,13 +447,14 @@ const file_veil_v1_registry_proto_rawDesc = "" +
 	"\x04path\x18\x02 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04path\x12\"\n" +
 	"\x06schema\x18\x03 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x06schema\"L\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x06schema\"y\n" +
 	"\x04Hook\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x12$\n" +
 	"\acontent\x18\x02 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\acontent\"\x8b\x01\n" +
-	"\tDependent\x12\x1e\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\acontent\x12+\n" +
+	"\x06access\x18\x03 \x01(\v2\x13.veil.v1.HookAccessR\x06access\"\x8f\x01\n" +
+	"\rDependentHook\x12\x1e\n" +
 	"\x04kind\x18\x01 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04kind\x12-\n" +
 	"\x05hooks\x18\x02 \x03(\v2\r.veil.v1.HookB\b\xbaH\x05\x92\x01\x02\b\x01R\x05hooks\x12/\n" +
@@ -466,27 +481,29 @@ var file_veil_v1_registry_proto_goTypes = []any{
 	(*Registry)(nil),      // 2: veil.v1.Registry
 	(*RegistryEntry)(nil), // 3: veil.v1.RegistryEntry
 	(*Hook)(nil),          // 4: veil.v1.Hook
-	(*Dependent)(nil),     // 5: veil.v1.Dependent
+	(*DependentHook)(nil), // 5: veil.v1.DependentHook
 	nil,                   // 6: veil.v1.Kind.SourcesEntry
 	nil,                   // 7: veil.v1.Kind.VariablesEntry
 	nil,                   // 8: veil.v1.Registry.KindsEntry
-	(*Variable)(nil),      // 9: veil.v1.Variable
+	(*HookAccess)(nil),    // 9: veil.v1.HookAccess
+	(*Variable)(nil),      // 10: veil.v1.Variable
 }
 var file_veil_v1_registry_proto_depIdxs = []int32{
-	6, // 0: veil.v1.Kind.sources:type_name -> veil.v1.Kind.SourcesEntry
-	1, // 1: veil.v1.Kind.hooks:type_name -> veil.v1.Hooks
-	7, // 2: veil.v1.Kind.variables:type_name -> veil.v1.Kind.VariablesEntry
-	5, // 3: veil.v1.Kind.dependents:type_name -> veil.v1.Dependent
-	4, // 4: veil.v1.Hooks.render:type_name -> veil.v1.Hook
-	8, // 5: veil.v1.Registry.kinds:type_name -> veil.v1.Registry.KindsEntry
-	4, // 6: veil.v1.Dependent.hooks:type_name -> veil.v1.Hook
-	9, // 7: veil.v1.Kind.VariablesEntry.value:type_name -> veil.v1.Variable
-	3, // 8: veil.v1.Registry.KindsEntry.value:type_name -> veil.v1.RegistryEntry
-	9, // [9:9] is the sub-list for method output_type
-	9, // [9:9] is the sub-list for method input_type
-	9, // [9:9] is the sub-list for extension type_name
-	9, // [9:9] is the sub-list for extension extendee
-	0, // [0:9] is the sub-list for field type_name
+	6,  // 0: veil.v1.Kind.sources:type_name -> veil.v1.Kind.SourcesEntry
+	1,  // 1: veil.v1.Kind.hooks:type_name -> veil.v1.Hooks
+	7,  // 2: veil.v1.Kind.variables:type_name -> veil.v1.Kind.VariablesEntry
+	4,  // 3: veil.v1.Hooks.render:type_name -> veil.v1.Hook
+	5,  // 4: veil.v1.Hooks.dependents:type_name -> veil.v1.DependentHook
+	8,  // 5: veil.v1.Registry.kinds:type_name -> veil.v1.Registry.KindsEntry
+	9,  // 6: veil.v1.Hook.access:type_name -> veil.v1.HookAccess
+	4,  // 7: veil.v1.DependentHook.hooks:type_name -> veil.v1.Hook
+	10, // 8: veil.v1.Kind.VariablesEntry.value:type_name -> veil.v1.Variable
+	3,  // 9: veil.v1.Registry.KindsEntry.value:type_name -> veil.v1.RegistryEntry
+	10, // [10:10] is the sub-list for method output_type
+	10, // [10:10] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_veil_v1_registry_proto_init() }

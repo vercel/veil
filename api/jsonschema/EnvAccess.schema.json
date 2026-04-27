@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "EnvAccess names a single host environment variable a hook needs.",
+  "properties": {
+    "description": {
+      "description": "A brief description of what this key is used for and why. Surfaced\n when the var is missing so the user can correct the issue.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "name": {
+      "description": "The env var being requested by the hook.",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "description"
+  ],
+  "title": "Env Access",
+  "type": "object"
+}

@@ -206,7 +206,7 @@ func (s *BuildSuite) TestBuildHonorsConfigAndOutFlags() {
 	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "kind.json"), []byte(`{
   "name": "svc",
   "sources": ["./sources/deploy.yaml"],
-  "hooks": {"render": ["./hooks/src/noop.ts"]},
+  "hooks": {"render": [{"path": "./hooks/src/noop.ts"}]},
   "schema": "./schema.json"
 }`), 0644))
 	s.Require().NoError(os.WriteFile(filepath.Join(altRoot, "veil.json"), []byte(`{"kinds": ["./.veil/kinds/svc/kind.json"]}`), 0644))

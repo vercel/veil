@@ -27,7 +27,7 @@ func (s *HookSuite) compile(src string) string {
 	root := fstest.MapFS{
 		"hook.ts": &fstest.MapFile{Data: []byte(src)},
 	}
-	code, err := bundle.Bundle("hook.ts", root, bundle.Options{GlobalName: "__veilMod"})
+	code, err := bundle.Bundle("hook.ts", root, &bundle.Options{GlobalName: "__veilMod"})
 	s.Require().NoError(err)
 	return code
 }

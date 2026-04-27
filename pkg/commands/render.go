@@ -15,6 +15,7 @@ import (
 	"github.com/vercel/veil/pkg/logging"
 	"github.com/vercel/veil/pkg/registry"
 	"github.com/vercel/veil/pkg/render"
+	"github.com/vercel/veil/pkg/resource"
 	"github.com/vercel/veil/pkg/variables"
 )
 
@@ -29,12 +30,12 @@ func Render() *cli.Command {
 
 	return &cli.Command{
 		Name:      "render",
-		Usage:     "Render deployment configuration",
+		Usage:     "Render a single resource",
 		UsageText: "veil render <path> [flags]",
 		Arguments: []cli.Argument{
 			&cli.StringArg{
 				Name:      "path",
-				UsageText: "Path to a resource file (*.json) or directory of resources",
+				UsageText: "Path to the resource JSON file to render",
 			},
 		},
 		Flags: []cli.Flag{
@@ -52,7 +53,7 @@ func Render() *cli.Command {
 				Name:  "registry",
 				Usage: "Path to a compiled registry.json (repeatable)",
 			},
-			&cli.StringSliceFlag{
+			&cli.StringMapFlag{
 				Name:    "var",
 				Aliases: []string{"variable"},
 				Usage:   "Variable binding in name=value form (repeatable)",
@@ -71,7 +72,7 @@ func runRender(ctx context.Context, c *cli.Command) error {
 
 	pathArg := c.StringArg("path")
 	if pathArg == "" {
-		return fmt.Errorf("render: path is required (pass a resource file or directory)")
+		return fmt.Errorf("render: path is required (pass a resource file)")
 	}
 
 	// --debug is a convenience: reconfigure slog to dump everything (including
@@ -96,7 +97,7 @@ func runRender(ctx context.Context, c *cli.Command) error {
 	}
 	p.Infof("Using %s", configPath)
 
-	vars, err := variables.Resolve(reg.Variables, c.StringSlice("var"), os.LookupEnv)
+	vars, err := variables.Resolve(reg.Variables, c.StringMap("var"), os.LookupEnv)
 	if err != nil {
 		return err
 	}
@@ -105,25 +106,52 @@ func runRender(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	kindReg, err := registry.FromIndex(registries)
+	kindReg, err := registry.Load(registries)
 	if err != nil {
 		return err
 	}
 
-	path, err := filepath.Abs(pathArg)
+	projectFS := os.DirFS(reg.Root)
+	handles, err := resource.Discover(ctx, projectFS, reg.ResourceDiscovery.GetPaths())
+	if err != nil {
+		return fmt.Errorf("discovering resources: %w", err)
+	}
+	catalog, err := resource.NewCatalog(projectFS, handles)
+	if err != nil {
+		return fmt.Errorf("building resource catalog: %w", err)
+	}
+
+	absPath, err := filepath.Abs(pathArg)
 	if err != nil {
 		return fmt.Errorf("resolving path: %w", err)
 	}
+	rel, err := filepath.Rel(reg.Root, absPath)
+	if err != nil {
+		return fmt.Errorf("resolving %s against project root: %w", pathArg, err)
+	}
+	if strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("%s is outside the project root %s", pathArg, reg.Root)
+	}
+	relFS := filepath.ToSlash(rel)
+
 	outDir, err := filepath.Abs(c.String("out"))
 	if err != nil {
 		return fmt.Errorf("resolving --out: %w", err)
 	}
 
-	result, err := render.Render(render.Options{
-		Dir:       path,
+	entry, err := catalog.LoadByPath(relFS)
+	if err != nil {
+		return err
+	}
+
+	rendered, err := render.Render(&render.Options{
+		Kind:      entry.GetMetadata().GetKind(),
+		Name:      entry.GetMetadata().GetName(),
 		OutDir:    outDir,
 		Root:      reg.Root,
+		FS:        projectFS,
 		Registry:  kindReg,
+		Catalog:   catalog,
 		Variables: vars,
 	})
 	if err != nil {
@@ -141,16 +169,10 @@ func runRender(ctx context.Context, c *cli.Command) error {
 		return path
 	}
 
-	if len(result.Rendered) == 0 {
-		p.Warn("no resources found in " + displayPath(path))
-		return nil
-	}
-	for _, r := range result.Rendered {
-		p.Successf("Rendered %s", r.Name)
-		p.KeyValue("out", displayPath(r.OutDir))
-		for _, f := range r.Files {
-			p.Mutedf("  %s", f)
-		}
+	p.Successf("Rendered %s", rendered.Name)
+	p.KeyValue("out", displayPath(rendered.OutDir))
+	for _, f := range rendered.Files {
+		p.Mutedf("  %s", f)
 	}
 	return nil
 }

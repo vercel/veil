@@ -89,7 +89,7 @@ func (x VariableType_Enum) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use VariableType_Enum.Descriptor instead.
 func (VariableType_Enum) EnumDescriptor() ([]byte, []int) {
-	return file_veil_v1_config_proto_rawDescGZIP(), []int{1, 0}
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{2, 0}
 }
 
 // VeilConfigDefinition is the contents of .veil/veil.json — the
@@ -106,9 +106,12 @@ type VeilConfigDefinition struct {
 	// Paths to additional compiled registry.json files to load at render
 	// time. Local builds are discovered automatically; use this to wire in
 	// shared or externally-distributed registries.
-	Registries    []string `protobuf:"bytes,3,rep,name=registries,proto3" json:"registries,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Registries []string `protobuf:"bytes,3,rep,name=registries,proto3" json:"registries,omitempty"`
+	// Where to find the resource JSON files that make up the project's
+	// catalog. Used at render time to resolve dependency targets.
+	ResourceDiscovery *ResourceDiscovery `protobuf:"bytes,4,opt,name=resource_discovery,json=resourceDiscovery,proto3" json:"resource_discovery,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *VeilConfigDefinition) Reset() {
@@ -162,6 +165,66 @@ func (x *VeilConfigDefinition) GetRegistries() []string {
 	return nil
 }
 
+func (x *VeilConfigDefinition) GetResourceDiscovery() *ResourceDiscovery {
+	if x != nil {
+		return x.ResourceDiscovery
+	}
+	return nil
+}
+
+// ResourceDiscovery declares how `veil render` builds its catalog of
+// resources for dependency resolution. Each path is a glob expression
+// (`**` matches across directory boundaries via the doublestar library)
+// pointing at the JSON files that should be indexed. Relative patterns
+// resolve against the veil.json directory.
+type ResourceDiscovery struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Glob patterns identifying resource JSON files. Files that don't
+	// parse as a Resource shape (overlays, fragments, schemas) are
+	// skipped silently; duplicate (kind, name) pairs across matches are
+	// rejected.
+	Paths         []string `protobuf:"bytes,1,rep,name=paths,proto3" json:"paths,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResourceDiscovery) Reset() {
+	*x = ResourceDiscovery{}
+	mi := &file_veil_v1_config_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResourceDiscovery) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResourceDiscovery) ProtoMessage() {}
+
+func (x *ResourceDiscovery) ProtoReflect() protoreflect.Message {
+	mi := &file_veil_v1_config_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResourceDiscovery.ProtoReflect.Descriptor instead.
+func (*ResourceDiscovery) Descriptor() ([]byte, []int) {
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ResourceDiscovery) GetPaths() []string {
+	if x != nil {
+		return x.Paths
+	}
+	return nil
+}
+
 // VariableType is a wrapper message that holds the Variable.type enum.
 // Wrapping it in a message gives the Go-generated identifiers a clean
 // nested form (VariableType_Enum_*) and lets the JSON wire format use
@@ -175,7 +238,7 @@ type VariableType struct {
 
 func (x *VariableType) Reset() {
 	*x = VariableType{}
-	mi := &file_veil_v1_config_proto_msgTypes[1]
+	mi := &file_veil_v1_config_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -187,7 +250,7 @@ func (x *VariableType) String() string {
 func (*VariableType) ProtoMessage() {}
 
 func (x *VariableType) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_config_proto_msgTypes[1]
+	mi := &file_veil_v1_config_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -200,13 +263,14 @@ func (x *VariableType) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VariableType.ProtoReflect.Descriptor instead.
 func (*VariableType) Descriptor() ([]byte, []int) {
-	return file_veil_v1_config_proto_rawDescGZIP(), []int{1}
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{2}
 }
 
-// Variable declares a named input available to overlay CEL expressions.
-// Lives in both the local VeilConfigDefinition and the published Kind
-// (carried verbatim through compilation), so it has no Definition
-// suffix — the same shape applies in both contexts.
+// Variable declares a named input available to overlay regex matches
+// (and to hooks via the render context). Lives in both the local
+// VeilConfigDefinition and the published Kind (carried verbatim
+// through compilation), so it has no Definition suffix — the same
+// shape applies in both contexts.
 type Variable struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Declared type. Must be one of the legal VariableType.Enum values
@@ -231,7 +295,7 @@ type Variable struct {
 
 func (x *Variable) Reset() {
 	*x = Variable{}
-	mi := &file_veil_v1_config_proto_msgTypes[2]
+	mi := &file_veil_v1_config_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -243,7 +307,7 @@ func (x *Variable) String() string {
 func (*Variable) ProtoMessage() {}
 
 func (x *Variable) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_config_proto_msgTypes[2]
+	mi := &file_veil_v1_config_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -256,7 +320,7 @@ func (x *Variable) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Variable.ProtoReflect.Descriptor instead.
 func (*Variable) Descriptor() ([]byte, []int) {
-	return file_veil_v1_config_proto_rawDescGZIP(), []int{2}
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Variable) GetType() VariableType_Enum {
@@ -295,21 +359,20 @@ type KindDefinition struct {
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Source configuration files that make up the kind.
 	Sources []string `protobuf:"bytes,2,rep,name=sources,proto3" json:"sources,omitempty"`
-	// Hook code files grouped by lifecycle point.
+	// Hook code files grouped by lifecycle point. The dependents block —
+	// the per-consumer hooks that fire when another kind declares a
+	// dependency on this one — also lives under `hooks`, since it is
+	// ultimately just another hook lifecycle.
 	Hooks *HooksDefinition `protobuf:"bytes,3,opt,name=hooks,proto3" json:"hooks,omitempty"`
 	// Path to the JSON Schema that defines the spec shape.
-	Schema string `protobuf:"bytes,5,opt,name=schema,proto3" json:"schema,omitempty"`
-	// Consumer kinds that may declare a dependency on this resource. Each
-	// entry binds a consumer kind to per-consumer hook(s) and a params
-	// schema. See SPEC.md "Dependencies" for the full design.
-	Dependents    []*DependentDefinition `protobuf:"bytes,6,rep,name=dependents,proto3" json:"dependents,omitempty"`
+	Schema        string `protobuf:"bytes,5,opt,name=schema,proto3" json:"schema,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *KindDefinition) Reset() {
 	*x = KindDefinition{}
-	mi := &file_veil_v1_config_proto_msgTypes[3]
+	mi := &file_veil_v1_config_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -321,7 +384,7 @@ func (x *KindDefinition) String() string {
 func (*KindDefinition) ProtoMessage() {}
 
 func (x *KindDefinition) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_config_proto_msgTypes[3]
+	mi := &file_veil_v1_config_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -334,7 +397,7 @@ func (x *KindDefinition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KindDefinition.ProtoReflect.Descriptor instead.
 func (*KindDefinition) Descriptor() ([]byte, []int) {
-	return file_veil_v1_config_proto_rawDescGZIP(), []int{3}
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *KindDefinition) GetName() string {
@@ -365,13 +428,6 @@ func (x *KindDefinition) GetSchema() string {
 	return ""
 }
 
-func (x *KindDefinition) GetDependents() []*DependentDefinition {
-	if x != nil {
-		return x.Dependents
-	}
-	return nil
-}
-
 // HooksDefinition groups a kind's hook files by lifecycle point. Each
 // field is an ordered list; the order determines invocation order at
 // that lifecycle point. Additional lifecycle points will be added as
@@ -380,15 +436,22 @@ func (x *KindDefinition) GetDependents() []*DependentDefinition {
 type HooksDefinition struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Hooks run during `veil render` (each exports a Hook whose optional
-	// `renderHook(ctx, fs)` transforms the bundle).
-	Render        []string `protobuf:"bytes,1,rep,name=render,proto3" json:"render,omitempty"`
+	// `renderHook(ctx, fs)` transforms the bundle). Each entry is an
+	// object with a required `path` plus optional `access` declaring the
+	// host resources the hook may read.
+	Render []*RenderHookDefinition `protobuf:"bytes,1,rep,name=render,proto3" json:"render,omitempty"`
+	// Per-consumer dependent hooks. Each entry binds a consumer kind to
+	// hook(s) that run when a resource of that kind declares a
+	// dependency on this one, plus the params schema the consumer must
+	// supply. See SPEC.md "Dependencies" for the full design.
+	Dependents    []*DependentDefinition `protobuf:"bytes,2,rep,name=dependents,proto3" json:"dependents,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *HooksDefinition) Reset() {
 	*x = HooksDefinition{}
-	mi := &file_veil_v1_config_proto_msgTypes[4]
+	mi := &file_veil_v1_config_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -400,7 +463,7 @@ func (x *HooksDefinition) String() string {
 func (*HooksDefinition) ProtoMessage() {}
 
 func (x *HooksDefinition) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_config_proto_msgTypes[4]
+	mi := &file_veil_v1_config_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -413,28 +476,201 @@ func (x *HooksDefinition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HooksDefinition.ProtoReflect.Descriptor instead.
 func (*HooksDefinition) Descriptor() ([]byte, []int) {
-	return file_veil_v1_config_proto_rawDescGZIP(), []int{4}
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *HooksDefinition) GetRender() []string {
+func (x *HooksDefinition) GetRender() []*RenderHookDefinition {
 	if x != nil {
 		return x.Render
 	}
 	return nil
 }
 
+func (x *HooksDefinition) GetDependents() []*DependentDefinition {
+	if x != nil {
+		return x.Dependents
+	}
+	return nil
+}
+
+// RenderHookDefinition is a single render-hook entry in kind.json: a
+// path to the hook source file plus optional `access` declaring the
+// host resources the hook may read.
+type RenderHookDefinition struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Path to the hook source file. Resolved relative to the enclosing
+	// kind.json file.
+	Path string `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	// Optional declaration of host resources this hook needs (env vars,
+	// and eventually filesystem / network as they're added).
+	Access        *HookAccess `protobuf:"bytes,2,opt,name=access,proto3" json:"access,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenderHookDefinition) Reset() {
+	*x = RenderHookDefinition{}
+	mi := &file_veil_v1_config_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenderHookDefinition) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenderHookDefinition) ProtoMessage() {}
+
+func (x *RenderHookDefinition) ProtoReflect() protoreflect.Message {
+	mi := &file_veil_v1_config_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenderHookDefinition.ProtoReflect.Descriptor instead.
+func (*RenderHookDefinition) Descriptor() ([]byte, []int) {
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *RenderHookDefinition) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *RenderHookDefinition) GetAccess() *HookAccess {
+	if x != nil {
+		return x.Access
+	}
+	return nil
+}
+
+// HookAccess declares the host resources a hook is allowed to reach. The
+// runner enforces these at render time: required env vars must be
+// present on the host, and the hook receives only what it declared.
+type HookAccess struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Environment variables the hook intends to read. Each entry must
+	// describe both the name and why it's needed; the description is
+	// surfaced in pre-flight error messages when the var is missing.
+	Env           []*EnvAccess `protobuf:"bytes,1,rep,name=env,proto3" json:"env,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HookAccess) Reset() {
+	*x = HookAccess{}
+	mi := &file_veil_v1_config_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HookAccess) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HookAccess) ProtoMessage() {}
+
+func (x *HookAccess) ProtoReflect() protoreflect.Message {
+	mi := &file_veil_v1_config_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HookAccess.ProtoReflect.Descriptor instead.
+func (*HookAccess) Descriptor() ([]byte, []int) {
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *HookAccess) GetEnv() []*EnvAccess {
+	if x != nil {
+		return x.Env
+	}
+	return nil
+}
+
+// EnvAccess names a single host environment variable a hook needs.
+type EnvAccess struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The env var being requested by the hook.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// A brief description of what this key is used for and why. Surfaced
+	// when the var is missing so the user can correct the issue.
+	Description   string `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EnvAccess) Reset() {
+	*x = EnvAccess{}
+	mi := &file_veil_v1_config_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EnvAccess) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EnvAccess) ProtoMessage() {}
+
+func (x *EnvAccess) ProtoReflect() protoreflect.Message {
+	mi := &file_veil_v1_config_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EnvAccess.ProtoReflect.Descriptor instead.
+func (*EnvAccess) Descriptor() ([]byte, []int) {
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *EnvAccess) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *EnvAccess) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
 // DependentDefinition declares a consumer kind that may depend on this
-// kind, the hook(s) that run when such a dependency is rendered, and the
-// JSON Schema describing the `params` the consumer must supply.
+// kind, the hook file path(s) that run when such a dependency is
+// rendered, and the JSON Schema describing the `params` the consumer
+// must supply.
 type DependentDefinition struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The consumer kind that may depend on this resource.
 	Kind string `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
-	// Hook code files that run when a resource of `kind` declares a
+	// Paths to hook files that run when a resource of `kind` declares a
 	// dependency on this resource. At least one entry is required. Hooks
 	// run in declaration order. Paths are resolved relative to the
 	// enclosing kind.json file.
-	Hooks []string `protobuf:"bytes,2,rep,name=hooks,proto3" json:"hooks,omitempty"`
+	Paths []string `protobuf:"bytes,2,rep,name=paths,proto3" json:"paths,omitempty"`
 	// Path to the JSON Schema describing the `params` object that the
 	// consumer must supply when declaring this dependency. Resolved
 	// relative to the enclosing kind.json file.
@@ -445,7 +681,7 @@ type DependentDefinition struct {
 
 func (x *DependentDefinition) Reset() {
 	*x = DependentDefinition{}
-	mi := &file_veil_v1_config_proto_msgTypes[5]
+	mi := &file_veil_v1_config_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -457,7 +693,7 @@ func (x *DependentDefinition) String() string {
 func (*DependentDefinition) ProtoMessage() {}
 
 func (x *DependentDefinition) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_config_proto_msgTypes[5]
+	mi := &file_veil_v1_config_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -470,7 +706,7 @@ func (x *DependentDefinition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DependentDefinition.ProtoReflect.Descriptor instead.
 func (*DependentDefinition) Descriptor() ([]byte, []int) {
-	return file_veil_v1_config_proto_rawDescGZIP(), []int{5}
+	return file_veil_v1_config_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *DependentDefinition) GetKind() string {
@@ -480,9 +716,9 @@ func (x *DependentDefinition) GetKind() string {
 	return ""
 }
 
-func (x *DependentDefinition) GetHooks() []string {
+func (x *DependentDefinition) GetPaths() []string {
 	if x != nil {
-		return x.Hooks
+		return x.Paths
 	}
 	return nil
 }
@@ -498,16 +734,19 @@ var File_veil_v1_config_proto protoreflect.FileDescriptor
 
 const file_veil_v1_config_proto_rawDesc = "" +
 	"\n" +
-	"\x14veil/v1/config.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xf3\x01\n" +
+	"\x14veil/v1/config.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xbe\x02\n" +
 	"\x14VeilConfigDefinition\x12\x1e\n" +
 	"\x05kinds\x18\x01 \x03(\tB\b\xbaH\x05\x92\x01\x02\b\x01R\x05kinds\x12J\n" +
 	"\tvariables\x18\x02 \x03(\v2,.veil.v1.VeilConfigDefinition.VariablesEntryR\tvariables\x12\x1e\n" +
 	"\n" +
 	"registries\x18\x03 \x03(\tR\n" +
-	"registries\x1aO\n" +
+	"registries\x12I\n" +
+	"\x12resource_discovery\x18\x04 \x01(\v2\x1a.veil.v1.ResourceDiscoveryR\x11resourceDiscovery\x1aO\n" +
 	"\x0eVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +
-	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\"I\n" +
+	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\")\n" +
+	"\x11ResourceDiscovery\x12\x14\n" +
+	"\x05paths\x18\x01 \x03(\tR\x05paths\"I\n" +
 	"\fVariableType\"9\n" +
 	"\x04Enum\x12\x0f\n" +
 	"\vunspecified\x10\x00\x12\n" +
@@ -523,22 +762,34 @@ const file_veil_v1_config_proto_rawDesc = "" +
 	"\x04enum\x18\x04 \x03(\v2\x16.google.protobuf.ValueR\x04enumB\n" +
 	"\n" +
 	"\b_defaultB\x0e\n" +
-	"\f_description\"\xda\x01\n" +
+	"\f_description\"\x9c\x01\n" +
 	"\x0eKindDefinition\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x12\"\n" +
 	"\asources\x18\x02 \x03(\tB\b\xbaH\x05\x92\x01\x02\b\x01R\asources\x12.\n" +
 	"\x05hooks\x18\x03 \x01(\v2\x18.veil.v1.HooksDefinitionR\x05hooks\x12\x16\n" +
-	"\x06schema\x18\x05 \x01(\tR\x06schema\x12<\n" +
+	"\x06schema\x18\x05 \x01(\tR\x06schema\"\x86\x01\n" +
+	"\x0fHooksDefinition\x125\n" +
+	"\x06render\x18\x01 \x03(\v2\x1d.veil.v1.RenderHookDefinitionR\x06render\x12<\n" +
 	"\n" +
-	"dependents\x18\x06 \x03(\v2\x1c.veil.v1.DependentDefinitionR\n" +
-	"dependents\")\n" +
-	"\x0fHooksDefinition\x12\x16\n" +
-	"\x06render\x18\x01 \x03(\tR\x06render\"\x82\x01\n" +
+	"dependents\x18\x02 \x03(\v2\x1c.veil.v1.DependentDefinitionR\n" +
+	"dependents\"c\n" +
+	"\x14RenderHookDefinition\x12\x1e\n" +
+	"\x04path\x18\x01 \x01(\tB\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04path\x12+\n" +
+	"\x06access\x18\x02 \x01(\v2\x13.veil.v1.HookAccessR\x06access\"2\n" +
+	"\n" +
+	"HookAccess\x12$\n" +
+	"\x03env\x18\x01 \x03(\v2\x12.veil.v1.EnvAccessR\x03env\"Y\n" +
+	"\tEnvAccess\x12\x1e\n" +
+	"\x04name\x18\x01 \x01(\tB\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x12,\n" +
+	"\vdescription\x18\x02 \x01(\tB\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\vdescription\"\x82\x01\n" +
 	"\x13DependentDefinition\x12\x1e\n" +
 	"\x04kind\x18\x01 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04kind\x12\x1e\n" +
-	"\x05hooks\x18\x02 \x03(\tB\b\xbaH\x05\x92\x01\x02\b\x01R\x05hooks\x12+\n" +
+	"\x05paths\x18\x02 \x03(\tB\b\xbaH\x05\x92\x01\x02\b\x01R\x05paths\x12+\n" +
 	"\vparams_path\x18\x03 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\n" +
 	"paramsPathB\x85\x01\n" +
@@ -557,31 +808,39 @@ func file_veil_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_veil_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_veil_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_veil_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_veil_v1_config_proto_goTypes = []any{
 	(VariableType_Enum)(0),       // 0: veil.v1.VariableType.Enum
 	(*VeilConfigDefinition)(nil), // 1: veil.v1.VeilConfigDefinition
-	(*VariableType)(nil),         // 2: veil.v1.VariableType
-	(*Variable)(nil),             // 3: veil.v1.Variable
-	(*KindDefinition)(nil),       // 4: veil.v1.KindDefinition
-	(*HooksDefinition)(nil),      // 5: veil.v1.HooksDefinition
-	(*DependentDefinition)(nil),  // 6: veil.v1.DependentDefinition
-	nil,                          // 7: veil.v1.VeilConfigDefinition.VariablesEntry
-	(*structpb.Value)(nil),       // 8: google.protobuf.Value
+	(*ResourceDiscovery)(nil),    // 2: veil.v1.ResourceDiscovery
+	(*VariableType)(nil),         // 3: veil.v1.VariableType
+	(*Variable)(nil),             // 4: veil.v1.Variable
+	(*KindDefinition)(nil),       // 5: veil.v1.KindDefinition
+	(*HooksDefinition)(nil),      // 6: veil.v1.HooksDefinition
+	(*RenderHookDefinition)(nil), // 7: veil.v1.RenderHookDefinition
+	(*HookAccess)(nil),           // 8: veil.v1.HookAccess
+	(*EnvAccess)(nil),            // 9: veil.v1.EnvAccess
+	(*DependentDefinition)(nil),  // 10: veil.v1.DependentDefinition
+	nil,                          // 11: veil.v1.VeilConfigDefinition.VariablesEntry
+	(*structpb.Value)(nil),       // 12: google.protobuf.Value
 }
 var file_veil_v1_config_proto_depIdxs = []int32{
-	7, // 0: veil.v1.VeilConfigDefinition.variables:type_name -> veil.v1.VeilConfigDefinition.VariablesEntry
-	0, // 1: veil.v1.Variable.type:type_name -> veil.v1.VariableType.Enum
-	8, // 2: veil.v1.Variable.default:type_name -> google.protobuf.Value
-	8, // 3: veil.v1.Variable.enum:type_name -> google.protobuf.Value
-	5, // 4: veil.v1.KindDefinition.hooks:type_name -> veil.v1.HooksDefinition
-	6, // 5: veil.v1.KindDefinition.dependents:type_name -> veil.v1.DependentDefinition
-	3, // 6: veil.v1.VeilConfigDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
-	7, // [7:7] is the sub-list for method output_type
-	7, // [7:7] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+	11, // 0: veil.v1.VeilConfigDefinition.variables:type_name -> veil.v1.VeilConfigDefinition.VariablesEntry
+	2,  // 1: veil.v1.VeilConfigDefinition.resource_discovery:type_name -> veil.v1.ResourceDiscovery
+	0,  // 2: veil.v1.Variable.type:type_name -> veil.v1.VariableType.Enum
+	12, // 3: veil.v1.Variable.default:type_name -> google.protobuf.Value
+	12, // 4: veil.v1.Variable.enum:type_name -> google.protobuf.Value
+	6,  // 5: veil.v1.KindDefinition.hooks:type_name -> veil.v1.HooksDefinition
+	7,  // 6: veil.v1.HooksDefinition.render:type_name -> veil.v1.RenderHookDefinition
+	10, // 7: veil.v1.HooksDefinition.dependents:type_name -> veil.v1.DependentDefinition
+	8,  // 8: veil.v1.RenderHookDefinition.access:type_name -> veil.v1.HookAccess
+	9,  // 9: veil.v1.HookAccess.env:type_name -> veil.v1.EnvAccess
+	4,  // 10: veil.v1.VeilConfigDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_veil_v1_config_proto_init() }
@@ -589,14 +848,14 @@ func file_veil_v1_config_proto_init() {
 	if File_veil_v1_config_proto != nil {
 		return
 	}
-	file_veil_v1_config_proto_msgTypes[2].OneofWrappers = []any{}
+	file_veil_v1_config_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_veil_v1_config_proto_rawDesc), len(file_veil_v1_config_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   7,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

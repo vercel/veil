@@ -21,19 +21,13 @@ message Kind {
   // the raw file contents.
   map<string, string> sources = 2;
 
-  // Compiled hooks grouped by lifecycle point (matches
-  // KindDefinition.hooks).
+  // Compiled hooks grouped by lifecycle point — render hooks plus the
+  // per-consumer dependent block. Mirrors KindDefinition.hooks.
   Hooks hooks = 3;
 
   // Input variable declarations copied from veil.json. Consumers resolve
   // values from --var flags, VEIL_VAR_* env vars, or the declared default.
   map<string, Variable> variables = 4;
-
-  // Compiled per-consumer dependent entries (one per consumer kind that
-  // may depend on this resource). Carries bundled hook code plus the
-  // inlined params JSON Schema so render does not need access to the
-  // original kind directory.
-  repeated Dependent dependents = 5;
 }
 
 // Hooks mirrors KindDefinition.hooks but holds compiled/bundled hook
@@ -41,6 +35,12 @@ message Kind {
 message Hooks {
   // Compiled hooks that run during `veil render`, in declaration order.
   repeated Hook render = 1;
+
+  // Compiled per-consumer dependent entries (one per consumer kind that
+  // may depend on this resource). Carries bundled hook code plus the
+  // inlined params JSON Schema so render does not need access to the
+  // original kind directory.
+  repeated DependentHook dependents = 2;
 }
 
 // Registry is the top-level index written to <out>/registry.json by
@@ -75,8 +75,10 @@ message RegistryEntry {
   ];
 }
 
-// Hook is a single hook bundled and minified from its TS/JS source, with
-// all of its imports resolved and inlined.
+// Hook is a single hook bundled and minified from its TS/JS source,
+// with all of its imports resolved and inlined. Used for both render-
+// lifecycle entries (Hooks.render) and dependent-lifecycle entries
+// (DependentHook.hooks); the shape is the same in either context.
 message Hook {
   // Relative path from the kind directory (e.g. "hooks/hello-world.ts").
   string name = 1 [
@@ -89,12 +91,18 @@ message Hook {
     (buf.validate.field).string.min_len = 1,
     (buf.validate.field).required = true
   ];
+
+  // Host resources this hook is permitted to reach (carried forward
+  // from the kind.json hook entry). The render runner pre-flights each
+  // declared resource and exposes only what's listed to the hook.
+  HookAccess access = 3;
 }
 
-// Dependent is the compiled form of a KindDefinition.dependents entry: each
-// hook source is bundled, and the params JSON Schema is embedded inline so
-// rendering does not need access to the original kind directory.
-message Dependent {
+// DependentHook is the compiled form of a KindDefinition.dependents
+// entry: each hook source is bundled, and the params JSON Schema is
+// embedded inline so rendering does not need access to the original
+// kind directory.
+message DependentHook {
   // The consumer kind that may depend on this resource (matches
   // DependentDefinition.kind).
   string kind = 1 [

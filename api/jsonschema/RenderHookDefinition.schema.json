@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Hook is a single hook bundled and minified from its TS/JS source,\n with all of its imports resolved and inlined. Used for both render-\n lifecycle entries (Hooks.render) and dependent-lifecycle entries\n (DependentHook.hooks); the shape is the same in either context.",
+  "description": "RenderHookDefinition is a single render-hook entry in kind.json: a\n path to the hook source file plus optional `access` declaring the\n host resources the hook may read.",
   "properties": {
     "access": {
       "additionalProperties": false,
-      "description": "Host resources this hook is permitted to reach (carried forward\n from the kind.json hook entry). The render runner pre-flights each\n declared resource and exposes only what's listed to the hook.",
+      "description": "Optional declaration of host resources this hook needs (env vars,\n and eventually filesystem / network as they're added).",
       "properties": {
         "env": {
           "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
@@ -37,21 +37,15 @@
       "title": "Hook Access",
       "type": "object"
     },
-    "content": {
-      "description": "Minified JavaScript bundle, ES module format.",
-      "minLength": 1,
-      "type": "string"
-    },
-    "name": {
-      "description": "Relative path from the kind directory (e.g. \"hooks/hello-world.ts\").",
+    "path": {
+      "description": "Path to the hook source file. Resolved relative to the enclosing\n kind.json file.",
       "minLength": 1,
       "type": "string"
     }
   },
   "required": [
-    "name",
-    "content"
+    "path"
   ],
-  "title": "Hook",
+  "title": "Render Hook Definition",
   "type": "object"
 }

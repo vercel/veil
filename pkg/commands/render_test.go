@@ -54,10 +54,13 @@ func (s *RenderSuite) TestRenderPassesVariableResolutionWithCLIFlag() {
   "variables": { "region": { "type": "string" } }
 }`)
 
-	// With --var provided, variable resolution succeeds and render completes
-	// with zero instances (no errors).
+	// With --var provided, variable resolution succeeds; the next failure
+	// is "resource at . not in catalog" which proves we got past variable
+	// resolution without complaining about region.
 	_, err := s.run("render", ".", "--var", "region=iad1")
-	s.Require().NoError(err)
+	s.Require().Error(err)
+	s.NotContains(err.Error(), "region")
+	s.Contains(err.Error(), "not in catalog")
 }
 
 func (s *RenderSuite) TestRenderRejectsBadTypeCoercion() {
@@ -78,8 +81,12 @@ func (s *RenderSuite) TestRenderResolvesFromEnv() {
 }`)
 
 	s.T().Setenv("VEIL_VAR_REGION", "iad1")
+	// Variable resolution succeeds via env; subsequent error is the
+	// expected "no resource at path" since this test doesn't write one.
 	_, err := s.run("render", ".")
-	s.Require().NoError(err)
+	s.Require().Error(err)
+	s.NotContains(err.Error(), "region")
+	s.Contains(err.Error(), "not in catalog")
 }
 
 func (s *RenderSuite) TestRenderFailsOnBadRegistryPath() {
@@ -108,12 +115,14 @@ func (s *RenderSuite) TestRenderFailsOnDuplicateKindAcrossRegistries() {
 func (s *RenderSuite) TestRenderAutoDiscoversLocalRegistry() {
 	s.writeConfig(`{ "kinds": [] }`)
 
-	// Write a minimal registry.json at the default <root>/.veil/r/registry.json.
+	// Write a minimal registry.json at the default <root>/public/r/registry.json.
 	regPath := filepath.Join(s.root, "public", "r", "registry.json")
 	s.Require().NoError(os.MkdirAll(filepath.Dir(regPath), 0755))
 	s.Require().NoError(os.WriteFile(regPath, []byte(`{"kinds": {}}`), 0644))
 
-	// No resources in cwd → render succeeds with zero output.
+	// Auto-discovery doesn't error during registry load; the only failure
+	// surfaces from the catalog lookup since there's no resource here.
 	_, err := s.run("render", ".")
-	s.Require().NoError(err)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "not in catalog")
 }

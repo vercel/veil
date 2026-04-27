@@ -34,12 +34,12 @@ type LoadedKind struct {
 	SchemaPath string
 }
 
-// FromIndex builds a Registry by reading one or more compiled
+// Load builds a Registry by reading one or more compiled
 // registry.json index files. Index files are tiny (kind name → relative
 // path), so they're loaded eagerly; the kind.json bodies stay on disk
 // until LoadKind is called for a particular name. Duplicate kind names
 // across indices are a hard error.
-func FromIndex(paths []string) (Registry, error) {
+func Load(paths []string) (Registry, error) {
 	loaders := make(map[string]func() (*LoadedKind, error))
 	seen := make(map[string]string)
 	for _, p := range paths {
@@ -94,7 +94,7 @@ func (r *cachedRegistry) LoadKind(name string) (*LoadedKind, error) {
 }
 
 // loadKindFn returns the closure handed to sync.OnceValues for one
-// (kindPath, schemaPath) pair. Pulled out of FromIndex so the loop
+// (kindPath, schemaPath) pair. Pulled out of Load so the loop
 // variables are captured by parameter, not by reference.
 func loadKindFn(name, kindPath, schemaPath string) func() (*LoadedKind, error) {
 	return func() (*LoadedKind, error) {

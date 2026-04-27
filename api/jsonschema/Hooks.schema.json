@@ -3,12 +3,139 @@
   "additionalProperties": false,
   "description": "Hooks mirrors KindDefinition.hooks but holds compiled/bundled hook\n entries rather than paths.",
   "properties": {
+    "dependents": {
+      "description": "Compiled per-consumer dependent entries (one per consumer kind that\n may depend on this resource). Carries bundled hook code plus the\n inlined params JSON Schema so render does not need access to the\n original kind directory.",
+      "items": {
+        "additionalProperties": false,
+        "description": "DependentHook is the compiled form of a KindDefinition.dependents\n entry: each hook source is bundled, and the params JSON Schema is\n embedded inline so rendering does not need access to the original\n kind directory.",
+        "patternProperties": {
+          "^(paramsSchema)$": {
+            "description": "Inlined contents of the params JSON Schema (raw JSON text).",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "properties": {
+          "hooks": {
+            "description": "Compiled, bundled dependent hooks in declaration order.",
+            "items": {
+              "additionalProperties": false,
+              "description": "Hook is a single hook bundled and minified from its TS/JS source,\n with all of its imports resolved and inlined. Used for both render-\n lifecycle entries (Hooks.render) and dependent-lifecycle entries\n (DependentHook.hooks); the shape is the same in either context.",
+              "properties": {
+                "access": {
+                  "additionalProperties": false,
+                  "description": "Host resources this hook is permitted to reach (carried forward\n from the kind.json hook entry). The render runner pre-flights each\n declared resource and exposes only what's listed to the hook.",
+                  "properties": {
+                    "env": {
+                      "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
+                      "items": {
+                        "additionalProperties": false,
+                        "description": "EnvAccess names a single host environment variable a hook needs.",
+                        "properties": {
+                          "description": {
+                            "description": "A brief description of what this key is used for and why. Surfaced\n when the var is missing so the user can correct the issue.",
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "name": {
+                            "description": "The env var being requested by the hook.",
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "description"
+                        ],
+                        "title": "Env Access",
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "title": "Hook Access",
+                  "type": "object"
+                },
+                "content": {
+                  "description": "Minified JavaScript bundle, ES module format.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "name": {
+                  "description": "Relative path from the kind directory (e.g. \"hooks/hello-world.ts\").",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "content"
+              ],
+              "title": "Hook",
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "description": "The consumer kind that may depend on this resource (matches\n DependentDefinition.kind).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "params_schema": {
+            "description": "Inlined contents of the params JSON Schema (raw JSON text).",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "params_schema"
+        ],
+        "title": "Dependent Hook",
+        "type": "object"
+      },
+      "type": "array"
+    },
     "render": {
       "description": "Compiled hooks that run during `veil render`, in declaration order.",
       "items": {
         "additionalProperties": false,
-        "description": "Hook is a single hook bundled and minified from its TS/JS source, with\n all of its imports resolved and inlined.",
+        "description": "Hook is a single hook bundled and minified from its TS/JS source,\n with all of its imports resolved and inlined. Used for both render-\n lifecycle entries (Hooks.render) and dependent-lifecycle entries\n (DependentHook.hooks); the shape is the same in either context.",
         "properties": {
+          "access": {
+            "additionalProperties": false,
+            "description": "Host resources this hook is permitted to reach (carried forward\n from the kind.json hook entry). The render runner pre-flights each\n declared resource and exposes only what's listed to the hook.",
+            "properties": {
+              "env": {
+                "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
+                "items": {
+                  "additionalProperties": false,
+                  "description": "EnvAccess names a single host environment variable a hook needs.",
+                  "properties": {
+                    "description": {
+                      "description": "A brief description of what this key is used for and why. Surfaced\n when the var is missing so the user can correct the issue.",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "The env var being requested by the hook.",
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "description"
+                  ],
+                  "title": "Env Access",
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "title": "Hook Access",
+            "type": "object"
+          },
           "content": {
             "description": "Minified JavaScript bundle, ES module format.",
             "minLength": 1,

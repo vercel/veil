@@ -37,10 +37,11 @@ type Kind struct {
 // discovered from veil.json, plus the project root directory (which is not
 // part of any wire format).
 type Registry struct {
-	Root       string
-	Kinds      []Kind
-	Variables  map[string]*veilv1.Variable
-	Registries []string
+	Root              string
+	Kinds             []*Kind
+	Variables         map[string]*veilv1.Variable
+	Registries        []string
+	ResourceDiscovery *veilv1.ResourceDiscovery
 }
 
 // HasDefault reports whether v has a default value declared.
@@ -162,7 +163,7 @@ func Load(configPath string) (*Registry, error) {
 	}
 
 	root := filepath.Dir(configPath)
-	kinds := make([]Kind, 0, len(cfg.Kinds))
+	kinds := make([]*Kind, 0, len(cfg.Kinds))
 	for _, ref := range cfg.Kinds {
 		path := ref
 		if !filepath.IsAbs(path) {
@@ -178,10 +179,11 @@ func Load(configPath string) (*Registry, error) {
 	}
 
 	return &Registry{
-		Root:       root,
-		Kinds:      kinds,
-		Variables:  cfg.Variables,
-		Registries: cfg.Registries,
+		Root:              root,
+		Kinds:             kinds,
+		Variables:         cfg.Variables,
+		Registries:        cfg.Registries,
+		ResourceDiscovery: cfg.ResourceDiscovery,
 	}, nil
 }
 
@@ -233,8 +235,8 @@ func validateDependents(deps []*veilv1.DependentDefinition) error {
 			return fmt.Errorf("dependents[%d]: duplicate consumer kind %q", i, d.Kind)
 		}
 		seen[d.Kind] = true
-		if len(d.Hooks) == 0 {
-			return fmt.Errorf("dependents[%d] (%q): hooks must be non-empty", i, d.Kind)
+		if len(d.Paths) == 0 {
+			return fmt.Errorf("dependents[%d] (%q): paths must be non-empty", i, d.Kind)
 		}
 		if d.ParamsPath == "" {
 			return fmt.Errorf("dependents[%d] (%q): params_path is required", i, d.Kind)
@@ -277,20 +279,20 @@ func loadConfig(path string) (*veilv1.VeilConfigDefinition, error) {
 	return &cfg, nil
 }
 
-func loadKind(path string) (Kind, error) {
+func loadKind(path string) (*Kind, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Kind{}, err
+		return nil, err
 	}
 	var pk veilv1.KindDefinition
 	if err := protoencode.Unmarshal.Unmarshal(data, &pk); err != nil {
-		return Kind{}, err
+		return nil, err
 	}
 	if pk.Name == "" {
-		return Kind{}, fmt.Errorf("kind at %s is missing required field \"name\"", path)
+		return nil, fmt.Errorf("kind at %s is missing required field \"name\"", path)
 	}
-	if err := validateDependents(pk.Dependents); err != nil {
-		return Kind{}, fmt.Errorf("kind at %s: %w", path, err)
+	if err := validateDependents(pk.GetHooks().GetDependents()); err != nil {
+		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
-	return Kind{KindDefinition: &pk, Dir: filepath.Dir(path)}, nil
+	return &Kind{KindDefinition: &pk, Dir: filepath.Dir(path)}, nil
 }

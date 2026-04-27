@@ -223,6 +223,7 @@ const (
   __ctx.std = globalThis.__veilHost.std;
   __ctx.os = globalThis.__veilHost.os;
   __ctx.fetch = globalThis.__veilHost.fetch;
+  __ctx.env = globalThis.__veilHost.env;
   const __fs = __veilMakeFS(`
 	renderHookScriptSuffix = `);
   let __res = __veilMod.default.render(__ctx, __fs);
@@ -241,6 +242,7 @@ type options struct {
 	logger      *slog.Logger
 	display     func(level, msg string)
 	http        HTTPConfig
+	env         map[string]string
 }
 
 // WithTimeout bounds a single RenderHook call. When the timeout fires the
@@ -272,6 +274,15 @@ func WithDisplay(fn func(level, msg string)) Option {
 // WithHTTP configures the http.request binding exposed to the hook. Zero
 // values within HTTPConfig take their documented defaults.
 func WithHTTP(cfg HTTPConfig) Option { return func(o *options) { o.http = cfg } }
+
+// WithEnv supplies the resolved environment variables a hook is allowed
+// to read. The map is exposed to the hook on `ctx.env` (and `globalThis.env`)
+// as a frozen object — only the keys passed here are visible. Callers
+// are expected to have already validated against the hook's declared
+// `access.env` list (the runner does this in pre-flight).
+func WithEnv(env map[string]string) Option {
+	return func(o *options) { o.env = env }
+}
 
 // Hook is the Go-side abstraction for a veil hook. Every lifecycle method
 // is safe to call; methods whose underlying JS function is not defined
@@ -345,6 +356,22 @@ func New(code string, opts ...Option) (Hook, error) {
 		return nil, fmt.Errorf("installing host namespace: %w", err)
 	}
 	hostVal.Free()
+
+	// Attach the resolved env map onto __veilHost.env, frozen so hook
+	// code can't mutate it. Only keys the hook declared in `access.env`
+	// (and that the host actually has set) reach this point.
+	envJSON, err := json.Marshal(cfg.env)
+	if err != nil {
+		rt.Close()
+		return nil, fmt.Errorf("encoding env map: %w", err)
+	}
+	envScript := "globalThis.__veilHost.env = Object.freeze(" + string(envJSON) + ");"
+	envVal, err := rt.Eval("veil-env.js", qjs.Code(envScript))
+	if err != nil {
+		rt.Close()
+		return nil, fmt.Errorf("installing env: %w", err)
+	}
+	envVal.Free()
 
 	return &jsHook{rt: rt, cfg: cfg, sourcemap: smap}, nil
 }

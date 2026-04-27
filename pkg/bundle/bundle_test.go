@@ -26,7 +26,7 @@ func (s *BundleSuite) TestBundlesRelativeImports() {
 		},
 	}
 
-	out, err := Bundle("main.ts", root, Options{})
+	out, err := Bundle("main.ts", root, &Options{})
 	s.Require().NoError(err)
 	s.Contains(out, "add", "bundle should reference the imported function")
 	s.Contains(out, "sum", "bundle should expose the entrypoint export")
@@ -45,7 +45,7 @@ func (s *BundleSuite) TestBundlesNodeModulesViaPackageJSON() {
 		},
 	}
 
-	out, err := Bundle("main.ts", root, Options{})
+	out, err := Bundle("main.ts", root, &Options{})
 	s.Require().NoError(err)
 	s.Contains(out, "double")
 }
@@ -57,7 +57,7 @@ func (s *BundleSuite) TestIIFEFormatAssignsGlobal() {
 		},
 	}
 
-	out, err := Bundle("main.ts", root, Options{GlobalName: "__veilMod"})
+	out, err := Bundle("main.ts", root, &Options{GlobalName: "__veilMod"})
 	s.Require().NoError(err)
 	s.True(strings.Contains(out, "__veilMod"), "IIFE format should bind the global name")
 }

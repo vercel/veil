@@ -23,6 +23,64 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// Enum of legal file types. The zero value (`definition`) is the
+// historical default — files written before file_type existed are
+// treated exactly as they always have been.
+//
+// buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+// buf:lint:ignore ENUM_VALUE_PREFIX
+// buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
+type FileType_Enum int32
+
+const (
+	// buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+	// buf:lint:ignore ENUM_VALUE_PREFIX
+	// buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
+	FileType_definition FileType_Enum = 0
+	// buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+	// buf:lint:ignore ENUM_VALUE_PREFIX
+	FileType_overlay FileType_Enum = 1
+)
+
+// Enum value maps for FileType_Enum.
+var (
+	FileType_Enum_name = map[int32]string{
+		0: "definition",
+		1: "overlay",
+	}
+	FileType_Enum_value = map[string]int32{
+		"definition": 0,
+		"overlay":    1,
+	}
+)
+
+func (x FileType_Enum) Enum() *FileType_Enum {
+	p := new(FileType_Enum)
+	*p = x
+	return p
+}
+
+func (x FileType_Enum) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (FileType_Enum) Descriptor() protoreflect.EnumDescriptor {
+	return file_veil_v1_resource_proto_enumTypes[0].Descriptor()
+}
+
+func (FileType_Enum) Type() protoreflect.EnumType {
+	return &file_veil_v1_resource_proto_enumTypes[0]
+}
+
+func (x FileType_Enum) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use FileType_Enum.Descriptor instead.
+func (FileType_Enum) EnumDescriptor() ([]byte, []int) {
+	return file_veil_v1_resource_proto_rawDescGZIP(), []int{3, 0}
+}
+
 // Resource is a consumer's instantiation of a kind.
 type Resource struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -157,18 +215,29 @@ func (x *Dependency) GetParams() *structpb.Struct {
 	return nil
 }
 
-// Metadata contains fields common to every resource.
+// Metadata contains fields common to every resource. The presence of
+// `file_type` (and its default of `definition`) lets the catalog tell
+// authoritative resource files apart from overlay fragments without
+// needing to inspect every other field.
 type Metadata struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The name of this resource.
+	// The name of this resource. Required when `file_type` is
+	// `definition` (the default); ignored entirely when `file_type` is
+	// `overlay` — overlays cannot rename their target resource.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// Conditional overlays applied based on CEL expressions.
+	// Conditional overlays applied based on per-variable regex matches.
 	Overlays []*Overlay `protobuf:"bytes,2,rep,name=overlays,proto3" json:"overlays,omitempty"`
 	// Source files that have been ejected for local override.
 	Overrides []*Override `protobuf:"bytes,3,rep,name=overrides,proto3" json:"overrides,omitempty"`
-	// The name of the kind this resource instantiates. Must match a kind
-	// present in one of the loaded registries.
-	Kind          string `protobuf:"bytes,4,opt,name=kind,proto3" json:"kind,omitempty"`
+	// The name of the kind this resource instantiates. Required when
+	// `file_type` is `definition`; ignored when `file_type` is
+	// `overlay` — overlays cannot reassign their target's kind.
+	Kind string `protobuf:"bytes,4,opt,name=kind,proto3" json:"kind,omitempty"`
+	// What kind of file this metadata block belongs to. Defaults to
+	// `definition` when omitted (the historical / authoritative
+	// resource-file shape). Set to `overlay` on overlay fragments so
+	// the catalog walker can skip them without name/kind heuristics.
+	FileType      FileType_Enum `protobuf:"varint,5,opt,name=file_type,json=fileType,proto3,enum=veil.v1.FileType_Enum" json:"file_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -231,11 +300,64 @@ func (x *Metadata) GetKind() string {
 	return ""
 }
 
-// Overlay is a conditional data merge applied before transforms.
+func (x *Metadata) GetFileType() FileType_Enum {
+	if x != nil {
+		return x.FileType
+	}
+	return FileType_definition
+}
+
+// FileType is the wrapper message for the Metadata.file_type enum.
+// Wrapping it in a message gives the Go-generated identifiers a clean
+// nested form (FileType_Enum_*) and lets the JSON wire format use
+// lowercase value names ("definition", "overlay").
+type FileType struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FileType) Reset() {
+	*x = FileType{}
+	mi := &file_veil_v1_resource_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FileType) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FileType) ProtoMessage() {}
+
+func (x *FileType) ProtoReflect() protoreflect.Message {
+	mi := &file_veil_v1_resource_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FileType.ProtoReflect.Descriptor instead.
+func (*FileType) Descriptor() ([]byte, []int) {
+	return file_veil_v1_resource_proto_rawDescGZIP(), []int{3}
+}
+
+// Overlay is a conditional data merge applied before transforms. The
+// overlay applies when every entry in `if` matches: the resolved
+// value of each named variable (stringified) must match the
+// corresponding Go regular expression.
 type Overlay struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// CEL expression evaluated against the render context.
-	Match string `protobuf:"bytes,1,opt,name=match,proto3" json:"match,omitempty"`
+	// Map of variable name → regex pattern. All entries must match for
+	// the overlay to apply. An empty map means "always apply".
+	//
+	// buf:lint:ignore FIELD_LOWER_SNAKE_CASE
+	If map[string]string `protobuf:"bytes,1,rep,name=if,proto3" json:"if,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Path to the overlay file. Resolved relative to the resource file
 	// that declares this overlay, or used as-is when absolute.
 	File          string `protobuf:"bytes,2,opt,name=file,proto3" json:"file,omitempty"`
@@ -245,7 +367,7 @@ type Overlay struct {
 
 func (x *Overlay) Reset() {
 	*x = Overlay{}
-	mi := &file_veil_v1_resource_proto_msgTypes[3]
+	mi := &file_veil_v1_resource_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -257,7 +379,7 @@ func (x *Overlay) String() string {
 func (*Overlay) ProtoMessage() {}
 
 func (x *Overlay) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_resource_proto_msgTypes[3]
+	mi := &file_veil_v1_resource_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -270,14 +392,14 @@ func (x *Overlay) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Overlay.ProtoReflect.Descriptor instead.
 func (*Overlay) Descriptor() ([]byte, []int) {
-	return file_veil_v1_resource_proto_rawDescGZIP(), []int{3}
+	return file_veil_v1_resource_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *Overlay) GetMatch() string {
+func (x *Overlay) GetIf() map[string]string {
 	if x != nil {
-		return x.Match
+		return x.If
 	}
-	return ""
+	return nil
 }
 
 func (x *Overlay) GetFile() string {
@@ -300,7 +422,7 @@ type Override struct {
 
 func (x *Override) Reset() {
 	*x = Override{}
-	mi := &file_veil_v1_resource_proto_msgTypes[4]
+	mi := &file_veil_v1_resource_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -312,7 +434,7 @@ func (x *Override) String() string {
 func (*Override) ProtoMessage() {}
 
 func (x *Override) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_resource_proto_msgTypes[4]
+	mi := &file_veil_v1_resource_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -325,7 +447,7 @@ func (x *Override) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Override.ProtoReflect.Descriptor instead.
 func (*Override) Descriptor() ([]byte, []int) {
-	return file_veil_v1_resource_proto_rawDescGZIP(), []int{4}
+	return file_veil_v1_resource_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Override) GetSource() string {
@@ -357,19 +479,25 @@ const file_veil_v1_resource_proto_rawDesc = "" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04kind\x12\x1e\n" +
 	"\x04name\x18\x02 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x12/\n" +
-	"\x06params\x18\x03 \x01(\v2\x17.google.protobuf.StructR\x06params\"\xa9\x01\n" +
-	"\bMetadata\x12\x1e\n" +
-	"\x04name\x18\x01 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x12,\n" +
+	"\x06params\x18\x03 \x01(\v2\x17.google.protobuf.StructR\x06params\"\xd0\x01\n" +
+	"\bMetadata\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12,\n" +
 	"\boverlays\x18\x02 \x03(\v2\x10.veil.v1.OverlayR\boverlays\x12/\n" +
-	"\toverrides\x18\x03 \x03(\v2\x11.veil.v1.OverrideR\toverrides\x12\x1e\n" +
-	"\x04kind\x18\x04 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04kind\"K\n" +
-	"\aOverlay\x12 \n" +
-	"\x05match\x18\x01 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x05match\x12\x1e\n" +
+	"\toverrides\x18\x03 \x03(\v2\x11.veil.v1.OverrideR\toverrides\x12\x12\n" +
+	"\x04kind\x18\x04 \x01(\tR\x04kind\x12=\n" +
+	"\tfile_type\x18\x05 \x01(\x0e2\x16.veil.v1.FileType.EnumB\b\xbaH\x05\x82\x01\x02\x10\x01R\bfileType\"/\n" +
+	"\bFileType\"#\n" +
+	"\x04Enum\x12\x0e\n" +
+	"\n" +
+	"definition\x10\x00\x12\v\n" +
+	"\aoverlay\x10\x01\"\x8a\x01\n" +
+	"\aOverlay\x12(\n" +
+	"\x02if\x18\x01 \x03(\v2\x18.veil.v1.Overlay.IfEntryR\x02if\x12\x1e\n" +
 	"\x04file\x18\x02 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04file\"N\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04file\x1a5\n" +
+	"\aIfEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"N\n" +
 	"\bOverride\x12\"\n" +
 	"\x06source\x18\x01 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x06source\x12\x1e\n" +
@@ -389,27 +517,33 @@ func file_veil_v1_resource_proto_rawDescGZIP() []byte {
 	return file_veil_v1_resource_proto_rawDescData
 }
 
-var file_veil_v1_resource_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_veil_v1_resource_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_veil_v1_resource_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_veil_v1_resource_proto_goTypes = []any{
-	(*Resource)(nil),        // 0: veil.v1.Resource
-	(*Dependency)(nil),      // 1: veil.v1.Dependency
-	(*Metadata)(nil),        // 2: veil.v1.Metadata
-	(*Overlay)(nil),         // 3: veil.v1.Overlay
-	(*Override)(nil),        // 4: veil.v1.Override
-	(*structpb.Struct)(nil), // 5: google.protobuf.Struct
+	(FileType_Enum)(0),      // 0: veil.v1.FileType.Enum
+	(*Resource)(nil),        // 1: veil.v1.Resource
+	(*Dependency)(nil),      // 2: veil.v1.Dependency
+	(*Metadata)(nil),        // 3: veil.v1.Metadata
+	(*FileType)(nil),        // 4: veil.v1.FileType
+	(*Overlay)(nil),         // 5: veil.v1.Overlay
+	(*Override)(nil),        // 6: veil.v1.Override
+	nil,                     // 7: veil.v1.Overlay.IfEntry
+	(*structpb.Struct)(nil), // 8: google.protobuf.Struct
 }
 var file_veil_v1_resource_proto_depIdxs = []int32{
-	2, // 0: veil.v1.Resource.metadata:type_name -> veil.v1.Metadata
-	5, // 1: veil.v1.Resource.spec:type_name -> google.protobuf.Struct
-	1, // 2: veil.v1.Resource.dependencies:type_name -> veil.v1.Dependency
-	5, // 3: veil.v1.Dependency.params:type_name -> google.protobuf.Struct
-	3, // 4: veil.v1.Metadata.overlays:type_name -> veil.v1.Overlay
-	4, // 5: veil.v1.Metadata.overrides:type_name -> veil.v1.Override
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	3, // 0: veil.v1.Resource.metadata:type_name -> veil.v1.Metadata
+	8, // 1: veil.v1.Resource.spec:type_name -> google.protobuf.Struct
+	2, // 2: veil.v1.Resource.dependencies:type_name -> veil.v1.Dependency
+	8, // 3: veil.v1.Dependency.params:type_name -> google.protobuf.Struct
+	5, // 4: veil.v1.Metadata.overlays:type_name -> veil.v1.Overlay
+	6, // 5: veil.v1.Metadata.overrides:type_name -> veil.v1.Override
+	0, // 6: veil.v1.Metadata.file_type:type_name -> veil.v1.FileType.Enum
+	7, // 7: veil.v1.Overlay.if:type_name -> veil.v1.Overlay.IfEntry
+	8, // [8:8] is the sub-list for method output_type
+	8, // [8:8] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_veil_v1_resource_proto_init() }
@@ -422,13 +556,14 @@ func file_veil_v1_resource_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_veil_v1_resource_proto_rawDesc), len(file_veil_v1_resource_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   5,
+			NumEnums:      1,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_veil_v1_resource_proto_goTypes,
 		DependencyIndexes: file_veil_v1_resource_proto_depIdxs,
+		EnumInfos:         file_veil_v1_resource_proto_enumTypes,
 		MessageInfos:      file_veil_v1_resource_proto_msgTypes,
 	}.Build()
 	File_veil_v1_resource_proto = out.File

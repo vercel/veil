@@ -3,10 +3,97 @@
   "additionalProperties": false,
   "description": "HooksDefinition groups a kind's hook files by lifecycle point. Each\n field is an ordered list; the order determines invocation order at\n that lifecycle point. Additional lifecycle points will be added as\n fields on this message so the kind.json shape can extend without\n breaking changes.",
   "properties": {
-    "render": {
-      "description": "Hooks run during `veil render` (each exports a Hook whose optional\n `renderHook(ctx, fs)` transforms the bundle).",
+    "dependents": {
+      "description": "Per-consumer dependent hooks. Each entry binds a consumer kind to\n hook(s) that run when a resource of that kind declares a\n dependency on this one, plus the params schema the consumer must\n supply. See SPEC.md \"Dependencies\" for the full design.",
       "items": {
-        "type": "string"
+        "additionalProperties": false,
+        "description": "DependentDefinition declares a consumer kind that may depend on this\n kind, the hook file path(s) that run when such a dependency is\n rendered, and the JSON Schema describing the `params` the consumer\n must supply.",
+        "patternProperties": {
+          "^(paramsPath)$": {
+            "description": "Path to the JSON Schema describing the `params` object that the\n consumer must supply when declaring this dependency. Resolved\n relative to the enclosing kind.json file.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "properties": {
+          "kind": {
+            "description": "The consumer kind that may depend on this resource.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "params_path": {
+            "description": "Path to the JSON Schema describing the `params` object that the\n consumer must supply when declaring this dependency. Resolved\n relative to the enclosing kind.json file.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "paths": {
+            "description": "Paths to hook files that run when a resource of `kind` declares a\n dependency on this resource. At least one entry is required. Hooks\n run in declaration order. Paths are resolved relative to the\n enclosing kind.json file.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "params_path"
+        ],
+        "title": "Dependent Definition",
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "render": {
+      "description": "Hooks run during `veil render` (each exports a Hook whose optional\n `renderHook(ctx, fs)` transforms the bundle). Each entry is an\n object with a required `path` plus optional `access` declaring the\n host resources the hook may read.",
+      "items": {
+        "additionalProperties": false,
+        "description": "RenderHookDefinition is a single render-hook entry in kind.json: a\n path to the hook source file plus optional `access` declaring the\n host resources the hook may read.",
+        "properties": {
+          "access": {
+            "additionalProperties": false,
+            "description": "Optional declaration of host resources this hook needs (env vars,\n and eventually filesystem / network as they're added).",
+            "properties": {
+              "env": {
+                "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
+                "items": {
+                  "additionalProperties": false,
+                  "description": "EnvAccess names a single host environment variable a hook needs.",
+                  "properties": {
+                    "description": {
+                      "description": "A brief description of what this key is used for and why. Surfaced\n when the var is missing so the user can correct the issue.",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "The env var being requested by the hook.",
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "description"
+                  ],
+                  "title": "Env Access",
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "title": "Hook Access",
+            "type": "object"
+          },
+          "path": {
+            "description": "Path to the hook source file. Resolved relative to the enclosing\n kind.json file.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "Render Hook Definition",
+        "type": "object"
       },
       "type": "array"
     }

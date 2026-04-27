@@ -18,19 +18,15 @@ const EnvPrefix = "VEIL_VAR_"
 // Resolve returns concrete typed values for every declared variable. Sources
 // are consulted in precedence order:
 //
-//  1. cliPairs ("name=value") — highest priority
+//  1. cli — already parsed by urfave/cli's StringMapFlag
 //  2. environment lookup via envGet(VEIL_VAR_<UPPER_NAME>)
 //  3. the variable's declared Default
 //
 // A declared variable with no resolved value surfaces as an error naming it
-// and the ways to provide it. CLI pairs referencing undeclared variables are
-// rejected; environment variables that don't match a declaration are ignored
-// (the env is often shared across projects).
-func Resolve(decls map[string]*veilv1.Variable, cliPairs []string, envGet func(string) (string, bool)) (map[string]any, error) {
-	cli, err := parseCLIVars(cliPairs)
-	if err != nil {
-		return nil, err
-	}
+// and the ways to provide it. CLI entries referencing undeclared variables
+// are rejected; environment variables that don't match a declaration are
+// ignored (the env is often shared across projects).
+func Resolve(decls map[string]*veilv1.Variable, cli map[string]string, envGet func(string) (string, bool)) (map[string]any, error) {
 	for name := range cli {
 		if _, ok := decls[name]; !ok {
 			return nil, fmt.Errorf("--var %q: variable not declared in veil.json", name)
@@ -97,23 +93,6 @@ func checkEnum(name string, v any, enumVals []any, source string) error {
 		}
 	}
 	return fmt.Errorf("%s: value %v not in declared enum %v", source, v, enumVals)
-}
-
-// parseCLIVars splits name=value pairs. The value may itself contain `=`.
-func parseCLIVars(pairs []string) (map[string]string, error) {
-	out := make(map[string]string, len(pairs))
-	for _, p := range pairs {
-		name, value, ok := strings.Cut(p, "=")
-		if !ok {
-			return nil, fmt.Errorf("invalid --var %q: expected name=value", p)
-		}
-		name = strings.TrimSpace(name)
-		if name == "" {
-			return nil, fmt.Errorf("invalid --var %q: empty name", p)
-		}
-		out[name] = value
-	}
-	return out, nil
 }
 
 // coerce converts a raw string (from CLI or env) into the declared type.

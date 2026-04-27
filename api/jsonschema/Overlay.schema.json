@@ -1,21 +1,26 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Overlay is a conditional data merge applied before transforms.",
+  "description": "Overlay is a conditional data merge applied before transforms. The\n overlay applies when every entry in `if` matches: the resolved\n value of each named variable (stringified) must match the\n corresponding Go regular expression.",
   "properties": {
     "file": {
       "description": "Path to the overlay file. Resolved relative to the resource file\n that declares this overlay, or used as-is when absolute.",
       "minLength": 1,
       "type": "string"
     },
-    "match": {
-      "description": "CEL expression evaluated against the render context.",
-      "minLength": 1,
-      "type": "string"
+    "if": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "buf:lint:ignore FIELD_LOWER_SNAKE_CASE",
+      "propertyNames": {
+        "type": "string"
+      },
+      "title": "Map of variable name → regex pattern. All entries must match for\n the overlay to apply. An empty map means \"always apply\".",
+      "type": "object"
     }
   },
   "required": [
-    "match",
     "file"
   ],
   "title": "Overlay",

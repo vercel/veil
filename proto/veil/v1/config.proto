@@ -21,6 +21,23 @@ message VeilConfigDefinition {
   // time. Local builds are discovered automatically; use this to wire in
   // shared or externally-distributed registries.
   repeated string registries = 3;
+
+  // Where to find the resource JSON files that make up the project's
+  // catalog. Used at render time to resolve dependency targets.
+  ResourceDiscovery resource_discovery = 4;
+}
+
+// ResourceDiscovery declares how `veil render` builds its catalog of
+// resources for dependency resolution. Each path is a glob expression
+// (`**` matches across directory boundaries via the doublestar library)
+// pointing at the JSON files that should be indexed. Relative patterns
+// resolve against the veil.json directory.
+message ResourceDiscovery {
+  // Glob patterns identifying resource JSON files. Files that don't
+  // parse as a Resource shape (overlays, fragments, schemas) are
+  // skipped silently; duplicate (kind, name) pairs across matches are
+  // rejected.
+  repeated string paths = 1;
 }
 
 // VariableType is a wrapper message that holds the Variable.type enum.
@@ -54,10 +71,11 @@ message VariableType {
   }
 }
 
-// Variable declares a named input available to overlay CEL expressions.
-// Lives in both the local VeilConfigDefinition and the published Kind
-// (carried verbatim through compilation), so it has no Definition
-// suffix — the same shape applies in both contexts.
+// Variable declares a named input available to overlay regex matches
+// (and to hooks via the render context). Lives in both the local
+// VeilConfigDefinition and the published Kind (carried verbatim
+// through compilation), so it has no Definition suffix — the same
+// shape applies in both contexts.
 message Variable {
   // Declared type. Must be one of the legal VariableType.Enum values
   // (the `unspecified` zero is rejected at load time).
@@ -92,16 +110,14 @@ message KindDefinition {
   // Source configuration files that make up the kind.
   repeated string sources = 2 [(buf.validate.field).repeated.min_items = 1];
 
-  // Hook code files grouped by lifecycle point.
+  // Hook code files grouped by lifecycle point. The dependents block —
+  // the per-consumer hooks that fire when another kind declares a
+  // dependency on this one — also lives under `hooks`, since it is
+  // ultimately just another hook lifecycle.
   HooksDefinition hooks = 3;
 
   // Path to the JSON Schema that defines the spec shape.
   string schema = 5;
-
-  // Consumer kinds that may declare a dependency on this resource. Each
-  // entry binds a consumer kind to per-consumer hook(s) and a params
-  // schema. See SPEC.md "Dependencies" for the full design.
-  repeated DependentDefinition dependents = 6;
 }
 
 // HooksDefinition groups a kind's hook files by lifecycle point. Each
@@ -111,13 +127,64 @@ message KindDefinition {
 // breaking changes.
 message HooksDefinition {
   // Hooks run during `veil render` (each exports a Hook whose optional
-  // `renderHook(ctx, fs)` transforms the bundle).
-  repeated string render = 1;
+  // `renderHook(ctx, fs)` transforms the bundle). Each entry is an
+  // object with a required `path` plus optional `access` declaring the
+  // host resources the hook may read.
+  repeated RenderHookDefinition render = 1;
+
+  // Per-consumer dependent hooks. Each entry binds a consumer kind to
+  // hook(s) that run when a resource of that kind declares a
+  // dependency on this one, plus the params schema the consumer must
+  // supply. See SPEC.md "Dependencies" for the full design.
+  repeated DependentDefinition dependents = 2;
+}
+
+// RenderHookDefinition is a single render-hook entry in kind.json: a
+// path to the hook source file plus optional `access` declaring the
+// host resources the hook may read.
+message RenderHookDefinition {
+  // Path to the hook source file. Resolved relative to the enclosing
+  // kind.json file.
+  string path = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Optional declaration of host resources this hook needs (env vars,
+  // and eventually filesystem / network as they're added).
+  HookAccess access = 2;
+}
+
+// HookAccess declares the host resources a hook is allowed to reach. The
+// runner enforces these at render time: required env vars must be
+// present on the host, and the hook receives only what it declared.
+message HookAccess {
+  // Environment variables the hook intends to read. Each entry must
+  // describe both the name and why it's needed; the description is
+  // surfaced in pre-flight error messages when the var is missing.
+  repeated EnvAccess env = 1;
+}
+
+// EnvAccess names a single host environment variable a hook needs.
+message EnvAccess {
+  // The env var being requested by the hook.
+  string name = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // A brief description of what this key is used for and why. Surfaced
+  // when the var is missing so the user can correct the issue.
+  string description = 2 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
 }
 
 // DependentDefinition declares a consumer kind that may depend on this
-// kind, the hook(s) that run when such a dependency is rendered, and the
-// JSON Schema describing the `params` the consumer must supply.
+// kind, the hook file path(s) that run when such a dependency is
+// rendered, and the JSON Schema describing the `params` the consumer
+// must supply.
 message DependentDefinition {
   // The consumer kind that may depend on this resource.
   string kind = 1 [
@@ -125,11 +192,11 @@ message DependentDefinition {
     (buf.validate.field).required = true
   ];
 
-  // Hook code files that run when a resource of `kind` declares a
+  // Paths to hook files that run when a resource of `kind` declares a
   // dependency on this resource. At least one entry is required. Hooks
   // run in declaration order. Paths are resolved relative to the
   // enclosing kind.json file.
-  repeated string hooks = 2 [(buf.validate.field).repeated.min_items = 1];
+  repeated string paths = 2 [(buf.validate.field).repeated.min_items = 1];
 
   // Path to the JSON Schema describing the `params` object that the
   // consumer must supply when declaring this dependency. Resolved

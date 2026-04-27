@@ -1,4 +1,4 @@
-.PHONY: .*
+.PHONY: all build proto clean
 
 all: clean proto build
 

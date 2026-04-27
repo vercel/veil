@@ -41,35 +41,67 @@ message Dependency {
   google.protobuf.Struct params = 3;
 }
 
-// Metadata contains fields common to every resource.
+// Metadata contains fields common to every resource. The presence of
+// `file_type` (and its default of `definition`) lets the catalog tell
+// authoritative resource files apart from overlay fragments without
+// needing to inspect every other field.
 message Metadata {
-  // The name of this resource.
-  string name = 1 [
-    (buf.validate.field).string.min_len = 1,
-    (buf.validate.field).required = true
-  ];
+  // The name of this resource. Required when `file_type` is
+  // `definition` (the default); ignored entirely when `file_type` is
+  // `overlay` — overlays cannot rename their target resource.
+  string name = 1;
 
-  // Conditional overlays applied based on CEL expressions.
+  // Conditional overlays applied based on per-variable regex matches.
   repeated Overlay overlays = 2;
 
   // Source files that have been ejected for local override.
   repeated Override overrides = 3;
 
-  // The name of the kind this resource instantiates. Must match a kind
-  // present in one of the loaded registries.
-  string kind = 4 [
-    (buf.validate.field).string.min_len = 1,
-    (buf.validate.field).required = true
-  ];
+  // The name of the kind this resource instantiates. Required when
+  // `file_type` is `definition`; ignored when `file_type` is
+  // `overlay` — overlays cannot reassign their target's kind.
+  string kind = 4;
+
+  // What kind of file this metadata block belongs to. Defaults to
+  // `definition` when omitted (the historical / authoritative
+  // resource-file shape). Set to `overlay` on overlay fragments so
+  // the catalog walker can skip them without name/kind heuristics.
+  FileType.Enum file_type = 5 [(buf.validate.field).enum.defined_only = true];
 }
 
-// Overlay is a conditional data merge applied before transforms.
+// FileType is the wrapper message for the Metadata.file_type enum.
+// Wrapping it in a message gives the Go-generated identifiers a clean
+// nested form (FileType_Enum_*) and lets the JSON wire format use
+// lowercase value names ("definition", "overlay").
+message FileType {
+  // Enum of legal file types. The zero value (`definition`) is the
+  // historical default — files written before file_type existed are
+  // treated exactly as they always have been.
+  //
+  // buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+  // buf:lint:ignore ENUM_VALUE_PREFIX
+  // buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
+  enum Enum {
+    // buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+    // buf:lint:ignore ENUM_VALUE_PREFIX
+    // buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
+    definition = 0;
+    // buf:lint:ignore ENUM_VALUE_UPPER_SNAKE_CASE
+    // buf:lint:ignore ENUM_VALUE_PREFIX
+    overlay = 1;
+  }
+}
+
+// Overlay is a conditional data merge applied before transforms. The
+// overlay applies when every entry in `if` matches: the resolved
+// value of each named variable (stringified) must match the
+// corresponding Go regular expression.
 message Overlay {
-  // CEL expression evaluated against the render context.
-  string match = 1 [
-    (buf.validate.field).string.min_len = 1,
-    (buf.validate.field).required = true
-  ];
+  // Map of variable name → regex pattern. All entries must match for
+  // the overlay to apply. An empty map means "always apply".
+  //
+  // buf:lint:ignore FIELD_LOWER_SNAKE_CASE
+  map<string, string> if = 1;
 
   // Path to the overlay file. Resolved relative to the resource file
   // that declares this overlay, or used as-is when absolute.

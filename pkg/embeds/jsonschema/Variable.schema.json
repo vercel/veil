@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Variable declares a named input available to overlay CEL expressions.\n Lives in both the local VeilConfigDefinition and the published Kind\n (carried verbatim through compilation), so it has no Definition\n suffix — the same shape applies in both contexts.",
+  "description": "Variable declares a named input available to overlay regex matches\n (and to hooks via the render context). Lives in both the local\n VeilConfigDefinition and the published Kind (carried verbatim\n through compilation), so it has no Definition suffix — the same\n shape applies in both contexts.",
   "properties": {
     "default": {
       "description": "Optional default. If omitted, the variable is required at render time.\n Must be a scalar matching the declared type.",

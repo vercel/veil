@@ -72,6 +72,7 @@ func NewApp() *cli.Command {
 			Build(),
 			Eject(),
 			Schema(),
+			Graph(),
 		},
 	}
 }

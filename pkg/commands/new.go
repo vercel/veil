@@ -144,7 +144,9 @@ func runNewKind(ctx context.Context, c *cli.Command) error {
 		"name":    name,
 		"sources": []string{"./sources/source.txt"},
 		"hooks": map[string]any{
-			"render": []string{"./hooks/src/hello-world.ts"},
+			"render": []map[string]any{
+				{"path": "./hooks/src/hello-world.ts"},
+			},
 		},
 		"schema": "./schema.json",
 	}
@@ -196,9 +198,9 @@ func runNewHook(ctx context.Context, c *cli.Command) error {
 	}
 
 	var k *config.Kind
-	for i := range reg.Kinds {
-		if reg.Kinds[i].Name == kindName {
-			k = &reg.Kinds[i]
+	for _, candidate := range reg.Kinds {
+		if candidate.Name == kindName {
+			k = candidate
 			break
 		}
 	}
@@ -370,25 +372,27 @@ func appendHookToKind(kindDir, lifecycle, relHook string) error {
 		hooksObj = map[string]any{}
 	}
 
-	var list []string
+	var list []map[string]any
 	if existing, ok := hooksObj[lifecycle]; ok && existing != nil {
 		arr, ok := existing.([]any)
 		if !ok {
 			return fmt.Errorf("%s: \"hooks.%s\" must be an array", path, lifecycle)
 		}
 		for _, v := range arr {
-			s, ok := v.(string)
+			entry, ok := v.(map[string]any)
 			if !ok {
-				return fmt.Errorf("%s: \"hooks.%s\" entries must be strings", path, lifecycle)
+				return fmt.Errorf("%s: \"hooks.%s\" entries must be objects with a \"path\" field", path, lifecycle)
 			}
-			list = append(list, s)
+			list = append(list, entry)
 		}
 	}
 
-	if slices.Contains(list, relHook) {
-		return nil
+	for _, entry := range list {
+		if entry["path"] == relHook {
+			return nil
+		}
 	}
-	list = append(list, relHook)
+	list = append(list, map[string]any{"path": relHook})
 	hooksObj[lifecycle] = list
 	raw["hooks"] = hooksObj
 

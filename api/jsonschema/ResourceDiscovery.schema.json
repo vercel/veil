@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "ResourceDiscovery declares how `veil render` builds its catalog of\n resources for dependency resolution. Each path is a glob expression\n (`**` matches across directory boundaries via the doublestar library)\n pointing at the JSON files that should be indexed. Relative patterns\n resolve against the veil.json directory.",
+  "properties": {
+    "paths": {
+      "description": "Glob patterns identifying resource JSON files. Files that don't\n parse as a Resource shape (overlays, fragments, schemas) are\n skipped silently; duplicate (kind, name) pairs across matches are\n rejected.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "title": "Resource Discovery",
+  "type": "object"
+}

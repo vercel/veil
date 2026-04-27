@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "HookAccess declares the host resources a hook is allowed to reach. The\n runner enforces these at render time: required env vars must be\n present on the host, and the hook receives only what it declared.",
+  "properties": {
+    "env": {
+      "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
+      "items": {
+        "additionalProperties": false,
+        "description": "EnvAccess names a single host environment variable a hook needs.",
+        "properties": {
+          "description": {
+            "description": "A brief description of what this key is used for and why. Surfaced\n when the var is missing so the user can correct the issue.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "description": "The env var being requested by the hook.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description"
+        ],
+        "title": "Env Access",
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "title": "Hook Access",
+  "type": "object"
+}

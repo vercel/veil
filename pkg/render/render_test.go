@@ -1,6 +1,7 @@
 package render
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/stretchr/testify/suite"
 
 	"github.com/vercel/veil/pkg/registry"
+	"github.com/vercel/veil/pkg/resource"
 )
 
 type RenderSuite struct {
@@ -74,7 +76,7 @@ func (s *RenderSuite) SetupTest() {
 			},
 		},
 	})
-	reg, err := registry.FromIndex([]string{regJSON})
+	reg, err := registry.Load([]string{regJSON})
 	s.Require().NoError(err)
 	s.registry = reg
 }
@@ -83,6 +85,39 @@ func (s *RenderSuite) writeJSON(path string, v any) {
 	data, err := json.MarshalIndent(v, "", "  ")
 	s.Require().NoError(err)
 	s.Require().NoError(os.WriteFile(path, data, 0644))
+}
+
+// catalogFor globs the test's resource directory and builds a Catalog
+// covering every resource the test wrote. Each test calls this after
+// writing its inputs.
+func (s *RenderSuite) catalogFor(dir string) (fs.FS, resource.Catalog) {
+	rel, err := filepath.Rel(s.root, dir)
+	s.Require().NoError(err)
+	fsys := os.DirFS(s.root)
+	handles, err := resource.Discover(s.T().Context(), fsys, []string{filepath.ToSlash(filepath.Join(rel, "*.json"))})
+	s.Require().NoError(err)
+	cat, err := resource.NewCatalog(fsys, handles)
+	s.Require().NoError(err)
+	return fsys, cat
+}
+
+// renderWorker is the standard "render the my-worker resource" call —
+// every test in this suite uses kind=worker so the helper hides the
+// repetition.
+func (s *RenderSuite) renderWorker(dir, outDir string, vars map[string]any) (*RenderedResource, error) {
+	if vars == nil {
+		vars = map[string]any{}
+	}
+	fsys, cat := s.catalogFor(dir)
+	return Render(&Options{
+		Kind:      "worker",
+		Name:      "my-worker",
+		OutDir:    outDir,
+		FS:        fsys,
+		Registry:  s.registry,
+		Catalog:   cat,
+		Variables: vars,
+	})
 }
 
 func (s *RenderSuite) TestHappyPathRendersBundle() {
@@ -94,14 +129,9 @@ func (s *RenderSuite) TestHappyPathRendersBundle() {
 	})
 
 	out := filepath.Join(s.root, "out")
-	result, err := Render(Options{
-		Dir:       dir,
-		OutDir:    out,
-		Registry:  s.registry,
-		Variables: map[string]any{},
-	})
+	rendered, err := s.renderWorker(dir, out, nil)
 	s.Require().NoError(err)
-	s.Require().Len(result.Rendered, 1)
+	s.Equal("my-worker", rendered.Name)
 
 	greeting, err := os.ReadFile(filepath.Join(out, "my-worker", "greeting.txt"))
 	s.Require().NoError(err)
@@ -125,19 +155,14 @@ func (s *RenderSuite) TestOverlayMergesMatchingSpec() {
 			"kind": "worker",
 			"name": "my-worker",
 			"overlays": []map[string]any{
-				{"match": "vars.env == 'staging'", "file": "./staging.json"},
+				{"if": map[string]string{"env": "^staging$"}, "file": "./staging.json"},
 			},
 		},
 		"spec": map[string]any{"replicas": 3},
 	})
 
 	out := filepath.Join(s.root, "out")
-	_, err := Render(Options{
-		Dir:       dir,
-		OutDir:    out,
-		Registry:  s.registry,
-		Variables: map[string]any{"env": "staging"},
-	})
+	_, err := s.renderWorker(dir, out, map[string]any{"env": "staging"})
 	s.Require().NoError(err)
 	// Bundle is produced; the fact that it succeeded and schema.spec.replicas
 	// validates `{type:integer,minimum:1}` both pre- and post-overlay is the
@@ -159,18 +184,13 @@ func (s *RenderSuite) TestOverlaySkippedWhenMatchFalse() {
 			"kind": "worker",
 			"name": "my-worker",
 			"overlays": []map[string]any{
-				{"match": "vars.env == 'staging'", "file": "./staging.json"},
+				{"if": map[string]string{"env": "^staging$"}, "file": "./staging.json"},
 			},
 		},
 		"spec": map[string]any{"replicas": 3},
 	})
 
-	_, err := Render(Options{
-		Dir:       dir,
-		OutDir:    filepath.Join(s.root, "out"),
-		Registry:  s.registry,
-		Variables: map[string]any{"env": "production"}, // not staging
-	})
+	_, err := s.renderWorker(dir, filepath.Join(s.root, "out"), map[string]any{"env": "production"})
 	s.Require().NoError(err)
 }
 
@@ -182,12 +202,7 @@ func (s *RenderSuite) TestSchemaValidationFailure() {
 		"spec":     map[string]any{"replicas": 0}, // violates minimum:1
 	})
 
-	_, err := Render(Options{
-		Dir:       dir,
-		OutDir:    filepath.Join(s.root, "out"),
-		Registry:  s.registry,
-		Variables: map[string]any{},
-	})
+	_, err := s.renderWorker(dir, filepath.Join(s.root, "out"), nil)
 	s.Require().Error(err)
 	s.Contains(err.Error(), "schema validation")
 	// Error message should not leak the in-memory schema URL.
@@ -221,12 +236,7 @@ func (s *RenderSuite) TestSchemaValidationCatchesMissingRequiredField() {
 		"spec":     map[string]any{}, // missing required "replicas"
 	})
 
-	_, err := Render(Options{
-		Dir:       dir,
-		OutDir:    filepath.Join(s.root, "out"),
-		Registry:  s.registry,
-		Variables: map[string]any{},
-	})
+	_, err := s.renderWorker(dir, filepath.Join(s.root, "out"), nil)
 	s.Require().Error(err)
 	s.Contains(err.Error(), "schema validation")
 	s.Contains(err.Error(), "replicas")
@@ -240,12 +250,7 @@ func (s *RenderSuite) TestSchemaValidationCatchesWrongType() {
 		"spec":     map[string]any{"replicas": "lots"}, // type mismatch
 	})
 
-	_, err := Render(Options{
-		Dir:       dir,
-		OutDir:    filepath.Join(s.root, "out"),
-		Registry:  s.registry,
-		Variables: map[string]any{},
-	})
+	_, err := s.renderWorker(dir, filepath.Join(s.root, "out"), nil)
 	s.Require().Error(err)
 	s.Contains(err.Error(), "schema validation")
 	s.Contains(err.Error(), "replicas")
@@ -265,18 +270,13 @@ func (s *RenderSuite) TestSchemaValidationAfterOverlayMerge() {
 			"kind": "worker",
 			"name": "my-worker",
 			"overlays": []map[string]any{
-				{"match": "vars.env == 'staging'", "file": "./bad-overlay.json"},
+				{"if": map[string]string{"env": "^staging$"}, "file": "./bad-overlay.json"},
 			},
 		},
 		"spec": map[string]any{"replicas": 3}, // valid until overlay applies
 	})
 
-	_, err := Render(Options{
-		Dir:       dir,
-		OutDir:    filepath.Join(s.root, "out"),
-		Registry:  s.registry,
-		Variables: map[string]any{"env": "staging"},
-	})
+	_, err := s.renderWorker(dir, filepath.Join(s.root, "out"), map[string]any{"env": "staging"})
 	s.Require().Error(err)
 	s.Contains(err.Error(), "schema validation")
 }
@@ -289,10 +289,14 @@ func (s *RenderSuite) TestUnknownKindErrors() {
 		"spec":     map[string]any{},
 	})
 
-	_, err := Render(Options{
-		Dir:       dir,
+	fsys, cat := s.catalogFor(dir)
+	_, err := Render(&Options{
+		Kind:      "unknown",
+		Name:      "x",
 		OutDir:    filepath.Join(s.root, "out"),
+		FS:        fsys,
 		Registry:  s.registry,
+		Catalog:   cat,
 		Variables: map[string]any{},
 	})
 	s.Require().Error(err)
@@ -323,12 +327,7 @@ func (s *RenderSuite) TestSetOutputPathRoutesToNewLocation() {
 	})
 
 	out := filepath.Join(s.root, "out")
-	_, err := Render(Options{
-		Dir:       dir,
-		OutDir:    out,
-		Registry:  s.registry,
-		Variables: map[string]any{},
-	})
+	_, err := s.renderWorker(dir, out, nil)
 	s.Require().NoError(err)
 
 	s.FileExists(filepath.Join(out, "my-worker", "kubernetes", "config.txt"))
@@ -358,12 +357,7 @@ func (s *RenderSuite) TestDeleteSkipsOutput() {
 	})
 
 	out := filepath.Join(s.root, "out")
-	_, err := Render(Options{
-		Dir:       dir,
-		OutDir:    out,
-		Registry:  s.registry,
-		Variables: map[string]any{},
-	})
+	_, err := s.renderWorker(dir, out, nil)
 	s.Require().NoError(err)
 
 	// config.txt must not land; the directory exists but is empty.
@@ -392,17 +386,12 @@ func (s *RenderSuite) TestPathCollisionErrors() {
 		"spec":     map[string]any{"replicas": 1},
 	})
 
-	_, err := Render(Options{
-		Dir:       dir,
-		OutDir:    filepath.Join(s.root, "out"),
-		Registry:  s.registry,
-		Variables: map[string]any{},
-	})
+	_, err := s.renderWorker(dir, filepath.Join(s.root, "out"), nil)
 	s.Require().Error(err)
 	s.Contains(err.Error(), "path collision")
 }
 
-func (s *RenderSuite) TestDiscoverySkipsNonInstances() {
+func (s *RenderSuite) TestDiscoveryGlobSkipsNonResources() {
 	dir := filepath.Join(s.root, "svc")
 	s.Require().NoError(os.MkdirAll(dir, 0755))
 
@@ -416,8 +405,11 @@ func (s *RenderSuite) TestDiscoverySkipsNonInstances() {
 		"spec":     map[string]any{"replicas": 3},
 	})
 
-	instances, err := Discover(dir)
+	rel, err := filepath.Rel(s.root, dir)
 	s.Require().NoError(err)
-	s.Require().Len(instances, 1)
-	s.Equal("my-worker", instances[0].Metadata.Name)
+	handles, err := resource.Discover(s.T().Context(), os.DirFS(s.root), []string{filepath.ToSlash(filepath.Join(rel, "*.json"))})
+	s.Require().NoError(err)
+	s.Require().Len(handles, 1)
+	s.Equal("my-worker", handles[0].Name)
+	s.Equal("worker", handles[0].Kind)
 }

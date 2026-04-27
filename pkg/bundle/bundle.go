@@ -27,8 +27,12 @@ type Options struct {
 
 // Bundle takes an entrypoint path and an fs.FS root, resolves all imports
 // (including bare specifiers from node_modules/ within the FS), transpiles
-// TypeScript, and returns a single bundled JavaScript string.
-func Bundle(entrypoint string, root fs.FS, opts Options) (string, error) {
+// TypeScript, and returns a single bundled JavaScript string. Pass nil
+// opts for the defaults (no minification, ESM output).
+func Bundle(entrypoint string, root fs.FS, opts *Options) (string, error) {
+	if opts == nil {
+		opts = &Options{}
+	}
 	format := api.FormatESModule
 	if opts.GlobalName != "" {
 		format = api.FormatIIFE

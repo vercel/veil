@@ -48,25 +48,68 @@ applied to a template file.
 
 ## Discovery
 
-Veil recursively searches upward from the current working directory to find a `.veil/` folder. Inside it,
-`veil.json` declares the project configuration:
+Veil recursively searches upward from the current working directory to find a `veil.json` file at the
+project root. That file declares the project configuration — kinds, variables, optional published
+registries to pull in, and where resource files live so they can be cataloged at render time.
 
 ```json
 {
-  "resources": [
-    "./resources/service.json",
-    "./resources/cron.json"
+  "kinds": [
+    "./.veil/kinds/service/kind.json",
+    "./.veil/kinds/bucket/kind.json"
+  ],
+  "variables": {
+    "env": { "type": "string", "enum": ["dev", "staging", "prod"], "default": "dev" }
+  },
+  "registries": [],
+  "resource_discovery": {
+    "paths": [
+      "services/**/_deploy/*.json",
+      "infra/buckets/*.json"
+    ]
+  }
+}
+```
+
+- **`kinds`** — relative or absolute paths to `kind.json` definitions. Relative paths resolve against
+  `veil.json`'s directory.
+- **`variables`** — see [Variables](#variables).
+- **`registries`** — paths to additional compiled `registry.json` files to merge in at render time
+  (e.g., shared/published registries from outside this repo). The local build's
+  `<root>/public/r/registry.json` is auto-discovered without listing it here.
+- **`resource_discovery.paths`** — see [Resource discovery](#resource-discovery).
+
+## Resource discovery
+
+`resource_discovery.paths` is the list of [doublestar](https://github.com/bmatcuk/doublestar) glob
+patterns that tell `veil render` where to find resource files. At render time veil walks the patterns
+to build a **catalog** indexed by `(kind, name)` — that catalog is what dependency targets are looked
+up against, regardless of which directory the consumer or its targets live in.
+
+```json
+"resource_discovery": {
+  "paths": [
+    "services/**/_deploy/*.json",
+    "infra/buckets/*.json"
   ]
 }
 ```
 
-The `resources` field is a list of relative or absolute paths to resource definition files. Relative paths are
-resolved from the `.veil/` directory.
+Patterns use `**` to match across directory boundaries. Relative patterns resolve against the
+`veil.json` directory; absolute patterns are used as-is. Each match is shallow-parsed (only
+`metadata.kind` / `metadata.name` are read) — files that don't have those fields plus a `spec`
+(overlays, fragments, schema files, anything else the glob happens to capture) are silently skipped,
+so a generous pattern won't break discovery. Duplicate `(kind, name)` pairs across matches are a
+hard error.
+
+Catalog entries are loaded **lazily**: each match becomes a `sync.OnceValues`-backed loader keyed
+on `(kind, name)` (and on its absolute path), so the proto body of a resource is read at most once
+per render even if many other resources depend on it.
 
 ## Variables
 
-`veil.json` can declare named input variables — scalars that are substituted into overlay CEL expressions at
-render time:
+`veil.json` can declare named input variables — scalars that overlay `if` regex maps match against
+at render time:
 
 ```json
 {
@@ -101,12 +144,17 @@ String values from `--var` or env are coerced to the declared type — `"3"` →
 `true` for `bool`. Coercion failures and missing required variables produce an error identifying the variable
 and both ways to supply it.
 
-Inside overlay CEL expressions, resolved values are accessible under the `vars` namespace (named
-`vars` rather than `var` because `var` is a CEL reserved word):
+Inside an overlay's `if` block, each entry's key is the variable name and the value is a Go regex
+the variable's stringified value must match. Numbers and bools are stringified by `fmt`'s default
+formatting (`3` → `"3"`, `false` → `"false"`).
 
-```cel
-vars.env == 'staging'
-vars.replicas > 1 && vars.debug
+```json
+{
+  "if": {
+    "env":      "^staging$",
+    "replicas": "^[3-9]$"
+  }
+}
 ```
 
 ## Registry
@@ -116,7 +164,7 @@ describes a type of deployable unit (e.g. `service`, `cron`, `consumer`, `bucket
 
 ## Resource definition
 
-A resource definition is a JSON file in `.veil/resources/` with the following fields:
+A resource definition is a JSON file at `.veil/kinds/<name>/kind.json` with the following fields:
 
 ```json
 {
@@ -127,10 +175,17 @@ A resource definition is a JSON file in `.veil/resources/` with the following fi
   ],
   "hooks": {
     "render": [
-      "./hooks/inject-env-var.ts"
+      { "path": "./hooks/src/inject-env-var.ts" }
+    ],
+    "dependents": [
+      {
+        "kind": "service",
+        "paths": ["./hooks/src/dependents/service/inject-env.ts"],
+        "params_path": "./service.params.json"
+      }
     ]
   },
-  "schema": "./schemas/service.schema.json"
+  "schema": "./schema.json"
 }
 ```
 
@@ -148,17 +203,37 @@ are passed through the hook pipeline and ultimately rendered to disk.
 ### `hooks`
 
 An object grouping hook code files (TS/JS) by lifecycle point. Each lifecycle key holds an ordered
-list of hook files, and each file exports an interface specific to that lifecycle. Today only
-`render` exists; new lifecycle points will be added as additional fields so kind.json can grow
-without breaking changes.
+list of hook files, and each file exports an interface specific to that lifecycle.
 
-Cross-resource hooks — where a target kind injects into a consumer's render output — live separately
-under the kind's `dependents` declaration rather than as another `hooks` lifecycle, because they need
-to be scoped per consumer kind. See [Dependencies](#dependencies).
+Two lifecycles exist today:
+
+- **`render`** — runs during the consumer's own `veil render`. Each entry is an object with a
+  required `path` (TS/JS file that exports a `RenderHook`) plus optional `access` declaring host
+  resources the hook needs (env vars today; filesystem / network later).
+- **`dependents`** — per-consumer hooks that fire when *another* kind declares a dependency on this
+  one. Each entry binds a consumer kind to one or more hook file paths and a JSON Schema for the
+  params the consumer must supply. See [Dependencies](#dependencies) for the full design.
 
 ```json
 "hooks": {
-  "render": ["./hooks/inject-env-var.ts", "./hooks/annotate.ts"]
+  "render": [
+    { "path": "./hooks/src/inject-env-var.ts" },
+    {
+      "path": "./hooks/src/inject-providers.ts",
+      "access": {
+        "env": [
+          { "name": "DATADOG_API_KEY", "description": "Datadog API key for monitor provisioning" }
+        ]
+      }
+    }
+  ],
+  "dependents": [
+    {
+      "kind": "service",
+      "paths": ["./hooks/src/dependents/service/inject-env.ts"],
+      "params_path": "./service.params.json"
+    }
+  ]
 }
 ```
 
@@ -224,26 +299,6 @@ it only describes the resource-specific data (e.g. `port`, `replicas`, `image`).
 
 Output is written to `.veil/resource-schemas/` by default (configurable via `--out`).
 
-### `dependents`
-
-Optional. Declares which consumer kinds may depend on this kind, the per-consumer parameter shapes,
-and the hooks that run when that consumer renders. See [Dependencies](#dependencies) for the full
-design.
-
-```json
-"dependents": [
-  {
-    "kind": "service",
-    "hooks": ["./dependents/service/inject-env.ts"],
-    "params_path": "./dependents/service/params.json"
-  }
-]
-```
-
-Each entry binds a consumer kind to (a) one or more hook files and (b) a JSON Schema for the `params`
-object the consumer must supply. Paths are resolved relative to the `kind.json` file. Listing a
-consumer kind with an empty `hooks` array is a build error.
-
 ## Resource
 
 A consumer creates a JSON file in their service directory that instantiates a kind — that file **is** the
@@ -254,14 +309,20 @@ peer `dependencies` array.
 
 Common to all resources. Contains:
 
-- **`kind`** (required): The name of the kind this resource instantiates. Must match a kind present in one
-  of the loaded registries.
-- **`name`** (required): The name of this resource.
-- **`overlays`**: A list of conditional overlays. Each overlay has a [CEL](https://github.com/google/cel-spec)
-  expression and a path to an overlay file. The path is resolved relative to the resource file declaring
-  the overlay (or used as-is when absolute). When the CEL expression evaluates to `true` for the current
-  render context, the overlay file is loaded and its contents are merged into the resource's spec before
-  hooks run.
+- **`kind`** (required for definitions): The name of the kind this resource instantiates. Must match
+  a kind present in one of the loaded registries. Ignored entirely on overlay files (see `file_type`).
+- **`name`** (required for definitions): The name of this resource. Ignored on overlay files.
+- **`file_type`**: Either `definition` (default) or `overlay`. The default makes existing files —
+  every authored resource — work unchanged. Overlay files set `file_type: "overlay"` so the JSON
+  schema relaxes the `name`/`kind` requirement; even when an overlay sets those fields, render
+  ignores them. An overlay cannot rename its target or reassign its kind. Purely a JSON-schema
+  hint; the catalog walker skips overlays automatically because they lack `name`/`kind`/`spec`.
+- **`overlays`**: A list of conditional overlays. Each overlay has an `if` map (variable name → Go
+  regex) and a path to an overlay file. The path is resolved relative to the resource file declaring
+  the overlay (or used as-is when absolute). When every `if` entry's regex matches the corresponding
+  variable's stringified value, the overlay file is loaded and its `spec` is merged into the
+  resource's `spec` before hooks run. An empty `if` map (or omitted entirely) means the overlay
+  always applies.
 - **`overrides`**: A list of ejected source files. Each entry is an object with `source` (the path from the
   resource definition's `sources`) and `path` (the local path to the override file). By default, `veil eject`
   places the file at `.veil/<resource>/overrides/<filename>`, but the user can specify a custom path.
@@ -288,11 +349,11 @@ Optional list of declared dependencies on other resources. Each entry has `kind`
     "name": "api-feature-flags",
     "overlays": [
       {
-        "match": "vars.env == 'staging'",
+        "if":   { "env": "^staging$" },
         "file": "./staging.json"
       },
       {
-        "match": "vars.env == 'production' && vars.region == 'iad1'",
+        "if":   { "env": "^production$", "region": "^iad1$" },
         "file": "./iad1.json"
       }
     ]
@@ -391,55 +452,71 @@ Each entry has:
   `kind.schema.json` validates `params` against the target's declared schema (a discriminated union
   keyed on `kind`), and `veil-types.ts` exposes typed `params` shapes per `(target, consumer)` pair.
 
-## Target side: `dependents`
+## Target side: `hooks.dependents`
 
-A kind that wants to be dependable declares the consumer kinds it accepts in its `kind.json`:
+A kind that wants to be dependable declares the consumer kinds it accepts in its `kind.json` under
+the `hooks.dependents` block — `dependents` is just another lifecycle alongside `render`:
 
 ```json
 {
   "name": "bucket",
   "sources": [...],
   "schema": "./schema.json",
-  "hooks": { "render": [...] },
-  "dependents": [
-    {
-      "kind": "service",
-      "hooks": ["./dependents/service/inject-env.ts"],
-      "params_path": "./dependents/service/params.json"
-    },
-    {
-      "kind": "worker",
-      "hooks": ["./dependents/worker/inject-stream.ts"],
-      "params_path": "./dependents/worker/params.json"
-    }
-  ]
+  "hooks": {
+    "render": [...],
+    "dependents": [
+      {
+        "kind": "service",
+        "paths": ["./hooks/src/dependents/service/inject-env.ts"],
+        "params_path": "./service.params.json"
+      },
+      {
+        "kind": "worker",
+        "paths": ["./hooks/src/dependents/worker/inject-stream.ts"],
+        "params_path": "./worker.params.json"
+      }
+    ]
+  }
 }
 ```
 
 Each entry has:
 
 - **`kind`** — the consumer kind that may depend on this resource.
-- **`hooks`** — at least one hook file that runs when a resource of `kind` depends on this one. Hooks
-  run in declaration order. An empty `hooks` array is a build error.
+- **`paths`** — at least one hook file path that runs when a resource of `kind` depends on this one.
+  Hooks run in declaration order. An empty `paths` array is a build error.
 - **`params_path`** — JSON Schema describing the `params` object the consumer must supply. Paths are
-  resolved relative to the `kind.json` file.
+  resolved relative to the `kind.json` file. Required.
 
 Because hooks are registered per consumer kind, each hook receives a concretely typed `consumer` and
 `params` — no union narrowing inside the hook body.
 
 ## `dependent` hooks
 
-Each dependent hook exports a `DependentHook`:
+The build pipeline emits a per-consumer pair of types into the target kind's `veil-types.ts` —
+`<Consumer>DependentHook` and `<Consumer>DependentHookContext` — so each hook file is bound to a
+single consumer kind and receives concretely-typed `self`, `consumer`, `params`, and `fs`. For the
+bucket kind that lists `service` as a consumer, the file imports:
 
 ```ts
-export interface DependentHook {
-  render(ctx: DependentHookContext, fs: FS): FS | void | Promise<FS | void>;
+import type {
+  ServiceDependentHook,
+  ServiceDependentHookContext,
+  ServiceFS,
+} from '../../veil-types';
+```
+
+`<Consumer>DependentHook` is shaped like:
+
+```ts
+export interface ServiceDependentHook {
+  render(ctx: ServiceDependentHookContext, fs: ServiceFS): ServiceFS | void | Promise<ServiceFS | void>;
 }
 
-export interface DependentHookContext {
-  self: TargetCtx;       // the target kind's resolved resource (e.g. BucketCtx)
-  consumer: ConsumerCtx; // the consumer kind's resolved resource (e.g. ServiceCtx)
-  params: Params;        // the consumer-supplied params, typed per params_path
+export interface ServiceDependentHookContext {
+  self: Resource<BucketSpec, Dependency>; // the target kind's resolved resource
+  consumer: Resource<ServiceSpec>;        // the consumer kind's resolved resource
+  params: ServiceParams;                  // the consumer-supplied params, typed per params_path
   vars: RegistryVariables;
   root: string;
   std: Std; os: Os; fetch: Fetch;
@@ -482,19 +559,22 @@ export default injectBucketEnv;
 After a resource's render hooks finish, veil iterates `dependencies` in declaration order. For each
 entry:
 
-1. Resolve `(kind, name)` to a target resource in the catalog. Missing targets are a hard error.
-2. Find the target kind's `dependents` entry matching the consumer's kind. A target that doesn't list
-   the consumer's kind as allowed is a hard error.
-3. Run each registered dependent hook against the consumer's FS, in declaration order.
+1. Resolve `(kind, name)` to a target resource in the catalog (built from
+   `resource_discovery.paths`). Missing targets are a hard error.
+2. Apply the target's own overlays + spec defaults so `ctx.self` matches what the target would see
+   at its own render. No schema validation: targets are inspected, not re-rendered.
+3. Find the target kind's `hooks.dependents` entry matching the consumer's kind. A target that
+   doesn't list the consumer's kind as allowed is a hard error.
+4. Run each registered dependent hook against the consumer's FS, in declaration order.
 
 Render hooks cannot observe state injected by dependent hooks — the lifecycles are strictly ordered
-(overrides → render → dependents → write). Cycles (A depends on B, B depends on A, …) are detected at
-render time and produce a hard error.
+(overrides → render → dependents → write).
 
 ## Build-time integration
 
-`veil build` walks all kinds in the registry. For each consumer kind C, it collects every kind T that
-lists C in its `dependents` and writes a discriminated union into C's emitted `kind.schema.json`:
+`veil build` walks all kinds in the registry. For each consumer kind C, it collects every kind T
+that lists C in its `hooks.dependents` and writes a discriminated union into C's emitted
+`kind.schema.json`:
 
 ```json
 "dependencies": {
@@ -623,16 +703,27 @@ renders. Complex arguments are JSON-stringified.
 
 # Protobuf & schemas
 
-All core types (`VeilConfig`, `Kind`, `Resource`, `Metadata`, `Overlay`, `Override`) are defined
-as protobuf messages in `proto/veil/v1/` with `buf.validate` constraints. The `Makefile` runs a generation
-pipeline:
+All core types are defined as protobuf messages in `proto/veil/v1/` with `buf.validate` constraints.
+Source-side hand-authored types live in `config.proto` and carry the `Definition` suffix
+(`VeilConfigDefinition`, `KindDefinition`, `HooksDefinition`, `DependentDefinition`); the
+corresponding published forms — what `veil build` emits and `veil render` consumes — live in
+`registry.proto` with bare names (`Kind`, `Hooks`, `Hook`, `Dependent`, `Registry`,
+`RegistryEntry`). The convention: **if it lives in a local JSON file authored by hand, it's a
+`*Definition`; if it lives in a published artifact, it's just the type**. Sub-messages used in both
+contexts (`Variable`, `VariableType`) keep bare names.
+
+The `Makefile` runs a generation pipeline:
 
 1. `buf generate` — produces Go code (`api/go/`) and JSON Schemas (`api/jsonschema/`)
 2. `scripts/deref-jsonschema/` — post-processes the JSON Schemas: dereferences all `$ref` pointers, simplifies
-   enum representations, cleans filenames (e.g. `veil.v1.ResourceDef.schema.bundle.json` → `ResourceDef.schema.json`)
+   enum representations, cleans filenames (e.g. `veil.v1.KindDefinition.schema.bundle.json` → `KindDefinition.schema.json`)
 3. Cleaned schemas are copied to `pkg/embeds/jsonschema/` and embedded in the binary via `//go:embed`
 
-The embedded schemas are available via `veil schema {config,kind,resource,metadata}`.
+The embedded schemas are available via `veil schema {config,kind,kind-definition,resource,metadata}`.
+
+All on-disk veil JSON is encoded via `pkg/protoencode`, which centralizes the canonical `protojson`
+configuration: `UseProtoNames: true` (snake_case field names) for marshalling, `DiscardUnknown: true`
+for unmarshalling so editor metadata like `$schema` doesn't break loading.
 
 # CLI commands
 
@@ -655,12 +746,17 @@ Compiles every kind in the registry into a self-contained JSON document and writ
 ```
 
 The pipeline runs in two passes. Single-kind: validate the definition, regenerate
-`hooks/veil-types.ts`, run `tsc --noEmit --strict` (or `tsgo`) against the hooks dir if a TypeScript
-compiler is on PATH, bundle each hook (esbuild, minified — both render hooks and any
-`dependents[].hooks`). Cross-kind: for every consumer kind, collect every target kind that lists it
-in `dependents` and emit the discriminated `dependencies` schema (and corresponding TS types) into
-the consumer's `kind.schema.json` and `veil-types.ts`. After both passes succeed for every kind, the
-per-kind `kind.json` files and the top-level `registry.json` are written.
+`hooks/src/veil-types.ts`, run `tsc --noEmit --strict` (or `tsgo`) against the hooks dir if a
+TypeScript compiler is on PATH, bundle each hook (esbuild, minified — both render hooks and any
+`hooks.dependents[].paths`). Cross-kind: for every consumer kind, collect every target kind that
+lists it in `hooks.dependents` and emit the discriminated `dependencies` schema (and corresponding
+TS types) into the consumer's `kind.schema.json` and `veil-types.ts`. After both passes succeed
+for every kind, the per-kind `kind.json` files and the top-level `registry.json` are written.
+
+The build also bakes the project's declared variables into the metadata schema's `overlays[].if`
+property — `additionalProperties: false` plus an enumerated `properties` map so a typo in a
+variable reference (`evn` instead of `env`) fails JSON-schema validation rather than silently
+never matching.
 
 Flags:
 
@@ -670,23 +766,30 @@ Flags:
 
 ## `veil render <path>`
 
-The primary command. Renders deployment configuration. The required `<path>` positional is either a
-single resource file or a directory of resources — directories are scanned non-recursively for `*.json`
-files matching the Resource shape; a file argument must parse as a Resource or the command errors.
+The primary command. Renders one resource at a time. The required `<path>` positional is the
+filesystem path to a single resource JSON file. The CLI converts the path to its `fs.FS`-relative
+form against the project root and consults the catalog (`resource_discovery.paths`) to recover the
+resource's `(kind, name)` — those identify the entry point that the renderer pulls in via the
+catalog and walks outward from.
 
-1. Discover resources at `<path>` (JSON files with `metadata.kind`, `metadata.name`, and `spec`)
+1. Build the catalog from `resource_discovery.paths` (lazy `(kind, name)` index — see
+   [Resource discovery](#resource-discovery))
 2. Load compiled kinds from every configured **registry** (see below)
-3. Evaluate `metadata.overlays` — for each overlay whose CEL `match` expression is true, merge the overlay's
-   `spec` into the base `spec`
-4. Validate the merged `spec` against the kind's schema (which also validates `dependencies[].params`
+3. Resolve the entry point: look up the path argument in the catalog → `(kind, name)` → fully
+   parsed Resource
+4. Evaluate `metadata.overlays` — for each overlay whose `if` map matches every variable's stringified
+   value against the listed Go regex, merge the overlay's `spec` into the base `spec`. Overlay files
+   themselves are read from the project FS (relative to the resource's own directory).
+5. Validate the merged `spec` against the kind's schema (which also validates `dependencies[].params`
    against the discriminated schema baked in at build time)
-5. Load the `sources` (already embedded in the compiled `kind.json`) into an initial `FS`, then apply any
+6. Load the `sources` (already embedded in the compiled `kind.json`) into an initial `FS`, then apply any
    `metadata.overrides` — each entry replaces the corresponding source's contents in the FS so the hook
    pipeline operates on the override as its starting point
-6. Apply `hooks.render` in order (calling each `RenderHook.render`), threading the FS through the pipeline
-7. Apply `dependencies` — for each entry, resolve the target, find its matching `dependents` hook(s),
-   and run them against the consumer's FS. See [Dependencies](#dependencies)
-8. Write the final files to disk
+7. Apply `hooks.render` in order (calling each `RenderHook.render`), threading the FS through the pipeline
+8. Apply `dependencies` — for each entry, look up the target via the catalog, find the target kind's
+   matching `hooks.dependents` entry for the consumer's kind, and run those hooks against the
+   consumer's FS. See [Dependencies](#dependencies).
+9. Write the final files to disk
 
 ### Registries
 

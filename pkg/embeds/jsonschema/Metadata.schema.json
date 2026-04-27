@@ -1,37 +1,62 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Metadata contains fields common to every resource.",
+  "description": "Metadata contains fields common to every resource. The presence of\n `file_type` (and its default of `definition`) lets the catalog tell\n authoritative resource files apart from overlay fragments without\n needing to inspect every other field.",
+  "patternProperties": {
+    "^(fileType)$": {
+      "description": "What kind of file this metadata block belongs to. Defaults to\n `definition` when omitted (the historical / authoritative\n resource-file shape). Set to `overlay` on overlay fragments so\n the catalog walker can skip them without name/kind heuristics.",
+      "enum": [
+        "definition",
+        "overlay"
+      ],
+      "title": "Enum",
+      "type": "string"
+    }
+  },
   "properties": {
+    "file_type": {
+      "description": "What kind of file this metadata block belongs to. Defaults to\n `definition` when omitted (the historical / authoritative\n resource-file shape). Set to `overlay` on overlay fragments so\n the catalog walker can skip them without name/kind heuristics.",
+      "enum": [
+        "definition",
+        "overlay"
+      ],
+      "title": "Enum",
+      "type": "string"
+    },
     "kind": {
-      "description": "The name of the kind this resource instantiates. Must match a kind\n present in one of the loaded registries.",
-      "minLength": 1,
+      "default": "",
+      "description": "The name of the kind this resource instantiates. Required when\n `file_type` is `definition`; ignored when `file_type` is\n `overlay` — overlays cannot reassign their target's kind.",
       "type": "string"
     },
     "name": {
-      "description": "The name of this resource.",
-      "minLength": 1,
+      "default": "",
+      "description": "The name of this resource. Required when `file_type` is\n `definition` (the default); ignored entirely when `file_type` is\n `overlay` — overlays cannot rename their target resource.",
       "type": "string"
     },
     "overlays": {
-      "description": "Conditional overlays applied based on CEL expressions.",
+      "description": "Conditional overlays applied based on per-variable regex matches.",
       "items": {
         "additionalProperties": false,
-        "description": "Overlay is a conditional data merge applied before transforms.",
+        "description": "Overlay is a conditional data merge applied before transforms. The\n overlay applies when every entry in `if` matches: the resolved\n value of each named variable (stringified) must match the\n corresponding Go regular expression.",
         "properties": {
           "file": {
             "description": "Path to the overlay file. Resolved relative to the resource file\n that declares this overlay, or used as-is when absolute.",
             "minLength": 1,
             "type": "string"
           },
-          "match": {
-            "description": "CEL expression evaluated against the render context.",
-            "minLength": 1,
-            "type": "string"
+          "if": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "buf:lint:ignore FIELD_LOWER_SNAKE_CASE",
+            "propertyNames": {
+              "type": "string"
+            },
+            "title": "Map of variable name → regex pattern. All entries must match for\n the overlay to apply. An empty map means \"always apply\".",
+            "type": "object"
           }
         },
         "required": [
-          "match",
           "file"
         ],
         "title": "Overlay",
@@ -66,10 +91,6 @@
       "type": "array"
     }
   },
-  "required": [
-    "name",
-    "kind"
-  ],
   "title": "Metadata",
   "type": "object"
 }
