@@ -31,7 +31,12 @@ var Unmarshal = protojson.UnmarshalOptions{DiscardUnknown: true}
 // (a deliberate non-canonical marker) which is ugly. The re-marshal
 // sorts object keys alphabetically; that's stable across runs and fine
 // for veil's compiled artifacts.
-func WriteFile(path string, m proto.Message) error {
+//
+// When schemaURL is non-empty, a `$schema` field is injected at the top
+// level so editors can resolve the published schema for the document.
+// `$schema` sorts ahead of every proto field name (the leading `$` is
+// ASCII 0x24, before any letter), so it lands first in the output.
+func WriteFile(path string, m proto.Message, schemaURL string) error {
 	raw, err := Marshal.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("marshalling %s: %w", path, err)
@@ -39,6 +44,11 @@ func WriteFile(path string, m proto.Message) error {
 	var generic any
 	if err := stdjson.Unmarshal(raw, &generic); err != nil {
 		return fmt.Errorf("re-parsing %s: %w", path, err)
+	}
+	if schemaURL != "" {
+		if obj, ok := generic.(map[string]any); ok {
+			obj["$schema"] = schemaURL
+		}
 	}
 	var buf bytes.Buffer
 	enc := stdjson.NewEncoder(&buf)

@@ -418,11 +418,9 @@ type Override struct {
 	// resource file that declares this override, or used as-is when
 	// absolute.
 	Path string `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
-	// When true, render hooks may still observe and edit this file
-	// during the pipeline, but their changes are discarded at write
-	// time — the final rendered output is exactly the local override
-	// content, byte-for-byte. Use this when the kind's hooks would
-	// otherwise stomp on a hand-tuned customization.
+	// When true, all hooks are skipped on this particular file. Allows
+	// you to bring your own files instead of using what the registry
+	// provides.
 	SkipHooks     bool `protobuf:"varint,3,opt,name=skip_hooks,json=skipHooks,proto3" json:"skip_hooks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -505,9 +503,9 @@ const file_veil_v1_resource_proto_rawDesc = "" +
 	"\x04Enum\x12\x0e\n" +
 	"\n" +
 	"definition\x10\x00\x12\v\n" +
-	"\aoverlay\x10\x01\"\x8a\x01\n" +
-	"\aOverlay\x12(\n" +
-	"\x02if\x18\x01 \x03(\v2\x18.veil.v1.Overlay.IfEntryR\x02if\x12\x1e\n" +
+	"\aoverlay\x10\x01\"\xb0\x01\n" +
+	"\aOverlay\x12N\n" +
+	"\x02if\x18\x01 \x03(\v2\x18.veil.v1.Overlay.IfEntryB$\xbaH!\x9a\x01\x1e\"\x1cr\x1a2\x18^[a-zA-Z_][a-zA-Z0-9_]*$R\x02if\x12\x1e\n" +
 	"\x04file\x18\x02 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04file\x1a5\n" +
 	"\aIfEntry\x12\x10\n" +

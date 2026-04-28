@@ -10,6 +10,7 @@
         "paths": {
           "description": "Glob patterns identifying resource JSON files. Files that don't\n parse as a Resource shape (overlays, fragments, schemas) are\n skipped silently; duplicate (kind, name) pairs across matches are\n rejected.",
           "items": {
+            "minLength": 1,
             "type": "string"
           },
           "type": "array"
@@ -23,16 +24,21 @@
     "kinds": {
       "description": "Relative or absolute paths to kind definition files.",
       "items": {
+        "minLength": 1,
         "type": "string"
       },
       "type": "array"
     },
     "registries": {
-      "description": "Paths to additional compiled registry.json files to load at render\n time. Local builds are discovered automatically; use this to wire in\n shared or externally-distributed registries.",
-      "items": {
+      "additionalProperties": {
         "type": "string"
       },
-      "type": "array"
+      "description": "Aliased registry sources keyed by alias. The empty-string alias\n (`\"\"`) is the default registry: kind references with no `\u003calias\u003e/`\n prefix resolve there. Named aliases can be any string and are used\n verbatim in references — declaring\n `\"acme\": \"./vendor/acme/registry.json\"` lets resources reference\n its kinds as `acme/\u003ckind\u003e`. The `@`-prefixed convention (e.g.\n `\"@scope\": \"...\"` referenced as `@scope/\u003ckind\u003e`) is supported but\n not required — the alias is treated as opaque text. Values are\n paths to compiled registry.json files (or URLs, when the loader\n supports them).",
+      "propertyNames": {
+        "pattern": "^([^.:/][^:/]*)?$",
+        "type": "string"
+      },
+      "type": "object"
     },
     "resource_discovery": {
       "additionalProperties": false,
@@ -41,6 +47,7 @@
         "paths": {
           "description": "Glob patterns identifying resource JSON files. Files that don't\n parse as a Resource shape (overlays, fragments, schemas) are\n skipped silently; duplicate (kind, name) pairs across matches are\n rejected.",
           "items": {
+            "minLength": 1,
             "type": "string"
           },
           "type": "array"
@@ -86,11 +93,15 @@
       },
       "description": "User-defined input variables keyed by name. Values are provided at\n render time via --var flags or VEIL_VAR_\u003cNAME\u003e environment variables.",
       "propertyNames": {
+        "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
         "type": "string"
       },
       "type": "object"
     }
   },
+  "required": [
+    "registries"
+  ],
   "title": "Veil Config Definition",
   "type": "object"
 }

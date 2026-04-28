@@ -19,6 +19,7 @@
           "kind": {
             "description": "The consumer kind that may depend on this resource.",
             "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_-]*$",
             "type": "string"
           },
           "params_path": {
@@ -29,6 +30,7 @@
           "paths": {
             "description": "Paths to hook files that run when a resource of `kind` declares a\n dependency on this resource. At least one entry is required. Hooks\n run in declaration order. Paths are resolved relative to the\n enclosing kind.json file.",
             "items": {
+              "minLength": 1,
               "type": "string"
             },
             "type": "array"
@@ -46,54 +48,64 @@
     "render": {
       "description": "Hooks run during `veil render` (each exports a Hook whose optional\n `renderHook(ctx, fs)` transforms the bundle). Each entry is an\n object with a required `path` plus optional `access` declaring the\n host resources the hook may read.",
       "items": {
-        "additionalProperties": false,
         "description": "RenderHookDefinition is a single render-hook entry in kind.json: a\n path to the hook source file plus optional `access` declaring the\n host resources the hook may read.",
-        "properties": {
-          "access": {
-            "additionalProperties": false,
-            "description": "Optional declaration of host resources this hook needs (env vars,\n and eventually filesystem / network as they're added).",
-            "properties": {
-              "env": {
-                "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
-                "items": {
-                  "additionalProperties": false,
-                  "description": "EnvAccess names a single host environment variable a hook needs.",
-                  "properties": {
-                    "description": {
-                      "description": "A brief description of what this key is used for and why. Surfaced\n when the var is missing so the user can correct the issue.",
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "name": {
-                      "description": "The env var being requested by the hook.",
-                      "minLength": 1,
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "name",
-                    "description"
-                  ],
-                  "title": "Env Access",
-                  "type": "object"
-                },
-                "type": "array"
-              }
-            },
-            "title": "Hook Access",
-            "type": "object"
-          },
-          "path": {
+        "oneOf": [
+          {
             "description": "Path to the hook source file. Resolved relative to the enclosing\n kind.json file.",
             "minLength": 1,
             "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "access": {
+                "additionalProperties": false,
+                "description": "Optional declaration of host resources this hook needs (env vars,\n and eventually filesystem / network as they're added).",
+                "properties": {
+                  "env": {
+                    "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
+                    "items": {
+                      "additionalProperties": false,
+                      "description": "EnvAccess names a single host environment variable a hook needs.",
+                      "properties": {
+                        "description": {
+                          "description": "A brief description of what this key is used for and why. Surfaced\n when the var is missing so the user can correct the issue.",
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "name": {
+                          "description": "The env var being requested by the hook. Must match the conventions\n for valid POSIX environment-variable identifiers.",
+                          "minLength": 1,
+                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "description"
+                      ],
+                      "title": "Env Access",
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "title": "Hook Access",
+                "type": "object"
+              },
+              "path": {
+                "description": "Path to the hook source file. Resolved relative to the enclosing\n kind.json file.",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
           }
-        },
-        "required": [
-          "path"
         ],
-        "title": "Render Hook Definition",
-        "type": "object"
+        "title": "Render Hook Definition"
       },
       "type": "array"
     }

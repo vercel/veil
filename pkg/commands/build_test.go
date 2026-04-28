@@ -11,6 +11,8 @@ import (
 
 	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/suite"
+
+	"github.com/vercel/veil/pkg/embeds"
 )
 
 type BuildSuite struct {
@@ -60,6 +62,7 @@ func (s *BuildSuite) TestBuildEmitsCompiledKindAndSchema() {
 	s.FileExists(filepath.Join(outDir, "registry.json"))
 
 	registry := s.readJSON(filepath.Join(outDir, "registry.json"))
+	s.Equal(embeds.RegistrySchemaURL, registry["$schema"])
 	kinds, ok := registry["kinds"].(map[string]any)
 	s.Require().True(ok)
 	worker, ok := kinds["worker"].(map[string]any)
@@ -69,6 +72,7 @@ func (s *BuildSuite) TestBuildEmitsCompiledKindAndSchema() {
 	s.Equal("./worker/kind.schema.json", worker["schema"])
 
 	compiled := s.readJSON(filepath.Join(outDir, "worker", "kind.json"))
+	s.Equal(embeds.KindSchemaURL, compiled["$schema"])
 	s.Equal("worker", compiled["name"])
 
 	sources, ok := compiled["sources"].(map[string]any)

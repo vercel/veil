@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/goccy/go-json"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
@@ -40,7 +42,7 @@ type Registry struct {
 	Root              string
 	Kinds             []*Kind
 	Variables         map[string]*veilv1.Variable
-	Registries        []string
+	Registries        map[string]string
 	ResourceDiscovery *veilv1.ResourceDiscovery
 }
 
@@ -161,6 +163,9 @@ func Load(configPath string) (*Registry, error) {
 	if err := validateVariables(cfg.Variables); err != nil {
 		return nil, fmt.Errorf("%s: %w", configPath, err)
 	}
+	if err := validateRegistries(cfg.Registries); err != nil {
+		return nil, fmt.Errorf("%s: %w", configPath, err)
+	}
 
 	root := filepath.Dir(configPath)
 	kinds := make([]*Kind, 0, len(cfg.Kinds))
@@ -217,6 +222,27 @@ func validateVariables(vars map[string]*veilv1.Variable) error {
 			if enumVals != nil && !containsValue(enumVals, def) {
 				return fmt.Errorf("variable %q default %v is not in enum %v", name, def, enumVals)
 			}
+		}
+	}
+	return nil
+}
+
+// validateRegistries enforces alias key rules on the veil.json
+// `registries` map. The empty alias (`""`) is the default registry and
+// is unrestricted; named aliases must not start with `.` (which would
+// shadow relative-path tokens in references) and must not contain `:`
+// or `/` (the former clashes with URI schemes, the latter with the
+// alias/kind separator in references).
+func validateRegistries(registries map[string]string) error {
+	for alias := range registries {
+		if alias == "" {
+			continue
+		}
+		if strings.HasPrefix(alias, ".") {
+			return fmt.Errorf("registry alias %q is invalid: must not start with '.'", alias)
+		}
+		if strings.ContainsAny(alias, ":/") {
+			return fmt.Errorf("registry alias %q is invalid: must not contain ':' or '/'", alias)
 		}
 	}
 	return nil
@@ -284,6 +310,10 @@ func loadKind(path string) (*Kind, error) {
 	if err != nil {
 		return nil, err
 	}
+	data, err = expandRenderHookShorthand(data)
+	if err != nil {
+		return nil, err
+	}
 	var pk veilv1.KindDefinition
 	if err := protoencode.Unmarshal.Unmarshal(data, &pk); err != nil {
 		return nil, err
@@ -295,4 +325,36 @@ func loadKind(path string) (*Kind, error) {
 		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
 	return &Kind{KindDefinition: &pk, Dir: filepath.Dir(path)}, nil
+}
+
+// expandRenderHookShorthand rewrites any string entry in `hooks.render`
+// into the full `{path: <string>}` object form. Authors can write
+// `"render": ["./hooks/foo.ts"]` as shorthand for the proto-defined
+// RenderHookDefinition shape; protojson rejects the bare string, so we
+// normalize before unmarshalling.
+func expandRenderHookShorthand(data []byte) ([]byte, error) {
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return data, nil
+	}
+	hooks, ok := doc["hooks"].(map[string]any)
+	if !ok {
+		return data, nil
+	}
+	render, ok := hooks["render"].([]any)
+	if !ok {
+		return data, nil
+	}
+	changed := false
+	for i, entry := range render {
+		if s, ok := entry.(string); ok {
+			render[i] = map[string]any{"path": s}
+			changed = true
+		}
+	}
+	if !changed {
+		return data, nil
+	}
+	hooks["render"] = render
+	return json.Marshal(doc)
 }

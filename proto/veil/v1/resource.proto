@@ -101,7 +101,7 @@ message Overlay {
   // the overlay to apply. An empty map means "always apply".
   //
   // buf:lint:ignore FIELD_LOWER_SNAKE_CASE
-  map<string, string> if = 1;
+  map<string, string> if = 1 [(buf.validate.field).map.keys.string.pattern = "^[a-zA-Z_][a-zA-Z0-9_]*$"];
 
   // Path to the overlay file. Resolved relative to the resource file
   // that declares this overlay, or used as-is when absolute.

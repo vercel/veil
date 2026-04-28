@@ -11,15 +11,17 @@ import "veil/v1/config.proto";
 // filesystem. Compare with KindDefinition (config.proto), which is the
 // hand-authored source-side shape that this is compiled from.
 message Kind {
-  // Name of the kind (matches KindDefinition.name).
+  // Name of the kind (matches KindDefinition.name). Same naming rules
+  // — lowercase letter start, then `[a-z0-9_-]`.
   string name = 1 [
     (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).string.pattern = "^[a-z][a-z0-9_-]*$",
     (buf.validate.field).required = true
   ];
 
   // Source files keyed by path relative to the kind directory. Values are
   // the raw file contents.
-  map<string, string> sources = 2;
+  map<string, string> sources = 2 [(buf.validate.field).map.keys.string.min_len = 1];
 
   // Compiled hooks grouped by lifecycle point — render hooks plus the
   // per-consumer dependent block. Mirrors KindDefinition.hooks.
@@ -27,7 +29,7 @@ message Kind {
 
   // Input variable declarations copied from veil.json. Consumers resolve
   // values from --var flags, VEIL_VAR_* env vars, or the declared default.
-  map<string, Variable> variables = 4;
+  map<string, Variable> variables = 4 [(buf.validate.field).map.keys.string.pattern = "^[a-zA-Z_][a-zA-Z0-9_]*$"];
 }
 
 // Hooks mirrors KindDefinition.hooks but holds compiled/bundled hook
@@ -50,7 +52,7 @@ message Hooks {
 message Registry {
   // Kind name → entry pointing at the compiled kind document and its schema.
   // All paths are resolved against the registry.json's own directory.
-  map<string, RegistryEntry> kinds = 1;
+  map<string, RegistryEntry> kinds = 1 [(buf.validate.field).map.keys.string.pattern = "^[a-z][a-z0-9_-]*$"];
 }
 
 // RegistryEntry describes a single kind in a Registry.
@@ -58,6 +60,7 @@ message RegistryEntry {
   // Name of the kind (matches the map key and Kind.name).
   string name = 1 [
     (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).string.pattern = "^[a-z][a-z0-9_-]*$",
     (buf.validate.field).required = true
   ];
 
@@ -107,6 +110,7 @@ message DependentHook {
   // DependentDefinition.kind).
   string kind = 1 [
     (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).string.pattern = "^[a-z][a-z0-9_-]*$",
     (buf.validate.field).required = true
   ];
 

@@ -11,16 +11,29 @@ import "google/protobuf/struct.proto";
 // (Kind, Registry, …) are the corresponding published forms.
 message VeilConfigDefinition {
   // Relative or absolute paths to kind definition files.
-  repeated string kinds = 1 [(buf.validate.field).repeated.min_items = 1];
+  repeated string kinds = 1 [
+    (buf.validate.field).repeated.min_items = 1,
+    (buf.validate.field).repeated.items.string.min_len = 1
+  ];
 
   // User-defined input variables keyed by name. Values are provided at
   // render time via --var flags or VEIL_VAR_<NAME> environment variables.
-  map<string, Variable> variables = 2;
+  map<string, Variable> variables = 2 [(buf.validate.field).map.keys.string.pattern = "^[a-zA-Z_][a-zA-Z0-9_]*$"];
 
-  // Paths to additional compiled registry.json files to load at render
-  // time. Local builds are discovered automatically; use this to wire in
-  // shared or externally-distributed registries.
-  repeated string registries = 3;
+  // Aliased registry sources keyed by alias. The empty-string alias
+  // (`""`) is the default registry: kind references with no `<alias>/`
+  // prefix resolve there. Named aliases can be any string and are used
+  // verbatim in references — declaring
+  // `"acme": "./vendor/acme/registry.json"` lets resources reference
+  // its kinds as `acme/<kind>`. The `@`-prefixed convention (e.g.
+  // `"@scope": "..."` referenced as `@scope/<kind>`) is supported but
+  // not required — the alias is treated as opaque text. Values are
+  // paths to compiled registry.json files (or URLs, when the loader
+  // supports them).
+  map<string, string> registries = 3 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).map.keys.string.pattern = "^([^.:/][^:/]*)?$"
+  ];
 
   // Where to find the resource JSON files that make up the project's
   // catalog. Used at render time to resolve dependency targets.
@@ -37,7 +50,7 @@ message ResourceDiscovery {
   // parse as a Resource shape (overlays, fragments, schemas) are
   // skipped silently; duplicate (kind, name) pairs across matches are
   // rejected.
-  repeated string paths = 1;
+  repeated string paths = 1 [(buf.validate.field).repeated.items.string.min_len = 1];
 }
 
 // VariableType is a wrapper message that holds the Variable.type enum.
@@ -101,14 +114,19 @@ message Variable {
 // KindDefinition is a hand-authored kind.json — the source-side shape
 // that `veil build` compiles into a published Kind (registry.proto).
 message KindDefinition {
-  // The name of this kind (e.g. "service", "cron").
+  // The name of this kind (e.g. "service", "cron"). Must start with a
+  // lowercase letter and contain only lowercase letters, digits, `-`,
+  // and `_` — the same convention enforced by `veil new kind`.
   string name = 1 [
     (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).string.pattern = "^[a-z][a-z0-9_-]*$",
     (buf.validate.field).required = true
   ];
 
-  // Source configuration files that make up the kind.
-  repeated string sources = 2 [(buf.validate.field).repeated.min_items = 1];
+  // Source configuration files that make up the kind. May be empty —
+  // a kind with no sources is valid (it's the bare template plus
+  // whatever its hooks add at render time).
+  repeated string sources = 2 [(buf.validate.field).repeated.items.string.min_len = 1];
 
   // Hook code files grouped by lifecycle point. The dependents block —
   // the per-consumer hooks that fire when another kind declares a
@@ -167,9 +185,11 @@ message HookAccess {
 
 // EnvAccess names a single host environment variable a hook needs.
 message EnvAccess {
-  // The env var being requested by the hook.
+  // The env var being requested by the hook. Must match the conventions
+  // for valid POSIX environment-variable identifiers.
   string name = 1 [
     (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).string.pattern = "^[A-Za-z_][A-Za-z0-9_]*$",
     (buf.validate.field).required = true
   ];
 
@@ -189,6 +209,7 @@ message DependentDefinition {
   // The consumer kind that may depend on this resource.
   string kind = 1 [
     (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).string.pattern = "^[a-z][a-z0-9_-]*$",
     (buf.validate.field).required = true
   ];
 
@@ -196,7 +217,10 @@ message DependentDefinition {
   // dependency on this resource. At least one entry is required. Hooks
   // run in declaration order. Paths are resolved relative to the
   // enclosing kind.json file.
-  repeated string paths = 2 [(buf.validate.field).repeated.min_items = 1];
+  repeated string paths = 2 [
+    (buf.validate.field).repeated.min_items = 1,
+    (buf.validate.field).repeated.items.string.min_len = 1
+  ];
 
   // Path to the JSON Schema describing the `params` object that the
   // consumer must supply when declaring this dependency. Resolved

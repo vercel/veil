@@ -14,6 +14,7 @@
       },
       "description": "buf:lint:ignore FIELD_LOWER_SNAKE_CASE",
       "propertyNames": {
+        "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
         "type": "string"
       },
       "title": "Map of variable name → regex pattern. All entries must match for\n the overlay to apply. An empty map means \"always apply\".",

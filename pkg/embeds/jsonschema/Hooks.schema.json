@@ -38,8 +38,9 @@
                             "type": "string"
                           },
                           "name": {
-                            "description": "The env var being requested by the hook.",
+                            "description": "The env var being requested by the hook. Must match the conventions\n for valid POSIX environment-variable identifiers.",
                             "minLength": 1,
+                            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
                             "type": "string"
                           }
                         },
@@ -79,6 +80,7 @@
           "kind": {
             "description": "The consumer kind that may depend on this resource (matches\n DependentDefinition.kind).",
             "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_-]*$",
             "type": "string"
           },
           "params_schema": {
@@ -118,8 +120,9 @@
                       "type": "string"
                     },
                     "name": {
-                      "description": "The env var being requested by the hook.",
+                      "description": "The env var being requested by the hook. Must match the conventions\n for valid POSIX environment-variable identifiers.",
                       "minLength": 1,
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
                       "type": "string"
                     }
                   },

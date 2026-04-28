@@ -176,7 +176,7 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 		}
 
 		jsonPath := filepath.Join(kindDir, "kind.json")
-		if err := protoencode.WriteFile(jsonPath, ck); err != nil {
+		if err := protoencode.WriteFile(jsonPath, ck, embeds.KindSchemaURL); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", k.Name, err))
 			continue
 		}
@@ -200,7 +200,7 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 	}
 
 	registryPath := filepath.Join(outDir, "registry.json")
-	if err := protoencode.WriteFile(registryPath, registry); err != nil {
+	if err := protoencode.WriteFile(registryPath, registry, embeds.RegistrySchemaURL); err != nil {
 		return fmt.Errorf("writing registry: %w", err)
 	}
 	if p != nil {

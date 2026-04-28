@@ -29,7 +29,8 @@ const (
 // hand-authored source-side shape that this is compiled from.
 type Kind struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Name of the kind (matches KindDefinition.name).
+	// Name of the kind (matches KindDefinition.name). Same naming rules
+	// — lowercase letter start, then `[a-z0-9_-]`.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Source files keyed by path relative to the kind directory. Values are
 	// the raw file contents.
@@ -417,13 +418,12 @@ var File_veil_v1_registry_proto protoreflect.FileDescriptor
 
 const file_veil_v1_registry_proto_rawDesc = "" +
 	"\n" +
-	"\x16veil/v1/registry.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x14veil/v1/config.proto\"\xcb\x02\n" +
-	"\x04Kind\x12\x1e\n" +
-	"\x04name\x18\x01 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x124\n" +
-	"\asources\x18\x02 \x03(\v2\x1a.veil.v1.Kind.SourcesEntryR\asources\x12$\n" +
-	"\x05hooks\x18\x03 \x01(\v2\x0e.veil.v1.HooksR\x05hooks\x12:\n" +
-	"\tvariables\x18\x04 \x03(\v2\x1c.veil.v1.Kind.VariablesEntryR\tvariables\x1a:\n" +
+	"\x16veil/v1/registry.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x14veil/v1/config.proto\"\x93\x03\n" +
+	"\x04Kind\x122\n" +
+	"\x04name\x18\x01 \x01(\tB\x1e\xbaH\x1b\xc8\x01\x01r\x16\x10\x012\x12^[a-z][a-z0-9_-]*$R\x04name\x12B\n" +
+	"\asources\x18\x02 \x03(\v2\x1a.veil.v1.Kind.SourcesEntryB\f\xbaH\t\x9a\x01\x06\"\x04r\x02\x10\x01R\asources\x12$\n" +
+	"\x05hooks\x18\x03 \x01(\v2\x0e.veil.v1.HooksR\x05hooks\x12`\n" +
+	"\tvariables\x18\x04 \x03(\v2\x1c.veil.v1.Kind.VariablesEntryB$\xbaH!\x9a\x01\x1e\"\x1cr\x1a2\x18^[a-zA-Z_][a-zA-Z0-9_]*$R\tvariables\x1a:\n" +
 	"\fSourcesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aO\n" +
@@ -434,16 +434,15 @@ const file_veil_v1_registry_proto_rawDesc = "" +
 	"\x06render\x18\x01 \x03(\v2\r.veil.v1.HookR\x06render\x126\n" +
 	"\n" +
 	"dependents\x18\x02 \x03(\v2\x16.veil.v1.DependentHookR\n" +
-	"dependents\"\x90\x01\n" +
-	"\bRegistry\x122\n" +
-	"\x05kinds\x18\x01 \x03(\v2\x1c.veil.v1.Registry.KindsEntryR\x05kinds\x1aP\n" +
+	"dependents\"\xb0\x01\n" +
+	"\bRegistry\x12R\n" +
+	"\x05kinds\x18\x01 \x03(\v2\x1c.veil.v1.Registry.KindsEntryB\x1e\xbaH\x1b\x9a\x01\x18\"\x16r\x142\x12^[a-z][a-z0-9_-]*$R\x05kinds\x1aP\n" +
 	"\n" +
 	"KindsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
-	"\x05value\x18\x02 \x01(\v2\x16.veil.v1.RegistryEntryR\x05value:\x028\x01\"s\n" +
-	"\rRegistryEntry\x12\x1e\n" +
-	"\x04name\x18\x01 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x12\x1e\n" +
+	"\x05value\x18\x02 \x01(\v2\x16.veil.v1.RegistryEntryR\x05value:\x028\x01\"\x87\x01\n" +
+	"\rRegistryEntry\x122\n" +
+	"\x04name\x18\x01 \x01(\tB\x1e\xbaH\x1b\xc8\x01\x01r\x16\x10\x012\x12^[a-z][a-z0-9_-]*$R\x04name\x12\x1e\n" +
 	"\x04path\x18\x02 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04path\x12\"\n" +
 	"\x06schema\x18\x03 \x01(\tB\n" +
@@ -453,10 +452,9 @@ const file_veil_v1_registry_proto_rawDesc = "" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x12$\n" +
 	"\acontent\x18\x02 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\acontent\x12+\n" +
-	"\x06access\x18\x03 \x01(\v2\x13.veil.v1.HookAccessR\x06access\"\x8f\x01\n" +
-	"\rDependentHook\x12\x1e\n" +
-	"\x04kind\x18\x01 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04kind\x12-\n" +
+	"\x06access\x18\x03 \x01(\v2\x13.veil.v1.HookAccessR\x06access\"\xa3\x01\n" +
+	"\rDependentHook\x122\n" +
+	"\x04kind\x18\x01 \x01(\tB\x1e\xbaH\x1b\xc8\x01\x01r\x16\x10\x012\x12^[a-z][a-z0-9_-]*$R\x04kind\x12-\n" +
 	"\x05hooks\x18\x02 \x03(\v2\r.veil.v1.HookB\b\xbaH\x05\x92\x01\x02\b\x01R\x05hooks\x12/\n" +
 	"\rparams_schema\x18\x03 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\fparamsSchemaB\x87\x01\n" +

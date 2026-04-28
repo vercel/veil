@@ -13,20 +13,24 @@ import (
 
 	"github.com/vercel/veil/pkg/build"
 	"github.com/vercel/veil/pkg/config"
+	"github.com/vercel/veil/pkg/embeds"
 	"github.com/vercel/veil/pkg/fsutil"
 	"github.com/vercel/veil/pkg/interact"
+	"github.com/vercel/veil/pkg/registry"
 )
 
 var nameRegexp = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 
-// New returns the "new" command group for scaffolding kinds and hooks.
+// New returns the "new" command group for scaffolding kinds, hooks, and
+// resources.
 func New() *cli.Command {
 	return &cli.Command{
 		Name:  "new",
-		Usage: "Scaffold new kinds or hooks",
+		Usage: "Scaffold new kinds, hooks, or resources",
 		Commands: []*cli.Command{
 			newKind(),
 			newHook(),
+			newResource(),
 		},
 	}
 }
@@ -65,6 +69,32 @@ func newHook() *cli.Command {
 			},
 		},
 		Action: runNewHook,
+	}
+}
+
+func newResource() *cli.Command {
+	return &cli.Command{
+		Name:      "resource",
+		Usage:     "Scaffold a new resource of a given kind",
+		UsageText: "veil new resource <name> --kind <kind> [--out <path>]",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:     "kind",
+				Usage:    "Kind reference (`<kind>` for the default registry or `<alias>/<kind>` for a named one)",
+				Required: true,
+			},
+			&cli.StringFlag{
+				Name:  "out",
+				Usage: "Path to write the resource JSON file (default: ./<name>.json)",
+			},
+		},
+		Arguments: []cli.Argument{
+			&cli.StringArg{
+				Name:      "name",
+				UsageText: "Name of the resource (lowercase, hyphens allowed)",
+			},
+		},
+		Action: runNewResource,
 	}
 }
 
@@ -141,6 +171,7 @@ func runNewKind(ctx context.Context, c *cli.Command) error {
 	}
 
 	kindJSON := map[string]any{
+		"$schema": embeds.KindDefinitionSchemaURL,
 		"name":    name,
 		"sources": []string{"./sources/source.txt"},
 		"hooks": map[string]any{
@@ -250,6 +281,81 @@ func runNewHook(ctx context.Context, c *cli.Command) error {
 	return nil
 }
 
+func runNewResource(ctx context.Context, c *cli.Command) error {
+	p := interact.Default()
+
+	name := c.StringArg("name")
+	if err := validateName("resource name", name); err != nil {
+		return err
+	}
+	kindRef := c.String("kind")
+	if kindRef == "" {
+		return fmt.Errorf("--kind is required")
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	reg, err := config.Discover(cwd)
+	if err != nil {
+		return err
+	}
+
+	// Load registries to validate the kind exists and to find its
+	// compiled schema. The user must have run `veil build` (or used
+	// `veil new kind`, which builds automatically) at least once for
+	// local kinds; aliased external registries should already have a
+	// registry.json on disk wherever veil.json points to.
+	registries, err := resolveRegistries(nil, reg)
+	if err != nil {
+		return err
+	}
+	kindReg, err := registry.Load(registries)
+	if err != nil {
+		return err
+	}
+	loaded, err := kindReg.LoadKind(kindRef)
+	if err != nil {
+		return fmt.Errorf("kind %q: %w", kindRef, err)
+	}
+
+	outPath := c.String("out")
+	if outPath == "" {
+		outPath = filepath.Join(cwd, name+".json")
+	} else if !filepath.IsAbs(outPath) {
+		outPath = filepath.Join(cwd, outPath)
+	}
+	if _, err := os.Stat(outPath); err == nil {
+		return fmt.Errorf("resource file %s already exists", outPath)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+		return fmt.Errorf("creating directory: %w", err)
+	}
+
+	schemaRel, err := filepath.Rel(filepath.Dir(outPath), loaded.SchemaPath)
+	if err != nil {
+		return fmt.Errorf("resolving schema path: %w", err)
+	}
+
+	resourceJSON := map[string]any{
+		"$schema": filepath.ToSlash(schemaRel),
+		"metadata": map[string]any{
+			"kind": kindRef,
+			"name": name,
+		},
+		"spec": map[string]any{},
+	}
+	if err := writeJSON(outPath, resourceJSON); err != nil {
+		return err
+	}
+
+	p.Successf("Scaffolded resource %q at %s", name, outPath)
+	return nil
+}
+
 // rollback collects undo actions in order. If commit() is not called
 // before run() executes (deferred), the actions run in reverse order to
 // restore the pre-scaffold state. Used so that a failed follow-up build
@@ -293,12 +399,23 @@ func validateName(label, name string) error {
 }
 
 // ensureVeilJSON creates a bare veil.json at cwd if no veil.json exists
-// in cwd or any ancestor. Returns true when it created one.
+// in cwd or any ancestor. Returns true when it created one. The
+// scaffolded `registries` map points the empty-alias entry at the
+// project's local build output so the schema's required field is
+// satisfied and `veil render` resolves kinds from `veil build` output
+// without further configuration.
 func ensureVeilJSON(cwd string) (bool, error) {
 	if fsutil.FindAncestor(cwd, "veil.json") != "" {
 		return false, nil
 	}
-	if err := writeJSON(filepath.Join(cwd, "veil.json"), map[string]any{"kinds": []string{}}); err != nil {
+	bare := map[string]any{
+		"$schema": embeds.VeilConfigDefinitionSchemaURL,
+		"kinds":   []string{},
+		"registries": map[string]string{
+			"": "./" + filepath.ToSlash(filepath.Join(config.PublicDir, "r", "registry.json")),
+		},
+	}
+	if err := writeJSON(filepath.Join(cwd, "veil.json"), bare); err != nil {
 		return false, err
 	}
 	return true, nil

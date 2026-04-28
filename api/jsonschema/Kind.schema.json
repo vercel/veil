@@ -42,8 +42,9 @@
                                 "type": "string"
                               },
                               "name": {
-                                "description": "The env var being requested by the hook.",
+                                "description": "The env var being requested by the hook. Must match the conventions\n for valid POSIX environment-variable identifiers.",
                                 "minLength": 1,
+                                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
                                 "type": "string"
                               }
                             },
@@ -83,6 +84,7 @@
               "kind": {
                 "description": "The consumer kind that may depend on this resource (matches\n DependentDefinition.kind).",
                 "minLength": 1,
+                "pattern": "^[a-z][a-z0-9_-]*$",
                 "type": "string"
               },
               "params_schema": {
@@ -122,8 +124,9 @@
                           "type": "string"
                         },
                         "name": {
-                          "description": "The env var being requested by the hook.",
+                          "description": "The env var being requested by the hook. Must match the conventions\n for valid POSIX environment-variable identifiers.",
                           "minLength": 1,
+                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
                           "type": "string"
                         }
                       },
@@ -165,8 +168,9 @@
       "type": "object"
     },
     "name": {
-      "description": "Name of the kind (matches KindDefinition.name).",
+      "description": "Name of the kind (matches KindDefinition.name). Same naming rules\n — lowercase letter start, then `[a-z0-9_-]`.",
       "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_-]*$",
       "type": "string"
     },
     "sources": {
@@ -175,6 +179,7 @@
       },
       "description": "Source files keyed by path relative to the kind directory. Values are\n the raw file contents.",
       "propertyNames": {
+        "minLength": 1,
         "type": "string"
       },
       "type": "object"
@@ -216,6 +221,7 @@
       },
       "description": "Input variable declarations copied from veil.json. Consumers resolve\n values from --var flags, VEIL_VAR_* env vars, or the declared default.",
       "propertyNames": {
+        "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
         "type": "string"
       },
       "type": "object"

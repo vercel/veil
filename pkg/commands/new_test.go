@@ -9,6 +9,8 @@ import (
 
 	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/suite"
+
+	"github.com/vercel/veil/pkg/embeds"
 )
 
 type NewSuite struct {
@@ -108,6 +110,7 @@ func (s *NewSuite) TestNewKindAutoInitsVeilJSONAndScaffoldsAllFiles() {
 	s.Contains(string(types), "delete(path: string): void;")
 
 	kind := s.readJSON(filepath.Join(kindDir, "kind.json"))
+	s.Equal(embeds.KindDefinitionSchemaURL, kind["$schema"])
 	s.Equal("worker", kind["name"])
 	s.Equal("./schema.json", kind["schema"])
 	s.Equal([]any{"./sources/source.txt"}, kind["sources"])
@@ -116,14 +119,20 @@ func (s *NewSuite) TestNewKindAutoInitsVeilJSONAndScaffoldsAllFiles() {
 	s.Equal([]any{map[string]any{"path": "./hooks/src/hello-world.ts"}}, hooksField["render"])
 
 	veil := s.readJSON(filepath.Join(s.root, "veil.json"))
+	s.Equal(embeds.VeilConfigDefinitionSchemaURL, veil["$schema"])
 	s.Equal([]any{"./.veil/kinds/worker/kind.json"}, veil["kinds"])
+	s.Equal(map[string]any{"": "./public/r/registry.json"}, veil["registries"])
 
 	s.FileExists(filepath.Join(s.root, "public", "r", "worker", "kind.schema.json"))
 	s.FileExists(filepath.Join(s.root, "public", "r", "worker", "kind.json"))
 	s.FileExists(filepath.Join(s.root, "public", "r", "registry.json"))
 
 	compiled := s.readJSON(filepath.Join(s.root, "public", "r", "worker", "kind.json"))
+	s.Equal(embeds.KindSchemaURL, compiled["$schema"])
 	s.Equal("worker", compiled["name"])
+
+	registry := s.readJSON(filepath.Join(s.root, "public", "r", "registry.json"))
+	s.Equal(embeds.RegistrySchemaURL, registry["$schema"])
 	sources, ok := compiled["sources"].(map[string]any)
 	s.Require().True(ok)
 	s.Equal("This is a source file for worker.\n", sources["sources/source.txt"])
@@ -204,6 +213,83 @@ func (s *NewSuite) TestNewHookRejectsUnknownKind() {
 	_, err := s.run("new", "hook", "annotate", "--kind", "missing")
 	s.Require().Error(err)
 	s.Contains(err.Error(), "not found in registry")
+}
+
+func (s *NewSuite) TestNewResourceScaffoldsFile() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	_, err = s.run("new", "resource", "my-worker", "--kind", "worker")
+	s.Require().NoError(err)
+
+	resourcePath := filepath.Join(s.root, "my-worker.json")
+	s.FileExists(resourcePath)
+
+	res := s.readJSON(resourcePath)
+	expectedSchema := filepath.ToSlash(filepath.Join("public", "r", "worker", "kind.schema.json"))
+	s.Equal(expectedSchema, res["$schema"])
+
+	meta, ok := res["metadata"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal("worker", meta["kind"])
+	s.Equal("my-worker", meta["name"])
+
+	spec, ok := res["spec"].(map[string]any)
+	s.Require().True(ok)
+	s.Empty(spec)
+}
+
+func (s *NewSuite) TestNewResourceWithOutFlag() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	subDir := filepath.Join(s.root, "services", "alpha")
+	out := filepath.Join(subDir, "alpha.json")
+
+	_, err = s.run("new", "resource", "alpha", "--kind", "worker", "--out", out)
+	s.Require().NoError(err)
+
+	s.FileExists(out)
+	res := s.readJSON(out)
+	// Schema path is relative to the output file's directory.
+	s.Equal("../../public/r/worker/kind.schema.json", res["$schema"])
+	meta := res["metadata"].(map[string]any)
+	s.Equal("alpha", meta["name"])
+}
+
+func (s *NewSuite) TestNewResourceRejectsUnknownKind() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	_, err = s.run("new", "resource", "thing", "--kind", "missing")
+	s.Require().Error(err)
+	s.Contains(err.Error(), `kind "missing"`)
+}
+
+func (s *NewSuite) TestNewResourceRejectsExistingFile() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	_, err = s.run("new", "resource", "thing", "--kind", "worker")
+	s.Require().NoError(err)
+
+	_, err = s.run("new", "resource", "thing", "--kind", "worker")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "already exists")
+}
+
+func (s *NewSuite) TestNewResourceRequiresKindFlag() {
+	_, err := s.run("new", "resource", "thing")
+	s.Require().Error(err)
+}
+
+func (s *NewSuite) TestNewResourceRejectsInvalidName() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	_, err = s.run("new", "resource", "Bad Name", "--kind", "worker")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "resource name")
 }
 
 func (s *NewSuite) TestNewHookRollsBackOnBuildFailure() {

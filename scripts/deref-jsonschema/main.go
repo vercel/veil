@@ -51,6 +51,7 @@ func main() {
 		delete(resolvedMap, "$id")
 		stripNestedSchema(resolvedMap)
 		simplifyEnums(resolvedMap)
+		wrapRenderHookSchema(resolvedMap)
 
 		out, err := json.MarshalIndent(resolvedMap, "", "  ")
 		if err != nil {
@@ -196,6 +197,61 @@ func simplifyEnums(node any) {
 	case []any:
 		for _, val := range v {
 			simplifyEnums(val)
+		}
+	}
+}
+
+// wrapRenderHookSchema rewrites every RenderHookDefinition object schema
+// into a oneOf accepting either the original object shape or a bare string
+// (shorthand for `{path: <string>}`). The kind.json loader normalizes the
+// string form back into the object before protojson sees it; this transform
+// keeps editors and external validators happy with both shapes.
+func wrapRenderHookSchema(node any) {
+	switch v := node.(type) {
+	case map[string]any:
+		if v["title"] == "Render Hook Definition" && v["type"] == "object" {
+			schemaURI := v["$schema"]
+			description := v["description"]
+
+			stringAlt := map[string]any{
+				"type":      "string",
+				"minLength": float64(1),
+			}
+			if props, ok := v["properties"].(map[string]any); ok {
+				if path, ok := props["path"].(map[string]any); ok {
+					if desc, ok := path["description"].(string); ok {
+						stringAlt["description"] = desc
+					}
+				}
+			}
+
+			objectAlt := make(map[string]any, len(v))
+			for k, val := range v {
+				if k == "title" || k == "description" || k == "$schema" {
+					continue
+				}
+				objectAlt[k] = val
+			}
+
+			for k := range v {
+				delete(v, k)
+			}
+			if schemaURI != nil {
+				v["$schema"] = schemaURI
+			}
+			v["title"] = "Render Hook Definition"
+			if description != nil {
+				v["description"] = description
+			}
+			v["oneOf"] = []any{stringAlt, objectAlt}
+			return
+		}
+		for _, val := range v {
+			wrapRenderHookSchema(val)
+		}
+	case []any:
+		for _, val := range v {
+			wrapRenderHookSchema(val)
 		}
 	}
 }

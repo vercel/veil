@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/urfave/cli/v3"
@@ -125,6 +126,12 @@ func runRender(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return fmt.Errorf("resolving path: %w", err)
 	}
+	if _, err := os.Stat(absPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("no file at %s (resolved from %q against working directory)", absPath, pathArg)
+		}
+		return fmt.Errorf("checking %s: %w", absPath, err)
+	}
 	rel, err := filepath.Rel(reg.Root, absPath)
 	if err != nil {
 		return fmt.Errorf("resolving %s against project root: %w", pathArg, err)
@@ -177,14 +184,17 @@ func runRender(ctx context.Context, c *cli.Command) error {
 	return nil
 }
 
-// resolveRegistries returns absolute paths to every registry.json to load,
-// honoring precedence: --registry > VEIL_REGISTRY env > veil.json registries
-// field > implicit <.veil dir>/r/registry.json (when present). Paths from
-// --registry and env are resolved against cwd; paths from veil.json are
-// resolved against the veil.json's directory.
-func resolveRegistries(cliRegs []string, reg *config.Registry) ([]string, error) {
+// resolveRegistries returns the alias→path sources to load, honoring
+// precedence: --registry > VEIL_REGISTRY env > veil.json registries.
+// Paths from --registry and env always land under the default alias
+// (`""`), since CLI flags don't carry alias names. veil.json registries
+// keep their declared aliases; paths there resolve against the
+// veil.json directory, while CLI/env paths resolve against cwd. There
+// is no implicit fallback — registries must be declared somewhere
+// (typically veil.json), or rendering fails.
+func resolveRegistries(cliRegs []string, reg *config.Registry) ([]registry.Reference, error) {
 	if len(cliRegs) > 0 {
-		return absPaths(cliRegs, "")
+		return absSources(defaultAliasSources(cliRegs), "")
 	}
 	if env := os.Getenv("VEIL_REGISTRY"); env != "" {
 		var parts []string
@@ -194,26 +204,38 @@ func resolveRegistries(cliRegs []string, reg *config.Registry) ([]string, error)
 			}
 		}
 		if len(parts) > 0 {
-			return absPaths(parts, "")
+			return absSources(defaultAliasSources(parts), "")
 		}
 	}
-	if len(reg.Registries) > 0 {
-		return absPaths(reg.Registries, reg.Root)
+	sources := make([]registry.Reference, 0, len(reg.Registries))
+	aliases := make([]string, 0, len(reg.Registries))
+	for alias := range reg.Registries {
+		aliases = append(aliases, alias)
 	}
-	local := filepath.Join(reg.Root, config.PublicDir, "r", "registry.json")
-	if _, err := os.Stat(local); err == nil {
-		return []string{local}, nil
+	sort.Strings(aliases)
+	for _, alias := range aliases {
+		sources = append(sources, registry.Reference{Alias: alias, Path: reg.Registries[alias]})
 	}
-	return nil, nil
+	return absSources(sources, reg.Root)
 }
 
-// absPaths resolves each path relative to baseDir. When baseDir is empty,
-// paths are resolved against cwd.
-func absPaths(paths []string, baseDir string) ([]string, error) {
-	out := make([]string, 0, len(paths))
+// defaultAliasSources wraps each path with the empty default-alias key.
+// Used for CLI/env entries, which don't carry alias names.
+func defaultAliasSources(paths []string) []registry.Reference {
+	out := make([]registry.Reference, 0, len(paths))
 	for _, p := range paths {
-		if filepath.IsAbs(p) {
-			out = append(out, filepath.Clean(p))
+		out = append(out, registry.Reference{Alias: "", Path: p})
+	}
+	return out
+}
+
+// absSources resolves each source's Path relative to baseDir. When
+// baseDir is empty, paths are resolved against cwd.
+func absSources(sources []registry.Reference, baseDir string) ([]registry.Reference, error) {
+	out := make([]registry.Reference, 0, len(sources))
+	for _, s := range sources {
+		if filepath.IsAbs(s.Path) {
+			out = append(out, registry.Reference{Alias: s.Alias, Path: filepath.Clean(s.Path)})
 			continue
 		}
 		base := baseDir
@@ -224,7 +246,7 @@ func absPaths(paths []string, baseDir string) ([]string, error) {
 			}
 			base = cwd
 		}
-		out = append(out, filepath.Clean(filepath.Join(base, p)))
+		out = append(out, registry.Reference{Alias: s.Alias, Path: filepath.Clean(filepath.Join(base, s.Path))})
 	}
 	return out, nil
 }

@@ -76,7 +76,7 @@ func (s *RenderSuite) SetupTest() {
 			},
 		},
 	})
-	reg, err := registry.Load([]string{regJSON})
+	reg, err := registry.Load([]registry.Reference{{Path: regJSON}})
 	s.Require().NoError(err)
 	s.registry = reg
 }

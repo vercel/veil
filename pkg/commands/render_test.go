@@ -112,17 +112,74 @@ func (s *RenderSuite) TestRenderFailsOnDuplicateKindAcrossRegistries() {
 	s.Contains(err.Error(), `kind "svc" provided by multiple registries`)
 }
 
-func (s *RenderSuite) TestRenderAutoDiscoversLocalRegistry() {
-	s.writeConfig(`{ "kinds": [] }`)
-
-	// Write a minimal registry.json at the default <root>/public/r/registry.json.
-	regPath := filepath.Join(s.root, "public", "r", "registry.json")
+func (s *RenderSuite) TestRenderLoadsAliasedRegistriesFromVeilJSON() {
+	regPath := filepath.Join(s.root, "vendor", "registry.json")
 	s.Require().NoError(os.MkdirAll(filepath.Dir(regPath), 0755))
 	s.Require().NoError(os.WriteFile(regPath, []byte(`{"kinds": {}}`), 0644))
 
-	// Auto-discovery doesn't error during registry load; the only failure
-	// surfaces from the catalog lookup since there's no resource here.
+	s.writeConfig(`{
+  "kinds": [],
+  "registries": { "acme": "./vendor/registry.json" }
+}`)
+
+	// Aliased registries load successfully; no resource in catalog yet so
+	// the render call still bottoms out at the catalog lookup.
 	_, err := s.run("render", ".")
 	s.Require().Error(err)
 	s.Contains(err.Error(), "not in catalog")
+}
+
+func (s *RenderSuite) TestRenderClearErrorWhenPathDoesNotExist() {
+	s.writeConfig(`{ "kinds": [], "registries": {} }`)
+
+	_, err := s.run("render", "missing/path.json")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "no file at")
+	s.Contains(err.Error(), "missing/path.json")
+}
+
+func (s *RenderSuite) TestRenderRejectsBareKindWhenDefaultAliasMissing() {
+	regPath := filepath.Join(s.root, "vendor", "registry.json")
+	s.Require().NoError(os.MkdirAll(filepath.Dir(regPath), 0755))
+	s.Require().NoError(os.WriteFile(regPath, []byte(`{"kinds": {}}`), 0644))
+
+	s.writeConfig(`{
+  "kinds": [],
+  "registries": { "derp": "./vendor/registry.json" },
+  "resource_discovery": { "paths": ["resources/*.json"] }
+}`)
+
+	resourcesDir := filepath.Join(s.root, "resources")
+	s.Require().NoError(os.MkdirAll(resourcesDir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(resourcesDir, "thing.json"), []byte(`{
+  "metadata": { "kind": "service", "name": "thing" },
+  "spec": {}
+}`), 0644))
+
+	_, err := s.run("render", "./resources/thing.json")
+	s.Require().Error(err)
+	s.Contains(err.Error(), `registry alias "" is not configured`)
+}
+
+func (s *RenderSuite) TestRenderRejectsResourceWithUnknownAlias() {
+	regPath := filepath.Join(s.root, "vendor", "registry.json")
+	s.Require().NoError(os.MkdirAll(filepath.Dir(regPath), 0755))
+	s.Require().NoError(os.WriteFile(regPath, []byte(`{"kinds": {}}`), 0644))
+
+	s.writeConfig(`{
+  "kinds": [],
+  "registries": { "acme": "./vendor/registry.json" },
+  "resource_discovery": { "paths": ["resources/*.json"] }
+}`)
+
+	resourcesDir := filepath.Join(s.root, "resources")
+	s.Require().NoError(os.MkdirAll(resourcesDir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(resourcesDir, "thing.json"), []byte(`{
+  "metadata": { "kind": "unknown/service", "name": "thing" },
+  "spec": {}
+}`), 0644))
+
+	_, err := s.run("render", "./resources/thing.json")
+	s.Require().Error(err)
+	s.Contains(err.Error(), `registry alias "unknown" is not configured`)
 }

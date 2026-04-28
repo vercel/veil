@@ -13,6 +13,7 @@
     "kind": {
       "description": "The consumer kind that may depend on this resource.",
       "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_-]*$",
       "type": "string"
     },
     "params_path": {
@@ -23,6 +24,7 @@
     "paths": {
       "description": "Paths to hook files that run when a resource of `kind` declares a\n dependency on this resource. At least one entry is required. Hooks\n run in declaration order. Paths are resolved relative to the\n enclosing kind.json file.",
       "items": {
+        "minLength": 1,
         "type": "string"
       },
       "type": "array"

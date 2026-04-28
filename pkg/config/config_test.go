@@ -190,3 +190,117 @@ func (s *DiscoverSuite) TestRejectsDefaultTypeMismatch() {
 	s.Contains(err.Error(), `variable "replicas"`)
 	s.Contains(err.Error(), "expected number")
 }
+
+func (s *DiscoverSuite) TestAcceptsRenderHookStringShorthand() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": ["./sources/deployment.yaml"],
+		"hooks": {
+			"render": [
+				"./hooks/inject-env.ts",
+				{ "path": "./hooks/inject-image.ts" },
+				"./hooks/inject-probes.ts"
+			]
+		},
+		"schema": "./schemas/service.schema.json"
+	}`), 0644))
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"]}`)
+
+	reg, err := Load(filepath.Join(root, "veil.json"))
+	s.Require().NoError(err)
+	s.Require().Len(reg.Kinds, 1)
+
+	render := reg.Kinds[0].GetHooks().GetRender()
+	s.Require().Len(render, 3)
+	s.Equal("./hooks/inject-env.ts", render[0].GetPath())
+	s.Nil(render[0].GetAccess())
+	s.Equal("./hooks/inject-image.ts", render[1].GetPath())
+	s.Equal("./hooks/inject-probes.ts", render[2].GetPath())
+}
+
+func (s *DiscoverSuite) TestAcceptsValidRegistryAliases() {
+	root := s.T().TempDir()
+	path := s.writeVeilJSON(root, `{
+		"kinds": [],
+		"registries": {
+			"": "./public/r/registry.json",
+			"acme": "./vendor/acme.json",
+			"@scope": "./vendor/scoped.json",
+			"my-org_42": "./vendor/org.json"
+		}
+	}`)
+	_, err := Load(path)
+	s.Require().NoError(err)
+}
+
+func (s *DiscoverSuite) TestRejectsAliasStartingWithDot() {
+	root := s.T().TempDir()
+	path := s.writeVeilJSON(root, `{
+		"kinds": [],
+		"registries": { ".local": "./registry.json" }
+	}`)
+	_, err := Load(path)
+	s.Require().Error(err)
+	s.Contains(err.Error(), `registry alias ".local" is invalid`)
+	s.Contains(err.Error(), `must not start with '.'`)
+}
+
+func (s *DiscoverSuite) TestRejectsAliasContainingSlash() {
+	root := s.T().TempDir()
+	path := s.writeVeilJSON(root, `{
+		"kinds": [],
+		"registries": { "foo/bar": "./registry.json" }
+	}`)
+	_, err := Load(path)
+	s.Require().Error(err)
+	s.Contains(err.Error(), `registry alias "foo/bar" is invalid`)
+	s.Contains(err.Error(), `must not contain ':' or '/'`)
+}
+
+func (s *DiscoverSuite) TestRejectsAliasContainingColon() {
+	root := s.T().TempDir()
+	path := s.writeVeilJSON(root, `{
+		"kinds": [],
+		"registries": { "scheme:thing": "./registry.json" }
+	}`)
+	_, err := Load(path)
+	s.Require().Error(err)
+	s.Contains(err.Error(), `registry alias "scheme:thing" is invalid`)
+	s.Contains(err.Error(), `must not contain ':' or '/'`)
+}
+
+func (s *DiscoverSuite) TestAcceptsRenderHookObjectWithAccess() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": ["./sources/deployment.yaml"],
+		"hooks": {
+			"render": [
+				{
+					"path": "./hooks/inject-env.ts",
+					"access": {
+						"env": [{"name": "API_KEY", "description": "auth token"}]
+					}
+				}
+			]
+		},
+		"schema": "./schemas/service.schema.json"
+	}`), 0644))
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"]}`)
+
+	reg, err := Load(filepath.Join(root, "veil.json"))
+	s.Require().NoError(err)
+
+	render := reg.Kinds[0].GetHooks().GetRender()
+	s.Require().Len(render, 1)
+	s.Equal("./hooks/inject-env.ts", render[0].GetPath())
+	envs := render[0].GetAccess().GetEnv()
+	s.Require().Len(envs, 1)
+	s.Equal("API_KEY", envs[0].GetName())
+	s.Equal("auth token", envs[0].GetDescription())
+}

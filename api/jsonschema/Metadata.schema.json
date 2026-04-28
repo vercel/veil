@@ -50,6 +50,7 @@
             },
             "description": "buf:lint:ignore FIELD_LOWER_SNAKE_CASE",
             "propertyNames": {
+              "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
               "type": "string"
             },
             "title": "Map of variable name → regex pattern. All entries must match for\n the overlay to apply. An empty map means \"always apply\".",
@@ -72,7 +73,7 @@
         "patternProperties": {
           "^(skipHooks)$": {
             "default": false,
-            "description": "When true, render hooks may still observe and edit this file\n during the pipeline, but their changes are discarded at write\n time — the final rendered output is exactly the local override\n content, byte-for-byte. Use this when the kind's hooks would\n otherwise stomp on a hand-tuned customization.",
+            "description": "When true, all hooks are skipped on this particular file. Allows\n you to bring your own files instead of using what the registry\n provides.",
             "type": "boolean"
           }
         },
@@ -84,7 +85,7 @@
           },
           "skip_hooks": {
             "default": false,
-            "description": "When true, render hooks may still observe and edit this file\n during the pipeline, but their changes are discarded at write\n time — the final rendered output is exactly the local override\n content, byte-for-byte. Use this when the kind's hooks would\n otherwise stomp on a hand-tuned customization.",
+            "description": "When true, all hooks are skipped on this particular file. Allows\n you to bring your own files instead of using what the registry\n provides.",
             "type": "boolean"
           },
           "source": {

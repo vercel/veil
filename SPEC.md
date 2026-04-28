@@ -61,7 +61,7 @@ registries to pull in, and where resource files live so they can be cataloged at
   "variables": {
     "env": { "type": "string", "enum": ["dev", "staging", "prod"], "default": "dev" }
   },
-  "registries": [],
+  "registries": {},
   "resource_discovery": {
     "paths": [
       "services/**/_deploy/*.json",
@@ -74,9 +74,16 @@ registries to pull in, and where resource files live so they can be cataloged at
 - **`kinds`** — relative or absolute paths to `kind.json` definitions. Relative paths resolve against
   `veil.json`'s directory.
 - **`variables`** — see [Variables](#variables).
-- **`registries`** — paths to additional compiled `registry.json` files to merge in at render time
-  (e.g., shared/published registries from outside this repo). The local build's
-  `<root>/public/r/registry.json` is auto-discovered without listing it here.
+- **`registries`** — map of alias → path/URL pointing at compiled `registry.json` files to merge in
+  at render time (e.g., shared/published registries from outside this repo). The empty-string alias
+  (`""`) names the **default registry** — bare kind references like `"service"` resolve there. Named
+  aliases can be any non-empty string and are matched verbatim in references: declaring
+  `"acme": "./vendor/acme/registry.json"` lets resources reference its kinds as `acme/service`. The
+  `@`-scoped convention (`"@scope": "..."` referenced as `@scope/service`) works the same way — the
+  alias is treated as opaque text. Registries are fully declarative — `veil` does not auto-discover
+  any local build output; if you want `veil build`'s output as the default, declare it explicitly
+  (`"": "./public/r/registry.json"`). The `veil new kind` scaffolder pre-populates this entry on a
+  fresh project.
 - **`resource_discovery.paths`** — see [Resource discovery](#resource-discovery).
 
 ## Resource discovery
@@ -845,13 +852,23 @@ catalog and walks outward from.
 `veil render` discovers compiled kinds by loading one or more `registry.json` files. Sources are consulted
 in precedence order (first match wins):
 
-1. `--registry <path>` (repeatable) on the CLI
-2. `VEIL_REGISTRY` environment variable (colon-separated list of paths)
-3. The `registries` field in `veil.json` (paths resolved relative to the `veil.json`'s directory)
-4. Implicit `<.veil dir>/r/registry.json` — auto-discovered when present, so local `veil build` output is
-   picked up without extra configuration
+1. `--registry <path>` (repeatable) on the CLI — every entry lands under the **default alias** (`""`)
+2. `VEIL_REGISTRY` environment variable (colon-separated list of paths) — also default-aliased
+3. The `registries` map in `veil.json` (alias → path; aliases are arbitrary opaque strings — `"acme"`, `"@scope"`, etc. all work as long as the same string is used in references. Paths resolve relative to the `veil.json`'s directory)
 
-A kind name collision across loaded registries is a hard error.
+There is **no implicit fallback** — registries must be declared explicitly somewhere on this list,
+or `veil render` fails. The `veil new kind` scaffolder pre-populates `veil.json` with the local
+build output (`"": "./public/r/registry.json"`) so a fresh project works out of the box.
+
+Kind references in `metadata.kind` and `dependencies[].kind` are matched by alias:
+
+- Bare names (e.g. `"service"`) resolve against the default alias (`""`).
+- `<alias>/<kind>` (e.g. `"acme/service"` or `"@scope/service"`) resolves against the registry
+  registered under that alias. The substring before the first `/` is taken as the alias verbatim;
+  the rest is the kind name.
+
+A kind name collision **within** a single alias is a hard error. The same kind name across different
+aliases is fine — the `<alias>/` prefix disambiguates.
 
 ## `veil override <resource> [<source>...]`
 

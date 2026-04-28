@@ -103,10 +103,17 @@ type VeilConfigDefinition struct {
 	// User-defined input variables keyed by name. Values are provided at
 	// render time via --var flags or VEIL_VAR_<NAME> environment variables.
 	Variables map[string]*Variable `protobuf:"bytes,2,rep,name=variables,proto3" json:"variables,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Paths to additional compiled registry.json files to load at render
-	// time. Local builds are discovered automatically; use this to wire in
-	// shared or externally-distributed registries.
-	Registries []string `protobuf:"bytes,3,rep,name=registries,proto3" json:"registries,omitempty"`
+	// Aliased registry sources keyed by alias. The empty-string alias
+	// (`""`) is the default registry: kind references with no `<alias>/`
+	// prefix resolve there. Named aliases can be any string and are used
+	// verbatim in references — declaring
+	// `"acme": "./vendor/acme/registry.json"` lets resources reference
+	// its kinds as `acme/<kind>`. The `@`-prefixed convention (e.g.
+	// `"@scope": "..."` referenced as `@scope/<kind>`) is supported but
+	// not required — the alias is treated as opaque text. Values are
+	// paths to compiled registry.json files (or URLs, when the loader
+	// supports them).
+	Registries map[string]string `protobuf:"bytes,3,rep,name=registries,proto3" json:"registries,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Where to find the resource JSON files that make up the project's
 	// catalog. Used at render time to resolve dependency targets.
 	ResourceDiscovery *ResourceDiscovery `protobuf:"bytes,4,opt,name=resource_discovery,json=resourceDiscovery,proto3" json:"resource_discovery,omitempty"`
@@ -158,7 +165,7 @@ func (x *VeilConfigDefinition) GetVariables() map[string]*Variable {
 	return nil
 }
 
-func (x *VeilConfigDefinition) GetRegistries() []string {
+func (x *VeilConfigDefinition) GetRegistries() map[string]string {
 	if x != nil {
 		return x.Registries
 	}
@@ -355,9 +362,13 @@ func (x *Variable) GetEnum() []*structpb.Value {
 // that `veil build` compiles into a published Kind (registry.proto).
 type KindDefinition struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The name of this kind (e.g. "service", "cron").
+	// The name of this kind (e.g. "service", "cron"). Must start with a
+	// lowercase letter and contain only lowercase letters, digits, `-`,
+	// and `_` — the same convention enforced by `veil new kind`.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// Source configuration files that make up the kind.
+	// Source configuration files that make up the kind. May be empty —
+	// a kind with no sources is valid (it's the bare template plus
+	// whatever its hooks add at render time).
 	Sources []string `protobuf:"bytes,2,rep,name=sources,proto3" json:"sources,omitempty"`
 	// Hook code files grouped by lifecycle point. The dependents block —
 	// the per-consumer hooks that fire when another kind declares a
@@ -605,7 +616,8 @@ func (x *HookAccess) GetEnv() []*EnvAccess {
 // EnvAccess names a single host environment variable a hook needs.
 type EnvAccess struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The env var being requested by the hook.
+	// The env var being requested by the hook. Must match the conventions
+	// for valid POSIX environment-variable identifiers.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// A brief description of what this key is used for and why. Surfaced
 	// when the var is missing so the user can correct the issue.
@@ -734,19 +746,22 @@ var File_veil_v1_config_proto protoreflect.FileDescriptor
 
 const file_veil_v1_config_proto_rawDesc = "" +
 	"\n" +
-	"\x14veil/v1/config.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xbe\x02\n" +
-	"\x14VeilConfigDefinition\x12\x1e\n" +
-	"\x05kinds\x18\x01 \x03(\tB\b\xbaH\x05\x92\x01\x02\b\x01R\x05kinds\x12J\n" +
-	"\tvariables\x18\x02 \x03(\v2,.veil.v1.VeilConfigDefinition.VariablesEntryR\tvariables\x12\x1e\n" +
+	"\x14veil/v1/config.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xfa\x03\n" +
+	"\x14VeilConfigDefinition\x12$\n" +
+	"\x05kinds\x18\x01 \x03(\tB\x0e\xbaH\v\x92\x01\b\b\x01\"\x04r\x02\x10\x01R\x05kinds\x12p\n" +
+	"\tvariables\x18\x02 \x03(\v2,.veil.v1.VeilConfigDefinition.VariablesEntryB$\xbaH!\x9a\x01\x1e\"\x1cr\x1a2\x18^[a-zA-Z_][a-zA-Z0-9_]*$R\tvariables\x12o\n" +
 	"\n" +
-	"registries\x18\x03 \x03(\tR\n" +
+	"registries\x18\x03 \x03(\v2-.veil.v1.VeilConfigDefinition.RegistriesEntryB \xbaH\x1d\xc8\x01\x01\x9a\x01\x17\"\x15r\x132\x11^([^.:/][^:/]*)?$R\n" +
 	"registries\x12I\n" +
 	"\x12resource_discovery\x18\x04 \x01(\v2\x1a.veil.v1.ResourceDiscoveryR\x11resourceDiscovery\x1aO\n" +
 	"\x0eVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +
-	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\")\n" +
-	"\x11ResourceDiscovery\x12\x14\n" +
-	"\x05paths\x18\x01 \x03(\tR\x05paths\"I\n" +
+	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\x1a=\n" +
+	"\x0fRegistriesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"7\n" +
+	"\x11ResourceDiscovery\x12\"\n" +
+	"\x05paths\x18\x01 \x03(\tB\f\xbaH\t\x92\x01\x06\"\x04r\x02\x10\x01R\x05paths\"I\n" +
 	"\fVariableType\"9\n" +
 	"\x04Enum\x12\x0f\n" +
 	"\vunspecified\x10\x00\x12\n" +
@@ -762,11 +777,10 @@ const file_veil_v1_config_proto_rawDesc = "" +
 	"\x04enum\x18\x04 \x03(\v2\x16.google.protobuf.ValueR\x04enumB\n" +
 	"\n" +
 	"\b_defaultB\x0e\n" +
-	"\f_description\"\x9c\x01\n" +
-	"\x0eKindDefinition\x12\x1e\n" +
-	"\x04name\x18\x01 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x12\"\n" +
-	"\asources\x18\x02 \x03(\tB\b\xbaH\x05\x92\x01\x02\b\x01R\asources\x12.\n" +
+	"\f_description\"\xb4\x01\n" +
+	"\x0eKindDefinition\x122\n" +
+	"\x04name\x18\x01 \x01(\tB\x1e\xbaH\x1b\xc8\x01\x01r\x16\x10\x012\x12^[a-z][a-z0-9_-]*$R\x04name\x12&\n" +
+	"\asources\x18\x02 \x03(\tB\f\xbaH\t\x92\x01\x06\"\x04r\x02\x10\x01R\asources\x12.\n" +
 	"\x05hooks\x18\x03 \x01(\v2\x18.veil.v1.HooksDefinitionR\x05hooks\x12\x16\n" +
 	"\x06schema\x18\x05 \x01(\tR\x06schema\"\x86\x01\n" +
 	"\x0fHooksDefinition\x125\n" +
@@ -780,16 +794,14 @@ const file_veil_v1_config_proto_rawDesc = "" +
 	"\x06access\x18\x02 \x01(\v2\x13.veil.v1.HookAccessR\x06access\"2\n" +
 	"\n" +
 	"HookAccess\x12$\n" +
-	"\x03env\x18\x01 \x03(\v2\x12.veil.v1.EnvAccessR\x03env\"Y\n" +
-	"\tEnvAccess\x12\x1e\n" +
-	"\x04name\x18\x01 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x12,\n" +
+	"\x03env\x18\x01 \x03(\v2\x12.veil.v1.EnvAccessR\x03env\"s\n" +
+	"\tEnvAccess\x128\n" +
+	"\x04name\x18\x01 \x01(\tB$\xbaH!\xc8\x01\x01r\x1c\x10\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12,\n" +
 	"\vdescription\x18\x02 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\vdescription\"\x82\x01\n" +
-	"\x13DependentDefinition\x12\x1e\n" +
-	"\x04kind\x18\x01 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04kind\x12\x1e\n" +
-	"\x05paths\x18\x02 \x03(\tB\b\xbaH\x05\x92\x01\x02\b\x01R\x05paths\x12+\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\vdescription\"\x9c\x01\n" +
+	"\x13DependentDefinition\x122\n" +
+	"\x04kind\x18\x01 \x01(\tB\x1e\xbaH\x1b\xc8\x01\x01r\x16\x10\x012\x12^[a-z][a-z0-9_-]*$R\x04kind\x12$\n" +
+	"\x05paths\x18\x02 \x03(\tB\x0e\xbaH\v\x92\x01\b\b\x01\"\x04r\x02\x10\x01R\x05paths\x12+\n" +
 	"\vparams_path\x18\x03 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\n" +
 	"paramsPathB\x85\x01\n" +
@@ -808,7 +820,7 @@ func file_veil_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_veil_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_veil_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_veil_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_veil_v1_config_proto_goTypes = []any{
 	(VariableType_Enum)(0),       // 0: veil.v1.VariableType.Enum
 	(*VeilConfigDefinition)(nil), // 1: veil.v1.VeilConfigDefinition
@@ -822,25 +834,27 @@ var file_veil_v1_config_proto_goTypes = []any{
 	(*EnvAccess)(nil),            // 9: veil.v1.EnvAccess
 	(*DependentDefinition)(nil),  // 10: veil.v1.DependentDefinition
 	nil,                          // 11: veil.v1.VeilConfigDefinition.VariablesEntry
-	(*structpb.Value)(nil),       // 12: google.protobuf.Value
+	nil,                          // 12: veil.v1.VeilConfigDefinition.RegistriesEntry
+	(*structpb.Value)(nil),       // 13: google.protobuf.Value
 }
 var file_veil_v1_config_proto_depIdxs = []int32{
 	11, // 0: veil.v1.VeilConfigDefinition.variables:type_name -> veil.v1.VeilConfigDefinition.VariablesEntry
-	2,  // 1: veil.v1.VeilConfigDefinition.resource_discovery:type_name -> veil.v1.ResourceDiscovery
-	0,  // 2: veil.v1.Variable.type:type_name -> veil.v1.VariableType.Enum
-	12, // 3: veil.v1.Variable.default:type_name -> google.protobuf.Value
-	12, // 4: veil.v1.Variable.enum:type_name -> google.protobuf.Value
-	6,  // 5: veil.v1.KindDefinition.hooks:type_name -> veil.v1.HooksDefinition
-	7,  // 6: veil.v1.HooksDefinition.render:type_name -> veil.v1.RenderHookDefinition
-	10, // 7: veil.v1.HooksDefinition.dependents:type_name -> veil.v1.DependentDefinition
-	8,  // 8: veil.v1.RenderHookDefinition.access:type_name -> veil.v1.HookAccess
-	9,  // 9: veil.v1.HookAccess.env:type_name -> veil.v1.EnvAccess
-	4,  // 10: veil.v1.VeilConfigDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	12, // 1: veil.v1.VeilConfigDefinition.registries:type_name -> veil.v1.VeilConfigDefinition.RegistriesEntry
+	2,  // 2: veil.v1.VeilConfigDefinition.resource_discovery:type_name -> veil.v1.ResourceDiscovery
+	0,  // 3: veil.v1.Variable.type:type_name -> veil.v1.VariableType.Enum
+	13, // 4: veil.v1.Variable.default:type_name -> google.protobuf.Value
+	13, // 5: veil.v1.Variable.enum:type_name -> google.protobuf.Value
+	6,  // 6: veil.v1.KindDefinition.hooks:type_name -> veil.v1.HooksDefinition
+	7,  // 7: veil.v1.HooksDefinition.render:type_name -> veil.v1.RenderHookDefinition
+	10, // 8: veil.v1.HooksDefinition.dependents:type_name -> veil.v1.DependentDefinition
+	8,  // 9: veil.v1.RenderHookDefinition.access:type_name -> veil.v1.HookAccess
+	9,  // 10: veil.v1.HookAccess.env:type_name -> veil.v1.EnvAccess
+	4,  // 11: veil.v1.VeilConfigDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_veil_v1_config_proto_init() }
@@ -855,7 +869,7 @@ func file_veil_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_veil_v1_config_proto_rawDesc), len(file_veil_v1_config_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   11,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
