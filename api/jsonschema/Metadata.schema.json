@@ -69,11 +69,23 @@
       "items": {
         "additionalProperties": false,
         "description": "Override maps a kind source file to a local replacement.",
+        "patternProperties": {
+          "^(skipHooks)$": {
+            "default": false,
+            "description": "When true, render hooks may still observe and edit this file\n during the pipeline, but their changes are discarded at write\n time — the final rendered output is exactly the local override\n content, byte-for-byte. Use this when the kind's hooks would\n otherwise stomp on a hand-tuned customization.",
+            "type": "boolean"
+          }
+        },
         "properties": {
           "path": {
-            "description": "Local path to the override file.",
+            "description": "Local path to the override file. Resolved relative to the\n resource file that declares this override, or used as-is when\n absolute.",
             "minLength": 1,
             "type": "string"
+          },
+          "skip_hooks": {
+            "default": false,
+            "description": "When true, render hooks may still observe and edit this file\n during the pipeline, but their changes are discarded at write\n time — the final rendered output is exactly the local override\n content, byte-for-byte. Use this when the kind's hooks would\n otherwise stomp on a hand-tuned customization.",
+            "type": "boolean"
           },
           "source": {
             "description": "Path of the source file in the kind being replaced.",

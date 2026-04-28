@@ -414,8 +414,16 @@ type Override struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Path of the source file in the kind being replaced.
 	Source string `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
-	// Local path to the override file.
-	Path          string `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
+	// Local path to the override file. Resolved relative to the
+	// resource file that declares this override, or used as-is when
+	// absolute.
+	Path string `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
+	// When true, render hooks may still observe and edit this file
+	// during the pipeline, but their changes are discarded at write
+	// time — the final rendered output is exactly the local override
+	// content, byte-for-byte. Use this when the kind's hooks would
+	// otherwise stomp on a hand-tuned customization.
+	SkipHooks     bool `protobuf:"varint,3,opt,name=skip_hooks,json=skipHooks,proto3" json:"skip_hooks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -464,6 +472,13 @@ func (x *Override) GetPath() string {
 	return ""
 }
 
+func (x *Override) GetSkipHooks() bool {
+	if x != nil {
+		return x.SkipHooks
+	}
+	return false
+}
+
 var File_veil_v1_resource_proto protoreflect.FileDescriptor
 
 const file_veil_v1_resource_proto_rawDesc = "" +
@@ -497,12 +512,14 @@ const file_veil_v1_resource_proto_rawDesc = "" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04file\x1a5\n" +
 	"\aIfEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"N\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"m\n" +
 	"\bOverride\x12\"\n" +
 	"\x06source\x18\x01 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x06source\x12\x1e\n" +
 	"\x04path\x18\x02 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04pathB\x87\x01\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04path\x12\x1d\n" +
+	"\n" +
+	"skip_hooks\x18\x03 \x01(\bR\tskipHooksB\x87\x01\n" +
 	"\vcom.veil.v1B\rResourceProtoP\x01Z,github.com/vercel/veil/api/go/veil/v1;veilv1\xa2\x02\x03VXX\xaa\x02\aVeil.V1\xca\x02\aVeil\\V1\xe2\x02\x13Veil\\V1\\GPBMetadata\xea\x02\bVeil::V1b\x06proto3"
 
 var (

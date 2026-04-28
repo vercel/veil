@@ -70,7 +70,7 @@ func NewApp() *cli.Command {
 			Render(),
 			New(),
 			Build(),
-			Eject(),
+			Override(),
 			Schema(),
 			Graph(),
 		},

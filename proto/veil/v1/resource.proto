@@ -119,9 +119,16 @@ message Override {
     (buf.validate.field).required = true
   ];
 
-  // Local path to the override file.
+  // Local path to the override file. Resolved relative to the
+  // resource file that declares this override, or used as-is when
+  // absolute.
   string path = 2 [
     (buf.validate.field).string.min_len = 1,
     (buf.validate.field).required = true
   ];
+
+  // When true, all hooks are skipped on this particular file. Allows
+  // you to bring your own files instead of using what the registry
+  // provides.
+  bool skip_hooks = 3;
 }

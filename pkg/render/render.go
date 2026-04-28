@@ -172,6 +172,15 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		bundle[k] = hook.File{Path: k, Content: v}
 	}
 
+	// Apply local overrides before any hook runs so hooks see the
+	// user's content. `frozen` records the override paths whose
+	// skip_hooks flag is set — those get re-stamped after the pipeline
+	// finishes so any hook mutations to them are discarded.
+	frozen, err := applyOverrides(opts.FS, r, bundle)
+	if err != nil {
+		return nil, fmt.Errorf("applying overrides: %w", err)
+	}
+
 	resourceMap, err := resourceToMap(resolved)
 	if err != nil {
 		return nil, fmt.Errorf("encoding resource for hook ctx: %w", err)
@@ -204,6 +213,23 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		bundle = newBundle
 	}
 
+	// Re-stamp every skip_hooks override so the rendered output is the
+	// user's bytes verbatim, regardless of what the pipeline did to the
+	// in-memory copy.
+	for path, content := range frozen {
+		f, ok := bundle[path]
+		if !ok {
+			// Override was for a path that isn't in the bundle anymore
+			// (deleted by a hook). Re-introduce it under the same key
+			// so the user's content still lands in the output.
+			bundle[path] = hook.File{Path: path, Content: content}
+			continue
+		}
+		f.Content = content
+		f.Deleted = false
+		bundle[path] = f
+	}
+
 	outDir := filepath.Join(opts.OutDir, resourceName)
 	files, err := writeBundle(outDir, bundle)
 	if err != nil {
@@ -215,6 +241,54 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		OutDir: outDir,
 		Files:  files,
 	}, nil
+}
+
+// applyOverrides resolves every metadata.overrides entry on r against
+// the project FS and stamps the override's bytes onto the matching
+// bundle entry. The override path is resolved relative to the resource
+// file's directory (or used as-is when absolute). Returns the set of
+// override paths whose `skip_hooks` flag is set, mapped to their
+// content — callers re-stamp those after the hook pipeline runs so
+// any in-flight mutations are discarded.
+func applyOverrides(fsys fs.FS, r *resource.Resource, bundle hook.Bundle) (map[string]string, error) {
+	overrides := r.GetMetadata().GetOverrides()
+	if len(overrides) == 0 {
+		return nil, nil
+	}
+	resourceDir := path.Dir(r.Path)
+	frozen := make(map[string]string)
+	for i, ov := range overrides {
+		source := ov.GetSource()
+		if source == "" {
+			return nil, fmt.Errorf("overrides[%d]: source is required", i)
+		}
+		if _, ok := bundle[source]; !ok {
+			return nil, fmt.Errorf("overrides[%d]: source %q is not declared by the kind", i, source)
+		}
+		ovPath := ov.GetPath()
+		if ovPath == "" {
+			return nil, fmt.Errorf("overrides[%d] (%s): path is required", i, source)
+		}
+		// Resolve relative paths against the resource file's directory.
+		// Absolute paths (e.g. "/etc/...") are passed through but io/fs
+		// requires forward slashes and no leading slash, so trim it.
+		resolved := ovPath
+		if !path.IsAbs(resolved) {
+			resolved = path.Join(resourceDir, resolved)
+		}
+		resolved = strings.TrimPrefix(resolved, "/")
+		data, err := fs.ReadFile(fsys, resolved)
+		if err != nil {
+			return nil, fmt.Errorf("overrides[%d] (%s): reading %s: %w", i, source, ovPath, err)
+		}
+		entry := bundle[source]
+		entry.Content = string(data)
+		bundle[source] = entry
+		if ov.GetSkipHooks() {
+			frozen[source] = string(data)
+		}
+	}
+	return frozen, nil
 }
 
 // resolveResource clones r, replaces its spec with mergedSpec, and clears
