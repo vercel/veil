@@ -10,11 +10,10 @@ import "google/protobuf/struct.proto";
 // suffix marks it as a local-file shape; types under registry.proto
 // (Kind, Registry, …) are the corresponding published forms.
 message VeilConfigDefinition {
-  // Relative or absolute paths to kind definition files.
-  repeated string kinds = 1 [
-    (buf.validate.field).repeated.min_items = 1,
-    (buf.validate.field).repeated.items.string.min_len = 1
-  ];
+  // Relative or absolute paths to kind definition files. May be empty —
+  // a project with no kinds is valid (it can still depend on kinds
+  // published by aliased registries).
+  repeated string kinds = 1 [(buf.validate.field).repeated.items.string.min_len = 1];
 
   // User-defined input variables keyed by name. Values are provided at
   // render time via --var flags or VEIL_VAR_<NAME> environment variables.
@@ -32,7 +31,9 @@ message VeilConfigDefinition {
   // supports them).
   map<string, string> registries = 3 [
     (buf.validate.field).required = true,
-    (buf.validate.field).map.keys.string.pattern = "^([^.:/][^:/]*)?$"
+    (buf.validate.field).map.keys.string.pattern = "^([^.:/][^:/]*)?$",
+    (buf.validate.field).map.values.string.min_len = 1,
+    (buf.validate.field).map.values.string.pattern = "^([^:]+|https?://.+)$"
   ];
 
   // Where to find the resource JSON files that make up the project's

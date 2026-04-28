@@ -152,7 +152,7 @@ func (s *NewSuite) TestNewKindAutoInitsVeilJSONAndScaffoldsAllFiles() {
 
 func (s *NewSuite) TestNewKindReusesExistingVeilJSON() {
 	veilJSON := filepath.Join(s.root, "veil.json")
-	s.Require().NoError(os.WriteFile(veilJSON, []byte(`{"kinds": []}`), 0644))
+	s.Require().NoError(os.WriteFile(veilJSON, []byte(`{"kinds": [], "registries": { "": "./public/r/registry.json" }}`), 0644))
 
 	_, err := s.run("new", "kind", "worker")
 	s.Require().NoError(err)
@@ -208,7 +208,7 @@ func (s *NewSuite) TestNewHookRequiresKindFlag() {
 }
 
 func (s *NewSuite) TestNewHookRejectsUnknownKind() {
-	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{"kinds": []}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{"kinds": [], "registries": { "": "./public/r/registry.json" }}`), 0644))
 
 	_, err := s.run("new", "hook", "annotate", "--kind", "missing")
 	s.Require().Error(err)

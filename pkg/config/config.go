@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/goccy/go-json"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -163,9 +162,6 @@ func Load(configPath string) (*Registry, error) {
 	if err := validateVariables(cfg.Variables); err != nil {
 		return nil, fmt.Errorf("%s: %w", configPath, err)
 	}
-	if err := validateRegistries(cfg.Registries); err != nil {
-		return nil, fmt.Errorf("%s: %w", configPath, err)
-	}
 
 	root := filepath.Dir(configPath)
 	kinds := make([]*Kind, 0, len(cfg.Kinds))
@@ -227,46 +223,18 @@ func validateVariables(vars map[string]*veilv1.Variable) error {
 	return nil
 }
 
-// validateRegistries enforces alias key rules on the veil.json
-// `registries` map. The empty alias (`""`) is the default registry and
-// is unrestricted; named aliases must not start with `.` (which would
-// shadow relative-path tokens in references) and must not contain `:`
-// or `/` (the former clashes with URI schemes, the latter with the
-// alias/kind separator in references).
-func validateRegistries(registries map[string]string) error {
-	for alias := range registries {
-		if alias == "" {
-			continue
-		}
-		if strings.HasPrefix(alias, ".") {
-			return fmt.Errorf("registry alias %q is invalid: must not start with '.'", alias)
-		}
-		if strings.ContainsAny(alias, ":/") {
-			return fmt.Errorf("registry alias %q is invalid: must not contain ':' or '/'", alias)
-		}
-	}
-	return nil
-}
-
-// validateDependents enforces structural rules on a kind's dependents
-// list: every entry needs a consumer kind, at least one hook, and a
-// params_path; consumer kinds may only appear once.
+// validateDependents enforces the one rule on a kind's dependents list
+// that the proto can't express: a given consumer kind must appear at
+// most once. The proto's buf.validate annotations already enforce that
+// every entry has a non-empty kind, at least one hook path, and a
+// params_path, so no manual checks for those.
 func validateDependents(deps []*veilv1.DependentDefinition) error {
 	seen := make(map[string]bool, len(deps))
 	for i, d := range deps {
-		if d == nil || d.Kind == "" {
-			return fmt.Errorf("dependents[%d]: kind is required", i)
+		if seen[d.GetKind()] {
+			return fmt.Errorf("dependents[%d]: duplicate consumer kind %q", i, d.GetKind())
 		}
-		if seen[d.Kind] {
-			return fmt.Errorf("dependents[%d]: duplicate consumer kind %q", i, d.Kind)
-		}
-		seen[d.Kind] = true
-		if len(d.Paths) == 0 {
-			return fmt.Errorf("dependents[%d] (%q): paths must be non-empty", i, d.Kind)
-		}
-		if d.ParamsPath == "" {
-			return fmt.Errorf("dependents[%d] (%q): params_path is required", i, d.Kind)
-		}
+		seen[d.GetKind()] = true
 	}
 	return nil
 }
@@ -302,6 +270,9 @@ func loadConfig(path string) (*veilv1.VeilConfigDefinition, error) {
 	if err := protoencode.Unmarshal.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
+	if err := protoencode.Validate(&cfg); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
 }
 
@@ -318,8 +289,8 @@ func loadKind(path string) (*Kind, error) {
 	if err := protoencode.Unmarshal.Unmarshal(data, &pk); err != nil {
 		return nil, err
 	}
-	if pk.Name == "" {
-		return nil, fmt.Errorf("kind at %s is missing required field \"name\"", path)
+	if err := protoencode.Validate(&pk); err != nil {
+		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
 	if err := validateDependents(pk.GetHooks().GetDependents()); err != nil {
 		return nil, fmt.Errorf("kind at %s: %w", path, err)

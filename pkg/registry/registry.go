@@ -8,11 +8,15 @@ package registry
 
 import (
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/protoencode"
@@ -56,11 +60,11 @@ func Load(refs []Reference) (Registry, error) {
 	loaders := make(map[string]map[string]func() (*LoadedKind, error))
 	seen := make(map[string]map[string]string)
 	for _, src := range refs {
-		abs, err := filepath.Abs(src.Path)
+		abs, err := absLocation(src.Path)
 		if err != nil {
 			return nil, fmt.Errorf("registry %s: %w", src.Path, err)
 		}
-		data, err := os.ReadFile(abs)
+		data, err := ReadResource(abs)
 		if err != nil {
 			return nil, fmt.Errorf("loading registry %s: %w", src.Path, err)
 		}
@@ -68,7 +72,6 @@ func Load(refs []Reference) (Registry, error) {
 		if err := protoencode.Unmarshal.Unmarshal(data, &r); err != nil {
 			return nil, fmt.Errorf("parsing registry %s: %w", src.Path, err)
 		}
-		dir := filepath.Dir(abs)
 		if loaders[src.Alias] == nil {
 			loaders[src.Alias] = make(map[string]func() (*LoadedKind, error))
 			seen[src.Alias] = make(map[string]string)
@@ -77,10 +80,10 @@ func Load(refs []Reference) (Registry, error) {
 			if entry.GetPath() == "" {
 				return nil, fmt.Errorf("registry %s: kind %q is missing \"path\"", src.Path, name)
 			}
-			kindPath := resolveAgainst(dir, entry.GetPath())
-			schemaPath := resolveAgainst(dir, entry.GetSchema())
+			kindPath := resolveAgainst(abs, entry.GetPath())
+			schemaPath := resolveAgainst(abs, entry.GetSchema())
 			if entry.GetSchema() == "" {
-				schemaPath = filepath.Join(filepath.Dir(kindPath), "kind.schema.json")
+				schemaPath = resolveAgainst(kindPath, "kind.schema.json")
 			}
 			if existing, ok := seen[src.Alias][name]; ok {
 				return nil, fmt.Errorf("kind %q provided by multiple registries: %s and %s", aliasedName(src.Alias, name), existing, kindPath)
@@ -90,6 +93,20 @@ func Load(refs []Reference) (Registry, error) {
 		}
 	}
 	return &cachedRegistry{loaders: loaders}, nil
+}
+
+// absLocation normalizes a registry location: HTTP(S) URLs are returned
+// verbatim; everything else is treated as a filesystem path and made
+// absolute against cwd.
+func absLocation(loc string) (string, error) {
+	if isHTTPURL(loc) {
+		return loc, nil
+	}
+	abs, err := filepath.Abs(loc)
+	if err != nil {
+		return "", err
+	}
+	return abs, nil
 }
 
 // cachedRegistry implements Registry against a fully resolved index
@@ -166,7 +183,7 @@ func aliasedName(alias, name string) string {
 // variables are captured by parameter, not by reference.
 func loadKindFn(name, kindPath, schemaPath string) func() (*LoadedKind, error) {
 	return func() (*LoadedKind, error) {
-		data, err := os.ReadFile(kindPath)
+		data, err := ReadResource(kindPath)
 		if err != nil {
 			return nil, fmt.Errorf("loading kind %s: %w", name, err)
 		}
@@ -178,14 +195,66 @@ func loadKindFn(name, kindPath, schemaPath string) func() (*LoadedKind, error) {
 	}
 }
 
-// resolveAgainst returns p as an absolute path, using base as the parent
-// when p is relative.
+// httpClient is the package-level fetcher for registry resources served
+// over HTTP(S). The 30-second timeout is a sane default for a small
+// JSON file; callers needing different policies can fork this.
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
+// ReadResource reads a registry resource from either the local
+// filesystem or an HTTP(S) URL, depending on the prefix of loc.
+// Exposed so other packages (notably pkg/render) can read schema files
+// using the same dispatch — a kind.schema.json published alongside a
+// remote registry needs to be fetched, not statted on disk.
+func ReadResource(loc string) ([]byte, error) {
+	if isHTTPURL(loc) {
+		return fetchURL(loc)
+	}
+	return os.ReadFile(loc)
+}
+
+func fetchURL(u string) ([]byte, error) {
+	resp, err := httpClient.Get(u)
+	if err != nil {
+		return nil, fmt.Errorf("fetching %s: %w", u, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching %s: HTTP %d %s", u, resp.StatusCode, http.StatusText(resp.StatusCode))
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func isHTTPURL(s string) bool {
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+}
+
+// resolveAgainst returns p as an absolute filesystem path or URL,
+// resolved relative to base. When base is an HTTP(S) URL, RFC 3986
+// reference resolution is used (so `./foo` against
+// `https://h/x/registry.json` becomes `https://h/x/foo`). Otherwise
+// base is treated as a filesystem path and p is joined against base's
+// containing directory. An absolute p (filesystem or URL) is returned
+// as-is. Empty p returns empty.
 func resolveAgainst(base, p string) string {
 	if p == "" {
 		return ""
 	}
+	if isHTTPURL(p) {
+		return p
+	}
+	if isHTTPURL(base) {
+		baseURL, err := url.Parse(base)
+		if err != nil {
+			return p
+		}
+		ref, err := url.Parse(p)
+		if err != nil {
+			return p
+		}
+		return baseURL.ResolveReference(ref).String()
+	}
 	if filepath.IsAbs(p) {
 		return filepath.Clean(p)
 	}
-	return filepath.Clean(filepath.Join(base, p))
+	return filepath.Clean(filepath.Join(filepath.Dir(base), p))
 }

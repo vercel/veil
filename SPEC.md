@@ -74,16 +74,19 @@ registries to pull in, and where resource files live so they can be cataloged at
 - **`kinds`** — relative or absolute paths to `kind.json` definitions. Relative paths resolve against
   `veil.json`'s directory.
 - **`variables`** — see [Variables](#variables).
-- **`registries`** — map of alias → path/URL pointing at compiled `registry.json` files to merge in
-  at render time (e.g., shared/published registries from outside this repo). The empty-string alias
-  (`""`) names the **default registry** — bare kind references like `"service"` resolve there. Named
-  aliases can be any non-empty string and are matched verbatim in references: declaring
+- **`registries`** — map of alias → path or URL pointing at compiled `registry.json` files to merge
+  in at render time (e.g., shared/published registries from outside this repo). The empty-string
+  alias (`""`) names the **default registry** — bare kind references like `"service"` resolve there.
+  Named aliases can be any non-empty string and are matched verbatim in references: declaring
   `"acme": "./vendor/acme/registry.json"` lets resources reference its kinds as `acme/service`. The
   `@`-scoped convention (`"@scope": "..."` referenced as `@scope/service`) works the same way — the
-  alias is treated as opaque text. Registries are fully declarative — `veil` does not auto-discover
-  any local build output; if you want `veil build`'s output as the default, declare it explicitly
-  (`"": "./public/r/registry.json"`). The `veil new kind` scaffolder pre-populates this entry on a
-  fresh project.
+  alias is treated as opaque text. Values starting with `http://` or `https://` are fetched over
+  HTTP; everything else is read from the local filesystem. Relative kind paths inside a fetched
+  registry resolve against the registry URL (so `./worker/kind.json` becomes
+  `https://host/<dir>/worker/kind.json`). Registries are fully declarative — `veil` does not
+  auto-discover any local build output; if you want `veil build`'s output as the default, declare
+  it explicitly (`"": "./public/r/registry.json"`). The `veil new kind` scaffolder pre-populates
+  this entry on a fresh project.
 - **`resource_discovery.paths`** — see [Resource discovery](#resource-discovery).
 
 ## Resource discovery

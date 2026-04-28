@@ -22,7 +22,7 @@
   },
   "properties": {
     "kinds": {
-      "description": "Relative or absolute paths to kind definition files.",
+      "description": "Relative or absolute paths to kind definition files. May be empty —\n a project with no kinds is valid (it can still depend on kinds\n published by aliased registries).",
       "items": {
         "minLength": 1,
         "type": "string"
@@ -31,6 +31,8 @@
     },
     "registries": {
       "additionalProperties": {
+        "minLength": 1,
+        "pattern": "^([^:]+|https?://.+)$",
         "type": "string"
       },
       "description": "Aliased registry sources keyed by alias. The empty-string alias\n (`\"\"`) is the default registry: kind references with no `\u003calias\u003e/`\n prefix resolve there. Named aliases can be any string and are used\n verbatim in references — declaring\n `\"acme\": \"./vendor/acme/registry.json\"` lets resources reference\n its kinds as `acme/\u003ckind\u003e`. The `@`-prefixed convention (e.g.\n `\"@scope\": \"...\"` referenced as `@scope/\u003ckind\u003e`) is supported but\n not required — the alias is treated as opaque text. Values are\n paths to compiled registry.json files (or URLs, when the loader\n supports them).",

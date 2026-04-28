@@ -26,11 +26,17 @@ func (s *DiscoverSuite) writeVeilJSON(root, body string) string {
 	return path
 }
 
+// stockRegistries is the minimal valid registries map appended to most
+// test fixtures so the proto's `registries: required` constraint passes
+// without each test having to spell it out. The path is a placeholder —
+// config.Load doesn't try to fetch registry contents at load time.
+const stockRegistries = `"registries": { "": "./registry.json" }`
+
 func (s *DiscoverSuite) TestFindsBareVeilJSON() {
 	root := s.T().TempDir()
 	nested := filepath.Join(root, "services", "api")
 	s.Require().NoError(os.MkdirAll(nested, 0755))
-	s.writeVeilJSON(root, `{"kinds":[]}`)
+	s.writeVeilJSON(root, `{"kinds":[], `+stockRegistries+`}`)
 
 	reg, err := Discover(nested)
 	s.Require().NoError(err)
@@ -50,7 +56,7 @@ func (s *DiscoverSuite) TestFindsVeilJSONFromNestedDirectory() {
 		"hooks": {"render": [{"path": "./hooks/inject-env.ts"}]},
 		"schema": "./schemas/service.schema.json"
 	}`), 0644))
-	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"]}`)
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
 
 	reg, err := Discover(nested)
 	s.Require().NoError(err)
@@ -71,7 +77,7 @@ func (s *DiscoverSuite) TestErrorsWhenNoVeilJSON() {
 
 func (s *DiscoverSuite) TestErrorsOnMissingKindFile() {
 	root := s.T().TempDir()
-	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/missing.json"]}`)
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/missing.json"], `+stockRegistries+`}`)
 	_, err := Discover(root)
 	s.Error(err)
 }
@@ -83,7 +89,7 @@ func (s *DiscoverSuite) TestErrorsWhenKindMissingName() {
 	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "bad.json"), []byte(`{
 		"sources": ["./deployment.yaml"]
 	}`), 0644))
-	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/bad.json"]}`)
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/bad.json"], `+stockRegistries+`}`)
 	_, err := Discover(root)
 	s.Error(err)
 }
@@ -92,6 +98,7 @@ func (s *DiscoverSuite) TestLoadsVariablesWithDefaults() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
+		`+stockRegistries+`,
 		"variables": {
 			"env": { "type": "string", "default": "dev" },
 			"region": { "type": "string" },
@@ -129,6 +136,7 @@ func (s *DiscoverSuite) TestRejectsUnknownVariableType() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
+		`+stockRegistries+`,
 		"variables": { "x": { "type": "object" } }
 	}`)
 	_, err := Load(path)
@@ -141,6 +149,7 @@ func (s *DiscoverSuite) TestAcceptsEnumOnStringAndNumber() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
+		`+stockRegistries+`,
 		"variables": {
 			"env":      { "type": "string", "enum": ["dev", "staging", "prod"], "default": "dev" },
 			"replicas": { "type": "number", "enum": [1, 3, 5] }
@@ -158,6 +167,7 @@ func (s *DiscoverSuite) TestRejectsEnumOnBool() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
+		`+stockRegistries+`,
 		"variables": { "debug": { "type": "bool", "enum": [true, false] } }
 	}`)
 	_, err := Load(path)
@@ -169,6 +179,7 @@ func (s *DiscoverSuite) TestRejectsDefaultNotInEnum() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
+		`+stockRegistries+`,
 		"variables": {
 			"env": { "type": "string", "enum": ["dev", "prod"], "default": "qa" }
 		}
@@ -183,6 +194,7 @@ func (s *DiscoverSuite) TestRejectsDefaultTypeMismatch() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
+		`+stockRegistries+`,
 		"variables": { "replicas": { "type": "number", "default": "three" } }
 	}`)
 	_, err := Load(path)
@@ -207,7 +219,7 @@ func (s *DiscoverSuite) TestAcceptsRenderHookStringShorthand() {
 		},
 		"schema": "./schemas/service.schema.json"
 	}`), 0644))
-	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"]}`)
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
 
 	reg, err := Load(filepath.Join(root, "veil.json"))
 	s.Require().NoError(err)
@@ -244,8 +256,8 @@ func (s *DiscoverSuite) TestRejectsAliasStartingWithDot() {
 	}`)
 	_, err := Load(path)
 	s.Require().Error(err)
-	s.Contains(err.Error(), `registry alias ".local" is invalid`)
-	s.Contains(err.Error(), `must not start with '.'`)
+	s.Contains(err.Error(), `.local`)
+	s.Contains(err.Error(), "pattern")
 }
 
 func (s *DiscoverSuite) TestRejectsAliasContainingSlash() {
@@ -256,8 +268,8 @@ func (s *DiscoverSuite) TestRejectsAliasContainingSlash() {
 	}`)
 	_, err := Load(path)
 	s.Require().Error(err)
-	s.Contains(err.Error(), `registry alias "foo/bar" is invalid`)
-	s.Contains(err.Error(), `must not contain ':' or '/'`)
+	s.Contains(err.Error(), "foo/bar")
+	s.Contains(err.Error(), "pattern")
 }
 
 func (s *DiscoverSuite) TestRejectsAliasContainingColon() {
@@ -268,8 +280,57 @@ func (s *DiscoverSuite) TestRejectsAliasContainingColon() {
 	}`)
 	_, err := Load(path)
 	s.Require().Error(err)
-	s.Contains(err.Error(), `registry alias "scheme:thing" is invalid`)
-	s.Contains(err.Error(), `must not contain ':' or '/'`)
+	s.Contains(err.Error(), "scheme:thing")
+	s.Contains(err.Error(), "pattern")
+}
+
+func (s *DiscoverSuite) TestAcceptsValidRegistryLocations() {
+	root := s.T().TempDir()
+	path := s.writeVeilJSON(root, `{
+		"kinds": [],
+		"registries": {
+			"":      "./public/r/registry.json",
+			"abs":   "/abs/path/to/registry.json",
+			"http":  "http://example.com/registry.json",
+			"https": "https://example.com/path/to/registry.json"
+		}
+	}`)
+	_, err := Load(path)
+	s.Require().NoError(err)
+}
+
+func (s *DiscoverSuite) TestRejectsRegistryLocationWithUnsupportedScheme() {
+	root := s.T().TempDir()
+	path := s.writeVeilJSON(root, `{
+		"kinds": [],
+		"registries": { "remote": "ftp://example.com/registry.json" }
+	}`)
+	_, err := Load(path)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "remote")
+	s.Contains(err.Error(), "pattern")
+}
+
+func (s *DiscoverSuite) TestRejectsRegistryLocationFileScheme() {
+	root := s.T().TempDir()
+	path := s.writeVeilJSON(root, `{
+		"kinds": [],
+		"registries": { "local": "file:///etc/registry.json" }
+	}`)
+	_, err := Load(path)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "pattern")
+}
+
+func (s *DiscoverSuite) TestRejectsEmptyRegistryLocation() {
+	root := s.T().TempDir()
+	path := s.writeVeilJSON(root, `{
+		"kinds": [],
+		"registries": { "blank": "" }
+	}`)
+	_, err := Load(path)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "blank")
 }
 
 func (s *DiscoverSuite) TestAcceptsRenderHookObjectWithAccess() {
@@ -291,7 +352,7 @@ func (s *DiscoverSuite) TestAcceptsRenderHookObjectWithAccess() {
 		},
 		"schema": "./schemas/service.schema.json"
 	}`), 0644))
-	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"]}`)
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
 
 	reg, err := Load(filepath.Join(root, "veil.json"))
 	s.Require().NoError(err)

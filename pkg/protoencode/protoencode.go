@@ -11,7 +11,9 @@ import (
 	stdjson "encoding/json"
 	"fmt"
 	"os"
+	"sync"
 
+	"buf.build/go/protovalidate"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -24,6 +26,35 @@ var Marshal = protojson.MarshalOptions{UseProtoNames: true}
 // keeps reads forgiving when users carry editor metadata like `$schema`
 // in their JSON.
 var Unmarshal = protojson.UnmarshalOptions{DiscardUnknown: true}
+
+// validator is the lazily initialized buf.validate runtime evaluator.
+// It reads the `(buf.validate.field)` annotations on each .proto field
+// and enforces them after unmarshal — keeping the proto file as the
+// single source of truth for input validation.
+var (
+	validatorOnce sync.Once
+	validatorInst protovalidate.Validator
+	validatorErr  error
+)
+
+func getValidator() (protovalidate.Validator, error) {
+	validatorOnce.Do(func() {
+		validatorInst, validatorErr = protovalidate.New()
+	})
+	return validatorInst, validatorErr
+}
+
+// Validate runs the buf.validate constraints declared on m's proto
+// definition against the populated message. Callers invoke this
+// immediately after `Unmarshal.Unmarshal` so any constraint violation
+// surfaces with the same error path as the unmarshal itself.
+func Validate(m proto.Message) error {
+	v, err := getValidator()
+	if err != nil {
+		return fmt.Errorf("initializing validator: %w", err)
+	}
+	return v.Validate(m)
+}
 
 // WriteFile marshals m via protojson and writes it indented to path.
 // Output round-trips through a generic map so the result uses canonical

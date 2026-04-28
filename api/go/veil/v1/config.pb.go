@@ -98,7 +98,9 @@ func (VariableType_Enum) EnumDescriptor() ([]byte, []int) {
 // (Kind, Registry, …) are the corresponding published forms.
 type VeilConfigDefinition struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Relative or absolute paths to kind definition files.
+	// Relative or absolute paths to kind definition files. May be empty —
+	// a project with no kinds is valid (it can still depend on kinds
+	// published by aliased registries).
 	Kinds []string `protobuf:"bytes,1,rep,name=kinds,proto3" json:"kinds,omitempty"`
 	// User-defined input variables keyed by name. Values are provided at
 	// render time via --var flags or VEIL_VAR_<NAME> environment variables.
@@ -746,12 +748,12 @@ var File_veil_v1_config_proto protoreflect.FileDescriptor
 
 const file_veil_v1_config_proto_rawDesc = "" +
 	"\n" +
-	"\x14veil/v1/config.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xfa\x03\n" +
-	"\x14VeilConfigDefinition\x12$\n" +
-	"\x05kinds\x18\x01 \x03(\tB\x0e\xbaH\v\x92\x01\b\b\x01\"\x04r\x02\x10\x01R\x05kinds\x12p\n" +
-	"\tvariables\x18\x02 \x03(\v2,.veil.v1.VeilConfigDefinition.VariablesEntryB$\xbaH!\x9a\x01\x1e\"\x1cr\x1a2\x18^[a-zA-Z_][a-zA-Z0-9_]*$R\tvariables\x12o\n" +
+	"\x14veil/v1/config.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\x96\x04\n" +
+	"\x14VeilConfigDefinition\x12\"\n" +
+	"\x05kinds\x18\x01 \x03(\tB\f\xbaH\t\x92\x01\x06\"\x04r\x02\x10\x01R\x05kinds\x12p\n" +
+	"\tvariables\x18\x02 \x03(\v2,.veil.v1.VeilConfigDefinition.VariablesEntryB$\xbaH!\x9a\x01\x1e\"\x1cr\x1a2\x18^[a-zA-Z_][a-zA-Z0-9_]*$R\tvariables\x12\x8c\x01\n" +
 	"\n" +
-	"registries\x18\x03 \x03(\v2-.veil.v1.VeilConfigDefinition.RegistriesEntryB \xbaH\x1d\xc8\x01\x01\x9a\x01\x17\"\x15r\x132\x11^([^.:/][^:/]*)?$R\n" +
+	"registries\x18\x03 \x03(\v2-.veil.v1.VeilConfigDefinition.RegistriesEntryB=\xbaH:\xc8\x01\x01\x9a\x014\"\x15r\x132\x11^([^.:/][^:/]*)?$*\x1br\x19\x10\x012\x15^([^:]+|https?://.+)$R\n" +
 	"registries\x12I\n" +
 	"\x12resource_discovery\x18\x04 \x01(\v2\x1a.veil.v1.ResourceDiscoveryR\x11resourceDiscovery\x1aO\n" +
 	"\x0eVariablesEntry\x12\x10\n" +

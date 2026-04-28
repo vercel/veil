@@ -28,6 +28,14 @@ func (s *RenderSuite) writeConfig(body string) {
 	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(body), 0644))
 }
 
+// writeStockRegistry drops an empty `registry.json` at the project
+// root so the loader can succeed without each test having to set one
+// up. Pair with `"registries": { "": "./registry.json" }` in the
+// veil.json fixture.
+func (s *RenderSuite) writeStockRegistry() {
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "registry.json"), []byte(`{"kinds":{}}`), 0644))
+}
+
 func (s *RenderSuite) run(args ...string) (string, error) {
 	var buf bytes.Buffer
 	app := NewApp()
@@ -40,6 +48,7 @@ func (s *RenderSuite) run(args ...string) (string, error) {
 func (s *RenderSuite) TestRenderFailsOnMissingRequiredVariable() {
 	s.writeConfig(`{
   "kinds": [],
+  "registries": { "": "./registry.json" },
   "variables": { "region": { "type": "string" } }
 }`)
 
@@ -51,8 +60,10 @@ func (s *RenderSuite) TestRenderFailsOnMissingRequiredVariable() {
 func (s *RenderSuite) TestRenderPassesVariableResolutionWithCLIFlag() {
 	s.writeConfig(`{
   "kinds": [],
+  "registries": { "": "./registry.json" },
   "variables": { "region": { "type": "string" } }
 }`)
+	s.writeStockRegistry()
 
 	// With --var provided, variable resolution succeeds; the next failure
 	// is "resource at . not in catalog" which proves we got past variable
@@ -66,6 +77,7 @@ func (s *RenderSuite) TestRenderPassesVariableResolutionWithCLIFlag() {
 func (s *RenderSuite) TestRenderRejectsBadTypeCoercion() {
 	s.writeConfig(`{
   "kinds": [],
+  "registries": { "": "./registry.json" },
   "variables": { "replicas": { "type": "number" } }
 }`)
 
@@ -77,8 +89,10 @@ func (s *RenderSuite) TestRenderRejectsBadTypeCoercion() {
 func (s *RenderSuite) TestRenderResolvesFromEnv() {
 	s.writeConfig(`{
   "kinds": [],
+  "registries": { "": "./registry.json" },
   "variables": { "region": { "type": "string" } }
 }`)
+	s.writeStockRegistry()
 
 	s.T().Setenv("VEIL_VAR_REGION", "iad1")
 	// Variable resolution succeeds via env; subsequent error is the
@@ -90,14 +104,14 @@ func (s *RenderSuite) TestRenderResolvesFromEnv() {
 }
 
 func (s *RenderSuite) TestRenderFailsOnBadRegistryPath() {
-	s.writeConfig(`{ "kinds": [] }`)
+	s.writeConfig(`{ "kinds": [], "registries": { "": "./registry.json" } }`)
 	_, err := s.run("render", ".", "--registry", "/nonexistent/registry.json")
 	s.Require().Error(err)
 	s.Contains(err.Error(), "registry")
 }
 
 func (s *RenderSuite) TestRenderFailsOnDuplicateKindAcrossRegistries() {
-	s.writeConfig(`{ "kinds": [] }`)
+	s.writeConfig(`{ "kinds": [], "registries": { "": "./registry.json" } }`)
 
 	regA := filepath.Join(s.root, "a", "registry.json")
 	regB := filepath.Join(s.root, "b", "registry.json")
@@ -130,7 +144,8 @@ func (s *RenderSuite) TestRenderLoadsAliasedRegistriesFromVeilJSON() {
 }
 
 func (s *RenderSuite) TestRenderClearErrorWhenPathDoesNotExist() {
-	s.writeConfig(`{ "kinds": [], "registries": {} }`)
+	s.writeConfig(`{ "kinds": [], "registries": { "": "./registry.json" } }`)
+	s.writeStockRegistry()
 
 	_, err := s.run("render", "missing/path.json")
 	s.Require().Error(err)

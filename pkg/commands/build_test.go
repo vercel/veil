@@ -26,7 +26,11 @@ func TestBuildSuite(t *testing.T) {
 
 func (s *BuildSuite) SetupTest() {
 	s.root = s.T().TempDir()
-	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte("{\n  \"kinds\": []\n}\n"), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
+  "kinds": [],
+  "registries": { "": "./public/r/registry.json" }
+}
+`), 0644))
 	s.T().Chdir(s.root)
 }
 
@@ -116,6 +120,7 @@ func (s *BuildSuite) TestBuildTypesFileEmitsEnumUnion() {
 
 	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
   "kinds": ["./.veil/kinds/worker/kind.json"],
+  "registries": { "": "./public/r/registry.json" },
   "variables": {
     "env":      { "type": "string", "enum": ["dev", "staging", "prod"], "default": "dev" },
     "replicas": { "type": "number", "enum": [1, 3, 5] }
@@ -138,6 +143,7 @@ func (s *BuildSuite) TestBuildTypesFileIncludesVariables() {
 
 	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
   "kinds": ["./.veil/kinds/worker/kind.json"],
+  "registries": { "": "./public/r/registry.json" },
   "variables": {
     "env":      { "type": "string", "default": "dev", "description": "Target deployment environment." },
     "replicas": { "type": "number", "default": 3 },
@@ -174,6 +180,7 @@ func (s *BuildSuite) TestBuildEmbedsVariablesInCompiledKind() {
 	// Add variables to veil.json.
 	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
   "kinds": ["./.veil/kinds/worker/kind.json"],
+  "registries": { "": "./public/r/registry.json" },
   "variables": {
     "env": { "type": "string", "default": "dev" },
     "region": { "type": "string" }
@@ -213,7 +220,7 @@ func (s *BuildSuite) TestBuildHonorsConfigAndOutFlags() {
   "hooks": {"render": [{"path": "./hooks/src/noop.ts"}]},
   "schema": "./schema.json"
 }`), 0644))
-	s.Require().NoError(os.WriteFile(filepath.Join(altRoot, "veil.json"), []byte(`{"kinds": ["./.veil/kinds/svc/kind.json"]}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(altRoot, "veil.json"), []byte(`{"kinds": ["./.veil/kinds/svc/kind.json"], "registries": { "": "./public/r/registry.json" }}`), 0644))
 
 	out := filepath.Join(s.root, "dist")
 	_, err := s.run("build", "--config", filepath.Join(altRoot, "veil.json"), "--out", out)
@@ -293,7 +300,8 @@ func (s *BuildSuite) TestBuildFailsOnMissingSource() {
   "schema": "./schema.json"
 }`), 0644))
 	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
-  "kinds": ["./.veil/kinds/svc/kind.json"]
+  "kinds": ["./.veil/kinds/svc/kind.json"],
+  "registries": { "": "./public/r/registry.json" }
 }`), 0644))
 
 	_, err := s.run("build")

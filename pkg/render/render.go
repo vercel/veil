@@ -588,7 +588,7 @@ func stringifyVar(v any) string {
 // each spec field, including its `default` values. Returns an empty map
 // if the composite schema has no spec subschema.
 func loadSpecSubschema(schemaPath string) (map[string]any, error) {
-	data, err := os.ReadFile(schemaPath)
+	data, err := registry.ReadResource(schemaPath)
 	if err != nil {
 		return nil, err
 	}
@@ -631,7 +631,7 @@ func applySchemaDefaults(data map[string]any, schema map[string]any) {
 // merged via resolveResource — i.e. overlays are applied, so what's
 // validated is exactly what hooks (and the final renderer) will see.
 func validateResource(schemaPath string, r *veilv1.Resource) error {
-	data, err := os.ReadFile(schemaPath)
+	data, err := registry.ReadResource(schemaPath)
 	if err != nil {
 		return fmt.Errorf("reading schema %s: %w", schemaPath, err)
 	}
