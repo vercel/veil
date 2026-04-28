@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/goccy/go-json"
 	"github.com/urfave/cli/v3"
 
+	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/config"
 	"github.com/vercel/veil/pkg/interact"
 	"github.com/vercel/veil/pkg/registry"
@@ -28,26 +30,28 @@ import (
 func Override() *cli.Command {
 	return &cli.Command{
 		Name:      "override",
-		Usage:     "Override a kind source file with a local replacement",
-		UsageText: "veil override <resource> <source> [--skip-hooks] [--out <path>]",
+		Usage:     "Override one or more kind source files with local replacements",
+		UsageText: "veil override <resource> [<source>...] [--skip-hooks] [--out <path>]",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "out",
-				Usage: "Custom output path for the override file (default: alongside the resource)",
+				Usage: "Custom output directory for override files (default: alongside the resource)",
 			},
 			&cli.BoolFlag{
 				Name:  "skip-hooks",
-				Usage: "Discard hook mutations to this file at write time — the rendered output is the override file verbatim",
+				Usage: "Discard hook mutations to overridden files at write time — rendered output matches the override files verbatim",
 			},
 		},
 		Arguments: []cli.Argument{
 			&cli.StringArg{
 				Name:      "resource",
-				UsageText: "Path to the resource JSON file the override is attached to",
+				UsageText: "Path to the resource JSON file the overrides are attached to",
 			},
-			&cli.StringArg{
-				Name:      "source",
-				UsageText: "Source filename declared by the resource's kind (e.g. \"sources/app.yaml\")",
+			&cli.StringArgs{
+				Name:      "sources",
+				Min:       0,
+				Max:       -1,
+				UsageText: "Source filenames declared by the resource's kind (e.g. \"sources/app.yaml\"). Omit to list available sources.",
 			},
 		},
 		Action: runOverride,
@@ -58,11 +62,12 @@ func runOverride(ctx context.Context, c *cli.Command) error {
 	p := interact.Default()
 
 	resourceArg := c.StringArg("resource")
-	sourceArg := c.StringArg("source")
-	if resourceArg == "" || sourceArg == "" {
-		return fmt.Errorf("override: <resource> and <source> are required")
+	sourceArgs := c.StringArgs("sources")
+	if resourceArg == "" {
+		return fmt.Errorf("override: <resource> is required")
 	}
 	skipHooks := c.Bool("skip-hooks")
+	outDir := c.String("out")
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -108,59 +113,127 @@ func runOverride(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return fmt.Errorf("loading kind %q: %w", kindName, err)
 	}
-	sourceContent, ok := loadedKind.Kind.GetSources()[sourceArg]
-	if !ok {
-		known := make([]string, 0, len(loadedKind.Kind.GetSources()))
-		for k := range loadedKind.Kind.GetSources() {
-			known = append(known, k)
+
+	sources := loadedKind.Kind.GetSources()
+
+	// Discovery mode: only the resource was given. List the kind's
+	// sources so the user can pick one for the next invocation.
+	if len(sourceArgs) == 0 {
+		return listOverridableSources(p, kindName, resourceArg, res.GetMetadata().GetOverrides(), sources)
+	}
+
+	// Validate every requested source up front so we don't half-apply
+	// when one is misspelled.
+	for _, s := range sourceArgs {
+		if _, ok := sources[s]; !ok {
+			return fmt.Errorf(
+				"kind %q does not declare a source named %q (known sources: %s)",
+				kindName, s, strings.Join(sortedKeys(sources), ", "),
+			)
 		}
-		return fmt.Errorf("kind %q does not declare a source named %q (known sources: %s)", kindName, sourceArg, strings.Join(known, ", "))
 	}
 
-	// Default output path: same basename as the source, dropped
-	// alongside the resource file. The source's path is kept on the
-	// override entry verbatim so the renderer can match against it.
 	resourceDir := filepath.Dir(resourceAbs)
-	outRel := c.String("out")
-	if outRel == "" {
-		outRel = filepath.Base(sourceArg)
-	}
-	outAbs := outRel
-	if !filepath.IsAbs(outAbs) {
-		outAbs = filepath.Join(resourceDir, outRel)
-	}
-	if _, err := os.Stat(outAbs); err == nil {
-		return fmt.Errorf("override file %s already exists", outAbs)
-	}
-	if err := os.MkdirAll(filepath.Dir(outAbs), 0755); err != nil {
-		return fmt.Errorf("creating override directory: %w", err)
-	}
-	if err := os.WriteFile(outAbs, []byte(sourceContent), 0644); err != nil {
-		return fmt.Errorf("writing override file: %w", err)
+
+	// Track every file we successfully wrote so we can roll them all
+	// back if any later step fails.
+	var writtenFiles []string
+	rollback := func() {
+		for _, f := range writtenFiles {
+			_ = os.Remove(f)
+		}
 	}
 
-	// Path stored on the override entry is relative to the resource
-	// file's directory — matches the resolution rule in render's
-	// applyOverrides. Use forward slashes so the JSON is stable
-	// across platforms.
-	storedPath := outRel
-	if filepath.IsAbs(outRel) {
-		storedPath = outAbs
-	}
-	storedPath = filepath.ToSlash(storedPath)
+	for _, sourceName := range sourceArgs {
+		sourceContent := sources[sourceName]
 
-	if err := registerOverride(resourceAbs, sourceArg, storedPath, skipHooks); err != nil {
-		// Roll back the file we just wrote so a partial-apply doesn't
-		// leave dead bytes on disk.
-		_ = os.Remove(outAbs)
-		return err
+		// Default output path: same basename as the source, dropped
+		// alongside the resource file. With --out the file lands under
+		// that directory (relative to the resource).
+		basename := filepath.Base(sourceName)
+		outRel := basename
+		if outDir != "" {
+			outRel = filepath.Join(outDir, basename)
+		}
+		outAbs := outRel
+		if !filepath.IsAbs(outAbs) {
+			outAbs = filepath.Join(resourceDir, outRel)
+		}
+		if _, err := os.Stat(outAbs); err == nil {
+			rollback()
+			return fmt.Errorf("override file %s already exists", outAbs)
+		}
+		if err := os.MkdirAll(filepath.Dir(outAbs), 0755); err != nil {
+			rollback()
+			return fmt.Errorf("creating override directory: %w", err)
+		}
+		if err := os.WriteFile(outAbs, []byte(sourceContent), 0644); err != nil {
+			rollback()
+			return fmt.Errorf("writing override file %s: %w", outAbs, err)
+		}
+		writtenFiles = append(writtenFiles, outAbs)
+
+		// Path stored on the override entry is relative to the
+		// resource file's directory — matches the resolution rule in
+		// render's applyOverrides. Forward slashes for cross-platform
+		// stability.
+		storedPath := outRel
+		if filepath.IsAbs(outRel) {
+			storedPath = outAbs
+		}
+		storedPath = filepath.ToSlash(storedPath)
+
+		if err := registerOverride(resourceAbs, sourceName, storedPath, skipHooks); err != nil {
+			rollback()
+			return err
+		}
+
+		p.Successf("Overrode %s with %s", sourceName, storedPath)
 	}
 
-	p.Successf("Overrode %s with %s", sourceArg, storedPath)
 	if skipHooks {
 		p.Mutedf("  skip_hooks: true (hook mutations discarded at render)")
 	}
 	return nil
+}
+
+// listOverridableSources prints the kind's source list for the user
+// when the override command is invoked without a source. Already-
+// overridden entries are flagged so the user knows what's already
+// taken without re-reading the resource JSON.
+func listOverridableSources(p interact.Printer, kindName, resourceArg string, existing []*veilv1.Override, sources map[string]string) error {
+	taken := make(map[string]bool, len(existing))
+	for _, ov := range existing {
+		taken[ov.GetSource()] = true
+	}
+
+	keys := sortedKeys(sources)
+	if len(keys) == 0 {
+		p.Infof("kind %q declares no sources", kindName)
+		return nil
+	}
+
+	p.Infof("Sources declared by kind %q:", kindName)
+	for _, k := range keys {
+		if taken[k] {
+			p.Mutedf("  %s  (already overridden)", k)
+		} else {
+			p.Mutedf("  %s", k)
+		}
+	}
+	p.Infof("Pick one and re-run: veil override %s <source> [--skip-hooks]", resourceArg)
+	return nil
+}
+
+// sortedKeys returns the map's keys in lexical order. Used so the
+// override listing is stable across runs.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // registerOverride mutates the resource JSON in place to append the new

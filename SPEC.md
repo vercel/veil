@@ -209,10 +209,35 @@ Two lifecycles exist today:
 
 - **`render`** — runs during the consumer's own `veil render`. Each entry is an object with a
   required `path` (TS/JS file that exports a `RenderHook`) plus optional `access` declaring host
-  resources the hook needs (env vars today; filesystem / network later).
+  resources the hook needs (env vars today; filesystem / network later). The string short-form is
+  not supported: every entry is `{path, access?}`.
 - **`dependents`** — per-consumer hooks that fire when *another* kind declares a dependency on this
   one. Each entry binds a consumer kind to one or more hook file paths and a JSON Schema for the
   params the consumer must supply. See [Dependencies](#dependencies) for the full design.
+
+#### `access` — declared host resources
+
+A render hook entry's optional `access` block tells the runner which host resources the hook needs.
+Today only `env` is supported:
+
+```json
+{
+  "path": "./hooks/src/inject-providers.ts",
+  "access": {
+    "env": [
+      { "name": "DATADOG_API_KEY", "description": "Datadog API key for monitor provisioning" },
+      { "name": "DATADOG_APP_KEY", "description": "Datadog application key for monitor provisioning" }
+    ]
+  }
+}
+```
+
+Each `env` entry needs both a `name` and a `description`. Before the hook runs, `veil render`
+calls `os.LookupEnv` for every declared name. **Missing vars aggregate into a single error** that
+prints every name + description so the user can fix all of them in one pass — no piecemeal
+re-runs. On success, the runner logs `granting env access` with the var list and the resolved
+values reach the hook on `ctx.env` as a frozen `Record<string, string>` containing **only** the
+declared keys. Vars the hook didn't declare are not visible regardless of host state.
 
 ```json
 "hooks": {
@@ -265,8 +290,9 @@ export interface RenderHook {
 }
 ```
 
-- **RenderHookContext**: contains `resource` (metadata + merged spec), `vars`, `root`, and the host
-  APIs `std` / `os` / `fetch`.
+- **RenderHookContext**: contains `resource` (metadata + merged spec), `vars`, `root`, the host
+  APIs `std` / `os` / `fetch`, and `env` — a frozen `Record<string, string>` containing exactly
+  the env vars declared under the hook entry's `access.env` (and only those).
 - **FS**: holds the file state for this render. Each declared source gets a typed, generated accessor so
   renames in `kind.json` surface as TypeScript errors at build time. `./sources/deployment.yaml` produces
   `fs.getSourcesDeploymentYaml(): File`.
@@ -323,9 +349,11 @@ Common to all resources. Contains:
   variable's stringified value, the overlay file is loaded and its `spec` is merged into the
   resource's `spec` before hooks run. An empty `if` map (or omitted entirely) means the overlay
   always applies.
-- **`overrides`**: A list of ejected source files. Each entry is an object with `source` (the path from the
-  resource definition's `sources`) and `path` (the local path to the override file). By default, `veil eject`
-  places the file at `.veil/<resource>/overrides/<filename>`, but the user can specify a custom path.
+- **`overrides`**: A list of source files replaced with local copies. Each entry is an object with
+  `source` (a path from the resource definition's `sources`), `path` (the local override file,
+  resolved relative to the resource file's directory or used as-is when absolute), and optional
+  `skip_hooks` (default `false`). `veil override` manages this list — see [Override](#override) for
+  semantics and the [CLI section](#veil-override-resource-source) for usage.
 
 ### `spec`
 
@@ -384,30 +412,45 @@ An overlay file (e.g. `staging.json`) contains a partial `spec` that is merged i
 
 ## Override
 
-Overrides are an escape hatch for cases where a consumer needs deep control of a source file. Rather than trying
-to express everything through hooks, a consumer can **eject** a source file — getting a local copy that
-completely replaces the hooked output for that file during render.
-
-Overrides are tracked in `metadata.overrides`:
+Overrides are an escape hatch for cases where a consumer needs deep control of a source file. Rather
+than trying to express everything through hooks, a consumer can **override** a source file with a
+local copy. Overrides are tracked in `metadata.overrides`:
 
 ```json
 {
   "metadata": {
     "name": "api-feature-flags",
     "overrides": [
-      {
-        "source": "./sources/service/deployment.yaml",
-        "path": "./.veil/service/overrides/deployment.yaml"
-      }
+      { "source": "sources/app.yaml",     "path": "app.yaml" },
+      { "source": "sources/service.yaml", "path": "service.yaml", "skip_hooks": true }
     ]
   }
 }
 ```
 
-`source` identifies which file in the resource definition is being replaced. `path` points to the local copy.
-During render, veil seeds the initial FS with the contents of the file at `path` instead of the resource
-definition's source — the override file becomes the **starting point** that the hook pipeline operates on.
-Render hooks and dependent hooks still run normally; an override just shifts the baseline they mutate.
+Each entry has:
+
+- **`source`** (required) — path to the kind's source being replaced. Must match an entry in the
+  kind's `sources` list.
+- **`path`** (required) — local override file, resolved relative to the resource file's directory
+  (or used as-is when absolute).
+- **`skip_hooks`** (optional, default `false`) — controls how the override interacts with the
+  hook pipeline.
+
+There are two override modes:
+
+1. **Default (`skip_hooks: false`)** — at render start, veil seeds the bundle entry for `source`
+   with the override file's bytes. The hook pipeline (render hooks + every applicable dependent
+   hook) then operates on those bytes; whatever the pipeline produces is what gets written. The
+   override just shifts the **starting point** the hooks mutate.
+2. **`skip_hooks: true`** — same starting-point swap, but veil **re-stamps** the override's bytes
+   onto the bundle entry after every hook (render + dependent) finishes. Hooks may still observe
+   and edit the file during the pipeline, but their mutations are discarded at write time. The
+   rendered output is the local file byte-for-byte. Use this when the kind's hooks would
+   otherwise stomp on a hand-tuned customization. If a hook tombstones a frozen file, render
+   re-introduces it under the same key so the user's content still lands in the output.
+
+A consumer creates entries with `veil override` (see [CLI](#veil-override-resource-source)).
 
 # Dependencies
 
@@ -568,7 +611,7 @@ entry:
 4. Run each registered dependent hook against the consumer's FS, in declaration order.
 
 Render hooks cannot observe state injected by dependent hooks — the lifecycles are strictly ordered
-(overrides → render → dependents → write).
+(overrides → render → dependents → re-stamp `skip_hooks` overrides → write).
 
 ## Build-time integration
 
@@ -707,7 +750,7 @@ All core types are defined as protobuf messages in `proto/veil/v1/` with `buf.va
 Source-side hand-authored types live in `config.proto` and carry the `Definition` suffix
 (`VeilConfigDefinition`, `KindDefinition`, `HooksDefinition`, `DependentDefinition`); the
 corresponding published forms — what `veil build` emits and `veil render` consumes — live in
-`registry.proto` with bare names (`Kind`, `Hooks`, `Hook`, `Dependent`, `Registry`,
+`registry.proto` with bare names (`Kind`, `Hooks`, `Hook`, `DependentHook`, `Registry`,
 `RegistryEntry`). The convention: **if it lives in a local JSON file authored by hand, it's a
 `*Definition`; if it lives in a published artifact, it's just the type**. Sub-messages used in both
 contexts (`Variable`, `VariableType`) keep bare names.
@@ -784,12 +827,18 @@ catalog and walks outward from.
    against the discriminated schema baked in at build time)
 6. Load the `sources` (already embedded in the compiled `kind.json`) into an initial `FS`, then apply any
    `metadata.overrides` — each entry replaces the corresponding source's contents in the FS so the hook
-   pipeline operates on the override as its starting point
-7. Apply `hooks.render` in order (calling each `RenderHook.render`), threading the FS through the pipeline
-8. Apply `dependencies` — for each entry, look up the target via the catalog, find the target kind's
+   pipeline operates on the override as its starting point. Entries with `skip_hooks: true` are recorded
+   for the re-stamp pass at step 9.
+7. For each render hook, pre-flight every name in its `access.env` declaration via `os.LookupEnv`. Any
+   missing names abort the render with one error listing all of them plus the kind's descriptions. On
+   success, log the granted vars and pass them to the hook on `ctx.env`.
+8. Apply `hooks.render` in order (calling each `RenderHook.render`), threading the FS through the pipeline
+9. Apply `dependencies` — for each entry, look up the target via the catalog, find the target kind's
    matching `hooks.dependents` entry for the consumer's kind, and run those hooks against the
    consumer's FS. See [Dependencies](#dependencies).
-9. Write the final files to disk
+10. Re-stamp every `skip_hooks: true` override's bytes onto the bundle, discarding any in-flight hook
+    mutations to those files.
+11. Write the final files to disk
 
 ### Registries
 
@@ -804,43 +853,90 @@ in precedence order (first match wins):
 
 A kind name collision across loaded registries is a hard error.
 
-## `veil eject <target> <source-filename>`
+## `veil override <resource> [<source>...]`
 
-Ejects a source file from a resource definition for local override.
+Replace one or more kind source files on a single resource with local copies. Each named source is
+copied next to the resource (or to `--out`), registered under `metadata.overrides`, and from then
+on render uses the local file in place of the kind's source.
 
-- `<target>`: The resource file (or directory containing it) to update.
-- `<source-filename>`: The filename from the resource definition's `sources` to eject.
+- `<resource>`: Path to the resource JSON file the overrides are attached to.
+- `<source>...`: Source paths declared in the kind's `sources` list (e.g. `sources/app.yaml`). Omit
+  to enter **discovery mode** — the command prints every source the kind declares, flags the ones
+  already covered by an existing override, and tells the user how to re-invoke.
 
-The command:
+Flags:
 
-1. Resolves the resource definition referenced by `<target>`
-2. Copies `<source-filename>` from the resource definition's `sources` into
-   `.veil/<resource>/overrides/<filename>` (or a user-specified path)
-3. Adds a `{source, path}` entry to `metadata.overrides` in the target resource
+- `--skip-hooks` — every override registered in this call gets `skip_hooks: true`. See
+  [Override](#override) for the runtime semantics. The flag applies uniformly to every source
+  named in the call.
+- `--out <dir>` — directory where the override files land (default: alongside the resource file).
+  Resolved relative to the resource if not absolute.
+
+The command validates every requested `<source>` against the kind's declared sources up front, so
+a typo on the third argument fails before the first override file is written. Each successful file
+write is tracked; if any later step fails (a duplicate registration, a write error, etc.) all
+previously written files are removed so a partial-apply doesn't leave dead bytes on disk.
+
+Examples:
+
+```
+# List sources the kind declares (discovery mode):
+$ veil override services/users/_deploy/service.json
+→ Sources declared by kind "service":
+  sources/app.yaml
+  sources/hpa.yaml
+  sources/pdb.yaml
+  sources/service.yaml
+  sources/role.tf
+→ Pick one and re-run: veil override services/users/_deploy/service.json <source> [--skip-hooks]
+
+# Override one source:
+$ veil override services/users/_deploy/service.json sources/app.yaml
+
+# Override several at once, all marked skip-hooks:
+$ veil override services/users/_deploy/service.json \
+    sources/app.yaml sources/hpa.yaml sources/pdb.yaml --skip-hooks
+```
+
+After overriding, the developer owns those files entirely. They are used as the hook pipeline's
+starting point for the named sources; with `--skip-hooks` they are also re-stamped after the
+pipeline so the rendered output matches them byte-for-byte.
+
+## `veil graph <path>`
+
+Walks the dependency graph rooted at a resource file and prints it. Useful for sanity-checking
+which targets a service actually depends on, debugging cycles, and feeding visual renderers.
+
+- `<path>`: A resource JSON file the graph roots at.
+
+Flags:
+
+- `--config <path>` — path to `veil.json` (defaults to the nearest one).
+- `--format <tree|mermaid|dot>` — output format. Default `tree`.
+  - `tree` — Unicode box-drawing tree. Each node prints `<kind>/<name>  (<resource path>)` plus
+    the dependency's `params` map. Nodes visited via more than one path collapse to one node;
+    repeats are flagged with `(↺)` so the structure stays honest.
+  - `mermaid` — `flowchart LR` source you can paste into a mermaid renderer.
+  - `dot` — Graphviz DOT; pipe through `dot -Tsvg` (or similar).
+
+BFS traversal, edges sorted by `kind/name` so output is stable across runs. A missing dependency
+target fails with the chain of `(kind, name)` pairs that led to it.
 
 Example:
 
 ```
-$ veil eject ./service.json sources/service/deployment.yaml
-# copies .veil/resources/sources/service/deployment.yaml → .veil/service/overrides/deployment.yaml
-# adds {"source": "./sources/service/deployment.yaml", "path": "./.veil/service/overrides/deployment.yaml"}
-#   to metadata.overrides in ./service.json
+$ veil graph services/api-feature-flags/_deploy/service.json
+service/api-feature-flags  (services/api-feature-flags/_deploy/service.json)
+├── bucket/eddie  (infra/buckets/eddie.json)  [action=read, url_env_var=MY_BUCKET_URL]
+└── cache/rate-limits  (infra/caches/rate-limits.json)  [env_var=RATE_LIMITS_CACHE_MODE]
 ```
-
-To place the override at a custom path:
-
-```
-$ veil eject ./service.json sources/service/deployment.yaml --out ./custom/deployment.yaml
-```
-
-After ejecting, the developer owns that file entirely. It is used as the starting point for the hook
-pipeline in place of the resource definition's source.
 
 ## `veil schema <type>`
 
 Prints the embedded JSON Schema for a veil type to stdout. Available subcommands:
 
 - `veil schema config` — `.veil/veil.json` schema
-- `veil schema resource-def` — resource definition schema
-- `veil schema resource` — resource schema (metadata + spec)
-- `veil schema metadata` — metadata schema (name, overlays, overrides)
+- `veil schema kind-definition` — hand-authored `kind.json` schema
+- `veil schema kind` — published, compiled `Kind` schema (the `veil build` output)
+- `veil schema resource` — resource schema (metadata + spec envelope)
+- `veil schema metadata` — metadata schema (name, kind, overlays, overrides)
