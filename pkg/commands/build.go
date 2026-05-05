@@ -163,7 +163,7 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 		}
 
 		if checker != nil {
-			if err := checker.Check(hookSrcDir); err != nil {
+			if err := checker.Check(hookFiles(k)); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", k.Name, err))
 				continue
 			}
@@ -212,9 +212,9 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 
 // compileKind reads a kind's sources, bundles+minifies each render hook,
 // bundles each per-consumer dependent hook, and inlines per-consumer params
-// schemas. `variables` is the project-level variable declaration from
-// veil.json, copied verbatim so the compiled document is self-contained at
-// render time.
+// schemas. `variables` is the merged variable declaration set (veil.json
+// plus every kind's kind.json), copied verbatim so the compiled document
+// is self-contained at render time.
 func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectRoot string, fsys fs.FS) (*veilv1.Kind, error) {
 	sources := make(map[string]string, len(k.Sources))
 	for _, src := range k.Sources {
@@ -362,6 +362,29 @@ func writeKindTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "veil-types.ts"), []byte(ts), 0644)
+}
+
+// hookFiles returns the absolute paths of every hook .ts file declared
+// in a kind — render hooks plus dependent hooks. Used to scope tsc to
+// exactly the files veil ships, so it never tries to type-check unrelated
+// files in a surrounding monorepo.
+func hookFiles(k *config.Kind) []string {
+	abs := func(p string) string {
+		if filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Join(k.Dir, p)
+	}
+	var files []string
+	for _, d := range k.GetHooks().GetRender() {
+		files = append(files, abs(d.GetPath()))
+	}
+	for _, d := range k.GetHooks().GetDependents() {
+		for _, p := range d.GetPaths() {
+			files = append(files, abs(p))
+		}
+	}
+	return files
 }
 
 // validateKind checks that a kind's referenced files exist and that its

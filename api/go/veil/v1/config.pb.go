@@ -378,7 +378,13 @@ type KindDefinition struct {
 	// ultimately just another hook lifecycle.
 	Hooks *HooksDefinition `protobuf:"bytes,3,opt,name=hooks,proto3" json:"hooks,omitempty"`
 	// Path to the JSON Schema that defines the spec shape.
-	Schema        string `protobuf:"bytes,5,opt,name=schema,proto3" json:"schema,omitempty"`
+	Schema string `protobuf:"bytes,5,opt,name=schema,proto3" json:"schema,omitempty"`
+	// Kind-scoped input variable declarations, keyed by name. Merged with
+	// the project-level variables from veil.json at config-load time;
+	// declaring a name that already exists in veil.json or in another
+	// kind is rejected. Otherwise the shape and resolution rules are
+	// identical to VeilConfigDefinition.variables.
+	Variables     map[string]*Variable `protobuf:"bytes,6,rep,name=variables,proto3" json:"variables,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -439,6 +445,13 @@ func (x *KindDefinition) GetSchema() string {
 		return x.Schema
 	}
 	return ""
+}
+
+func (x *KindDefinition) GetVariables() map[string]*Variable {
+	if x != nil {
+		return x.Variables
+	}
+	return nil
 }
 
 // HooksDefinition groups a kind's hook files by lifecycle point. Each
@@ -779,12 +792,16 @@ const file_veil_v1_config_proto_rawDesc = "" +
 	"\x04enum\x18\x04 \x03(\v2\x16.google.protobuf.ValueR\x04enumB\n" +
 	"\n" +
 	"\b_defaultB\x0e\n" +
-	"\f_description\"\xb4\x01\n" +
+	"\f_description\"\xf1\x02\n" +
 	"\x0eKindDefinition\x122\n" +
 	"\x04name\x18\x01 \x01(\tB\x1e\xbaH\x1b\xc8\x01\x01r\x16\x10\x012\x12^[a-z][a-z0-9_-]*$R\x04name\x12&\n" +
 	"\asources\x18\x02 \x03(\tB\f\xbaH\t\x92\x01\x06\"\x04r\x02\x10\x01R\asources\x12.\n" +
 	"\x05hooks\x18\x03 \x01(\v2\x18.veil.v1.HooksDefinitionR\x05hooks\x12\x16\n" +
-	"\x06schema\x18\x05 \x01(\tR\x06schema\"\x86\x01\n" +
+	"\x06schema\x18\x05 \x01(\tR\x06schema\x12j\n" +
+	"\tvariables\x18\x06 \x03(\v2&.veil.v1.KindDefinition.VariablesEntryB$\xbaH!\x9a\x01\x1e\"\x1cr\x1a2\x18^[a-zA-Z_][a-zA-Z0-9_]*$R\tvariables\x1aO\n" +
+	"\x0eVariablesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +
+	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\"\x86\x01\n" +
 	"\x0fHooksDefinition\x125\n" +
 	"\x06render\x18\x01 \x03(\v2\x1d.veil.v1.RenderHookDefinitionR\x06render\x12<\n" +
 	"\n" +
@@ -822,7 +839,7 @@ func file_veil_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_veil_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_veil_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_veil_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_veil_v1_config_proto_goTypes = []any{
 	(VariableType_Enum)(0),       // 0: veil.v1.VariableType.Enum
 	(*VeilConfigDefinition)(nil), // 1: veil.v1.VeilConfigDefinition
@@ -837,26 +854,29 @@ var file_veil_v1_config_proto_goTypes = []any{
 	(*DependentDefinition)(nil),  // 10: veil.v1.DependentDefinition
 	nil,                          // 11: veil.v1.VeilConfigDefinition.VariablesEntry
 	nil,                          // 12: veil.v1.VeilConfigDefinition.RegistriesEntry
-	(*structpb.Value)(nil),       // 13: google.protobuf.Value
+	nil,                          // 13: veil.v1.KindDefinition.VariablesEntry
+	(*structpb.Value)(nil),       // 14: google.protobuf.Value
 }
 var file_veil_v1_config_proto_depIdxs = []int32{
 	11, // 0: veil.v1.VeilConfigDefinition.variables:type_name -> veil.v1.VeilConfigDefinition.VariablesEntry
 	12, // 1: veil.v1.VeilConfigDefinition.registries:type_name -> veil.v1.VeilConfigDefinition.RegistriesEntry
 	2,  // 2: veil.v1.VeilConfigDefinition.resource_discovery:type_name -> veil.v1.ResourceDiscovery
 	0,  // 3: veil.v1.Variable.type:type_name -> veil.v1.VariableType.Enum
-	13, // 4: veil.v1.Variable.default:type_name -> google.protobuf.Value
-	13, // 5: veil.v1.Variable.enum:type_name -> google.protobuf.Value
+	14, // 4: veil.v1.Variable.default:type_name -> google.protobuf.Value
+	14, // 5: veil.v1.Variable.enum:type_name -> google.protobuf.Value
 	6,  // 6: veil.v1.KindDefinition.hooks:type_name -> veil.v1.HooksDefinition
-	7,  // 7: veil.v1.HooksDefinition.render:type_name -> veil.v1.RenderHookDefinition
-	10, // 8: veil.v1.HooksDefinition.dependents:type_name -> veil.v1.DependentDefinition
-	8,  // 9: veil.v1.RenderHookDefinition.access:type_name -> veil.v1.HookAccess
-	9,  // 10: veil.v1.HookAccess.env:type_name -> veil.v1.EnvAccess
-	4,  // 11: veil.v1.VeilConfigDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	13, // 7: veil.v1.KindDefinition.variables:type_name -> veil.v1.KindDefinition.VariablesEntry
+	7,  // 8: veil.v1.HooksDefinition.render:type_name -> veil.v1.RenderHookDefinition
+	10, // 9: veil.v1.HooksDefinition.dependents:type_name -> veil.v1.DependentDefinition
+	8,  // 10: veil.v1.RenderHookDefinition.access:type_name -> veil.v1.HookAccess
+	9,  // 11: veil.v1.HookAccess.env:type_name -> veil.v1.EnvAccess
+	4,  // 12: veil.v1.VeilConfigDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
+	4,  // 13: veil.v1.KindDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_veil_v1_config_proto_init() }
@@ -871,7 +891,7 @@ func file_veil_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_veil_v1_config_proto_rawDesc), len(file_veil_v1_config_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   12,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

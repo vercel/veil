@@ -179,13 +179,50 @@ func Load(configPath string) (*Registry, error) {
 		kinds = append(kinds, k)
 	}
 
+	merged, err := mergeVariables(cfg.Variables, kinds)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", configPath, err)
+	}
+
 	return &Registry{
 		Root:              root,
 		Kinds:             kinds,
-		Variables:         cfg.Variables,
+		Variables:         merged,
 		Registries:        cfg.Registries,
 		ResourceDiscovery: cfg.ResourceDiscovery,
 	}, nil
+}
+
+// mergeVariables flattens project-level variables and per-kind
+// variables into a single namespace. Conflicts (same name across any
+// pair of sources) are rejected — the error names both sources so the
+// user can resolve the collision. Each kind's variables are validated
+// individually before they enter the merge.
+func mergeVariables(project map[string]*veilv1.Variable, kinds []*Kind) (map[string]*veilv1.Variable, error) {
+	merged := make(map[string]*veilv1.Variable, len(project))
+	source := make(map[string]string, len(project))
+	for name, v := range project {
+		merged[name] = v
+		source[name] = "veil.json"
+	}
+	for _, k := range kinds {
+		kv := k.GetVariables()
+		if len(kv) == 0 {
+			continue
+		}
+		if err := validateVariables(kv); err != nil {
+			return nil, fmt.Errorf("kind %q: %w", k.Name, err)
+		}
+		kindLabel := fmt.Sprintf("kind %q", k.Name)
+		for name, v := range kv {
+			if prev, ok := source[name]; ok {
+				return nil, fmt.Errorf("variable %q declared in both %s and %s", name, prev, kindLabel)
+			}
+			merged[name] = v
+			source[name] = kindLabel
+		}
+	}
+	return merged, nil
 }
 
 // validateVariables checks each variable's type is one of the supported

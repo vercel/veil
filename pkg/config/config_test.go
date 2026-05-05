@@ -190,6 +190,125 @@ func (s *DiscoverSuite) TestRejectsDefaultNotInEnum() {
 	s.Contains(err.Error(), "enum")
 }
 
+func (s *DiscoverSuite) TestKindVariablesMergeIntoRegistry() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": ["./sources/deployment.yaml"],
+		"hooks": {"render": [{"path": "./hooks/inject-env.ts"}]},
+		"schema": "./schemas/service.schema.json",
+		"variables": {
+			"replicas": { "type": "number", "default": 3 }
+		}
+	}`), 0644))
+	path := s.writeVeilJSON(root, `{
+		"kinds": ["./.veil/kinds/service.json"],
+		`+stockRegistries+`,
+		"variables": {
+			"env": { "type": "string", "default": "dev" }
+		}
+	}`)
+
+	reg, err := Load(path)
+	s.Require().NoError(err)
+	s.Require().Len(reg.Variables, 2)
+
+	env := reg.Variables["env"]
+	s.Equal(veilv1.VariableType_string, env.Type)
+
+	replicas := reg.Variables["replicas"]
+	s.Equal(veilv1.VariableType_number, replicas.Type)
+	rv, err := ParsedDefault(replicas)
+	s.Require().NoError(err)
+	s.Equal(float64(3), rv)
+}
+
+func (s *DiscoverSuite) TestKindVariablesConflictWithVeilJSON() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": ["./sources/deployment.yaml"],
+		"hooks": {"render": [{"path": "./hooks/inject-env.ts"}]},
+		"schema": "./schemas/service.schema.json",
+		"variables": {
+			"env": { "type": "string" }
+		}
+	}`), 0644))
+	path := s.writeVeilJSON(root, `{
+		"kinds": ["./.veil/kinds/service.json"],
+		`+stockRegistries+`,
+		"variables": {
+			"env": { "type": "string", "default": "dev" }
+		}
+	}`)
+
+	_, err := Load(path)
+	s.Require().Error(err)
+	s.Contains(err.Error(), `variable "env"`)
+	s.Contains(err.Error(), "veil.json")
+	s.Contains(err.Error(), `kind "service"`)
+}
+
+func (s *DiscoverSuite) TestKindVariablesConflictAcrossKinds() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": ["./sources/deployment.yaml"],
+		"hooks": {"render": [{"path": "./hooks/inject-env.ts"}]},
+		"schema": "./schemas/service.schema.json",
+		"variables": {
+			"region": { "type": "string", "default": "us-east-1" }
+		}
+	}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "worker.json"), []byte(`{
+		"name": "worker",
+		"sources": ["./sources/deployment.yaml"],
+		"hooks": {"render": [{"path": "./hooks/inject-env.ts"}]},
+		"schema": "./schemas/worker.schema.json",
+		"variables": {
+			"region": { "type": "string" }
+		}
+	}`), 0644))
+	path := s.writeVeilJSON(root, `{
+		"kinds": ["./.veil/kinds/service.json", "./.veil/kinds/worker.json"],
+		`+stockRegistries+`
+	}`)
+
+	_, err := Load(path)
+	s.Require().Error(err)
+	s.Contains(err.Error(), `variable "region"`)
+	s.Contains(err.Error(), `kind "service"`)
+	s.Contains(err.Error(), `kind "worker"`)
+}
+
+func (s *DiscoverSuite) TestKindVariableValidationErrorsMentionKind() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": ["./sources/deployment.yaml"],
+		"hooks": {"render": [{"path": "./hooks/inject-env.ts"}]},
+		"schema": "./schemas/service.schema.json",
+		"variables": {
+			"replicas": { "type": "number", "default": "three" }
+		}
+	}`), 0644))
+	path := s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
+
+	_, err := Load(path)
+	s.Require().Error(err)
+	s.Contains(err.Error(), `kind "service"`)
+	s.Contains(err.Error(), `variable "replicas"`)
+	s.Contains(err.Error(), "expected number")
+}
+
 func (s *DiscoverSuite) TestRejectsDefaultTypeMismatch() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{

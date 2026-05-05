@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "type": "object",
+  "properties": {
+    "vendors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name of the vendor to access",
+            "enum": [
+              "GitHub",
+              "NPM",
+              "Vercel",
+              "Vercel AI Gateway"
+            ]
+          },
+          "env": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "The name of the env var in Vercel"
+              },
+              "environment": {
+                "type": "string",
+                "description": "The Vercel environment housing the env var.",
+                "enum": [
+                  "preview",
+                  "production"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

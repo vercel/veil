@@ -399,26 +399,30 @@ func validateName(label, name string) error {
 }
 
 // ensureVeilJSON creates a bare veil.json at cwd if no veil.json exists
-// in cwd or any ancestor. Returns true when it created one. The
-// scaffolded `registries` map points the empty-alias entry at the
-// project's local build output so the schema's required field is
-// satisfied and `veil render` resolves kinds from `veil build` output
-// without further configuration.
+// in cwd or any ancestor. Returns true when it created one.
 func ensureVeilJSON(cwd string) (bool, error) {
 	if fsutil.FindAncestor(cwd, "veil.json") != "" {
 		return false, nil
 	}
-	bare := map[string]any{
+	if err := writeJSON(filepath.Join(cwd, "veil.json"), bareVeilJSON()); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// bareVeilJSON returns the default veil.json contents used by both the
+// auto-init in `veil new kind` and the explicit `veil init` command.
+// The empty-alias registry entry points at the project's local build
+// output so the schema's required field is satisfied and `veil render`
+// resolves kinds from `veil build` output without further configuration.
+func bareVeilJSON() map[string]any {
+	return map[string]any{
 		"$schema": embeds.VeilConfigDefinitionSchemaURL,
 		"kinds":   []string{},
 		"registries": map[string]string{
 			"": "./" + filepath.ToSlash(filepath.Join(config.PublicDir, "r", "registry.json")),
 		},
 	}
-	if err := writeJSON(filepath.Join(cwd, "veil.json"), bare); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 func writeJSON(path string, v any) error {

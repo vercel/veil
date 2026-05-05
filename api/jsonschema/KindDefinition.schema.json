@@ -37,6 +37,7 @@
                   "minLength": 1,
                   "type": "string"
                 },
+                "minItems": 1,
                 "type": "array"
               }
             },
@@ -135,6 +136,48 @@
         "type": "string"
       },
       "type": "array"
+    },
+    "variables": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "description": "Variable declares a named input available to overlay regex matches\n (and to hooks via the render context). Lives in both the local\n VeilConfigDefinition and the published Kind (carried verbatim\n through compilation), so it has no Definition suffix — the same\n shape applies in both contexts.",
+        "properties": {
+          "default": {
+            "description": "Optional default. If omitted, the variable is required at render time.\n Must be a scalar matching the declared type.",
+            "title": "Value"
+          },
+          "description": {
+            "description": "Optional human-readable description. Rendered as a JSDoc comment on\n the field in the generated veil-types.ts RegistryVariables interface\n so hook authors get inline documentation at their IDE cursor.",
+            "type": "string"
+          },
+          "enum": {
+            "description": "Optional set of permitted values. Only valid for `string` and `number`\n types. When present, the generated TypeScript field becomes a union\n (\"a\" | \"b\" | \"c\") instead of the broad scalar type, and values\n supplied via --var or VEIL_VAR_* are rejected at render time unless\n they match one of the listed entries.",
+            "items": {
+              "title": "Value"
+            },
+            "type": "array"
+          },
+          "type": {
+            "description": "Declared type. Must be one of the legal VariableType.Enum values\n (the `unspecified` zero is rejected at load time).",
+            "enum": [
+              "unspecified",
+              "string",
+              "number",
+              "bool"
+            ],
+            "title": "Enum",
+            "type": "string"
+          }
+        },
+        "title": "Variable",
+        "type": "object"
+      },
+      "description": "Kind-scoped input variable declarations, keyed by name. Merged with\n the project-level variables from veil.json at config-load time;\n declaring a name that already exists in veil.json or in another\n kind is rejected. Otherwise the shape and resolution rules are\n identical to VeilConfigDefinition.variables.",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+        "type": "string"
+      },
+      "type": "object"
     }
   },
   "required": [

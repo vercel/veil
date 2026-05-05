@@ -26,42 +26,39 @@ func (s *TscSuite) SetupTest() {
 	s.dir = s.T().TempDir()
 }
 
-func (s *TscSuite) TestCheckNoOpOnEmptyDir() {
-	s.Require().NoError(s.checker.Check(s.dir))
+func (s *TscSuite) TestCheckNoOpOnEmptyList() {
+	s.Require().NoError(s.checker.Check(nil))
+	s.Require().NoError(s.checker.Check([]string{}))
 }
 
 func (s *TscSuite) TestCheckPassesCleanCode() {
-	s.write("ok.ts", `export const x: number = 1;`)
-	s.Require().NoError(s.checker.Check(s.dir))
+	path := s.write("ok.ts", `export const x: number = 1;`)
+	s.Require().NoError(s.checker.Check([]string{path}))
 }
 
 func (s *TscSuite) TestCheckFailsOnTypeError() {
-	s.write("bad.ts", `export const x: number = "not a number";`)
-	err := s.checker.Check(s.dir)
+	path := s.write("bad.ts", `export const x: number = "not a number";`)
+	err := s.checker.Check([]string{path})
 	s.Require().Error(err)
 	s.Contains(err.Error(), "typecheck failed")
 	s.Contains(err.Error(), "bad.ts")
 }
 
-func (s *TscSuite) TestBinReturnsResolvedPath() {
-	s.NotEmpty(s.checker.Bin())
-}
-
-func (s *TscSuite) TestProjectTsconfigIsRespected() {
-	// Default flags use --strict; a tsconfig that turns strict off should
-	// flip whether an implicit-any file is accepted. Running without the
-	// tsconfig first proves tsc rejects the file; then we drop the
-	// tsconfig and expect the same file to pass.
+// TestCheckIgnoresAncestorTsconfig is the regression test for the
+// monorepo OOM. Earlier versions walked the directory tree looking for
+// a tsconfig.json and ran tsc -p against it, which in a giant monorepo
+// dragged the entire repo into the type-check. The new behavior is to
+// pass only the listed hook files with self-contained flags, so an
+// ancestor tsconfig that loosens strictness must NOT take effect.
+func (s *TscSuite) TestCheckIgnoresAncestorTsconfig() {
 	src := filepath.Join(s.dir, "src")
 	s.Require().NoError(os.MkdirAll(src, 0755))
+	loose := filepath.Join(src, "loose.ts")
 	s.Require().NoError(os.WriteFile(
-		filepath.Join(src, "loose.ts"),
+		loose,
 		[]byte("export function f(x) { return x; }\n"),
 		0644,
 	))
-
-	err := s.checker.Check(src)
-	s.Require().Error(err, "strict default should reject implicit-any")
 
 	s.Require().NoError(os.WriteFile(filepath.Join(s.dir, "tsconfig.json"), []byte(`{
   "compilerOptions": {
@@ -74,9 +71,34 @@ func (s *TscSuite) TestProjectTsconfigIsRespected() {
   "include": ["src/**/*.ts"]
 }`), 0644))
 
-	s.Require().NoError(s.checker.Check(src), "project tsconfig with strict:false should accept implicit-any")
+	err := s.checker.Check([]string{loose})
+	s.Require().Error(err, "ancestor tsconfig with strict:false must not relax the strict default")
+	s.Contains(err.Error(), "loose.ts")
 }
 
-func (s *TscSuite) write(name, contents string) {
-	s.Require().NoError(os.WriteFile(filepath.Join(s.dir, name), []byte(contents), 0644))
+// TestCheckIgnoresCwdTsconfig is the regression test for TS5112. tsgo
+// walks up from its own cwd looking for a tsconfig.json; if it finds one
+// while explicit files were passed, it refuses to run. Reproduce by
+// chdir'ing into a directory that contains a tsconfig.json before
+// invoking Check.
+func (s *TscSuite) TestCheckIgnoresCwdTsconfig() {
+	cfgDir := s.T().TempDir()
+	s.Require().NoError(os.WriteFile(filepath.Join(cfgDir, "tsconfig.json"), []byte(`{
+  "compilerOptions": {"strict": true, "noEmit": true},
+  "include": ["**/*.ts"]
+}`), 0644))
+	s.T().Chdir(cfgDir)
+
+	path := s.write("ok.ts", `export const x: number = 1;`)
+	s.Require().NoError(s.checker.Check([]string{path}))
+}
+
+func (s *TscSuite) TestBinReturnsResolvedPath() {
+	s.NotEmpty(s.checker.Bin())
+}
+
+func (s *TscSuite) write(name, contents string) string {
+	path := filepath.Join(s.dir, name)
+	s.Require().NoError(os.WriteFile(path, []byte(contents), 0644))
+	return path
 }

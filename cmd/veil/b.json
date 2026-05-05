@@ -1,0 +1,12 @@
+{
+  "$schema": "./a.json",
+  "vendors": [
+    {
+      "name": "GitHub",
+      "env": {
+        "name": "NPM_TOKEN",
+        "environment": "preview"
+      }
+    }
+  ]
+}

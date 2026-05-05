@@ -137,6 +137,13 @@ message KindDefinition {
 
   // Path to the JSON Schema that defines the spec shape.
   string schema = 5;
+
+  // Kind-scoped input variable declarations, keyed by name. Merged with
+  // the project-level variables from veil.json at config-load time;
+  // declaring a name that already exists in veil.json or in another
+  // kind is rejected. Otherwise the shape and resolution rules are
+  // identical to VeilConfigDefinition.variables.
+  map<string, Variable> variables = 6 [(buf.validate.field).map.keys.string.pattern = "^[a-zA-Z_][a-zA-Z0-9_]*$"];
 }
 
 // HooksDefinition groups a kind's hook files by lifecycle point. Each
