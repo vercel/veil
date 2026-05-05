@@ -21,6 +21,26 @@
     }
   },
   "properties": {
+    "generators": {
+      "additionalProperties": false,
+      "description": "Optional defaults for the source-side scaffolding commands\n (`veil init`, `veil new kind`, `veil new hook`). When unset, every\n generator falls back to its built-in default.",
+      "patternProperties": {
+        "^(kindsDir)$": {
+          "default": "",
+          "description": "Directory where `veil new kind` writes a new kind's tree, relative\n to the directory housing veil.json. `veil new hook` follows the\n existing kind on disk so this only affects newly created kinds.\n Defaults to `.veil/kinds` when unset.",
+          "type": "string"
+        }
+      },
+      "properties": {
+        "kinds_dir": {
+          "default": "",
+          "description": "Directory where `veil new kind` writes a new kind's tree, relative\n to the directory housing veil.json. `veil new hook` follows the\n existing kind on disk so this only affects newly created kinds.\n Defaults to `.veil/kinds` when unset.",
+          "type": "string"
+        }
+      },
+      "title": "Generators",
+      "type": "object"
+    },
     "kinds": {
       "description": "Relative or absolute paths to kind definition files. May be empty —\n a project with no kinds is valid (it can still depend on kinds\n published by aliased registries).",
       "items": {

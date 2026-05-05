@@ -150,6 +150,32 @@ func (s *NewSuite) TestNewKindAutoInitsVeilJSONAndScaffoldsAllFiles() {
 	s.NotContains(content, "\n  ") // minified — no 2-space indent
 }
 
+func (s *NewSuite) TestNewKindHonorsGeneratorsKindsDir() {
+	veilJSON := filepath.Join(s.root, "veil.json")
+	s.Require().NoError(os.WriteFile(veilJSON, []byte(`{
+		"kinds": [],
+		"registries": { "": "./public/r/registry.json" },
+		"generators": { "kinds_dir": "./platform/kinds" }
+	}`), 0644))
+
+	out, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err, out)
+
+	customDir := filepath.Join(s.root, "platform", "kinds", "worker")
+	s.FileExists(filepath.Join(customDir, "kind.json"))
+	s.FileExists(filepath.Join(customDir, "schema.json"))
+	s.FileExists(filepath.Join(customDir, "hooks", "src", "hello-world.ts"))
+
+	defaultDir := filepath.Join(s.root, ".veil", "kinds", "worker")
+	_, err = os.Stat(defaultDir)
+	s.True(os.IsNotExist(err), "scaffold must not fall back to .veil/kinds when generators.kinds_dir is set")
+
+	veil := s.readJSON(veilJSON)
+	s.Equal([]any{"./platform/kinds/worker/kind.json"}, veil["kinds"])
+
+	s.FileExists(filepath.Join(s.root, "public", "r", "worker", "kind.json"))
+}
+
 func (s *NewSuite) TestNewKindReusesExistingVeilJSON() {
 	veilJSON := filepath.Join(s.root, "veil.json")
 	s.Require().NoError(os.WriteFile(veilJSON, []byte(`{"kinds": [], "registries": { "": "./public/r/registry.json" }}`), 0644))

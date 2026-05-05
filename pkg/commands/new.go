@@ -134,7 +134,7 @@ func runNewKind(ctx context.Context, c *cli.Command) error {
 		}
 	}
 
-	kindDir := filepath.Join(reg.Root, config.ArtifactsDir, "kinds", name)
+	kindDir := filepath.Join(reg.KindsDir(), name)
 	if _, err := os.Stat(kindDir); err == nil {
 		return fmt.Errorf("directory %s already exists", kindDir)
 	}
@@ -190,7 +190,11 @@ func runNewKind(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", veilJSONPath, err)
 	}
-	relKind := "./" + filepath.ToSlash(filepath.Join(config.ArtifactsDir, "kinds", name, "kind.json"))
+	rel, err := filepath.Rel(reg.Root, filepath.Join(kindDir, "kind.json"))
+	if err != nil {
+		return fmt.Errorf("computing relative kind path: %w", err)
+	}
+	relKind := "./" + filepath.ToSlash(rel)
 	if err := registerKindInVeilJSON(reg.Root, relKind); err != nil {
 		return err
 	}

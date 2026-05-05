@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Generators configures the source-side scaffolding commands. Every\n field is optional; an unset (or empty) field falls back to the\n command's built-in default so older veil.json files keep working.",
+  "patternProperties": {
+    "^(kindsDir)$": {
+      "default": "",
+      "description": "Directory where `veil new kind` writes a new kind's tree, relative\n to the directory housing veil.json. `veil new hook` follows the\n existing kind on disk so this only affects newly created kinds.\n Defaults to `.veil/kinds` when unset.",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "kinds_dir": {
+      "default": "",
+      "description": "Directory where `veil new kind` writes a new kind's tree, relative\n to the directory housing veil.json. `veil new hook` follows the\n existing kind on disk so this only affects newly created kinds.\n Defaults to `.veil/kinds` when unset.",
+      "type": "string"
+    }
+  },
+  "title": "Generators",
+  "type": "object"
+}

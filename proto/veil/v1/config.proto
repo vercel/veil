@@ -39,6 +39,22 @@ message VeilConfigDefinition {
   // Where to find the resource JSON files that make up the project's
   // catalog. Used at render time to resolve dependency targets.
   ResourceDiscovery resource_discovery = 4;
+
+  // Optional defaults for the source-side scaffolding commands
+  // (`veil init`, `veil new kind`, `veil new hook`). When unset, every
+  // generator falls back to its built-in default.
+  Generators generators = 5;
+}
+
+// Generators configures the source-side scaffolding commands. Every
+// field is optional; an unset (or empty) field falls back to the
+// command's built-in default so older veil.json files keep working.
+message Generators {
+  // Directory where `veil new kind` writes a new kind's tree, relative
+  // to the directory housing veil.json. `veil new hook` follows the
+  // existing kind on disk so this only affects newly created kinds.
+  // Defaults to `.veil/kinds` when unset.
+  string kinds_dir = 1;
 }
 
 // ResourceDiscovery declares how `veil render` builds its catalog of

@@ -43,6 +43,26 @@ type Registry struct {
 	Variables         map[string]*veilv1.Variable
 	Registries        map[string]string
 	ResourceDiscovery *veilv1.ResourceDiscovery
+	Generators        *veilv1.Generators
+}
+
+// DefaultKindsDir is the path (relative to the project root) where
+// `veil new kind` scaffolds a new kind when generators.kinds_dir is
+// unset.
+var DefaultKindsDir = filepath.Join(ArtifactsDir, "kinds")
+
+// KindsDir returns the absolute path of the directory where `veil new
+// kind` should scaffold new kind trees. Honors generators.kinds_dir from
+// veil.json when set; otherwise falls back to <root>/.veil/kinds.
+func (r *Registry) KindsDir() string {
+	dir := r.Generators.GetKindsDir()
+	if dir == "" {
+		dir = DefaultKindsDir
+	}
+	if filepath.IsAbs(dir) {
+		return filepath.Clean(dir)
+	}
+	return filepath.Clean(filepath.Join(r.Root, dir))
 }
 
 // HasDefault reports whether v has a default value declared.
@@ -190,6 +210,7 @@ func Load(configPath string) (*Registry, error) {
 		Variables:         merged,
 		Registries:        cfg.Registries,
 		ResourceDiscovery: cfg.ResourceDiscovery,
+		Generators:        cfg.Generators,
 	}, nil
 }
 
