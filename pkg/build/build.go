@@ -115,6 +115,11 @@ export interface Resource<Spec, Deps = never> {
 export interface RenderHookContext {
   /** The resource being rendered — full metadata + merged spec. */
   resource: Resource<%s, Dependency>;
+  /** Path of the resource file being rendered, relative to the veil
+   *  project root. Useful for hooks that need to locate sibling files
+   *  (e.g. a service's package.json) by deriving paths from where the
+   *  resource lives on disk. */
+  path: string;
   /** Resolved input variables (from --var, env, or defaults). */
   vars: RegistryVariables;
   /** Absolute path of the veil project root — the directory housing

@@ -42,6 +42,11 @@ func (s *TscSuite) TestCheckFailsOnTypeError() {
 	s.Require().Error(err)
 	s.Contains(err.Error(), "typecheck failed")
 	s.Contains(err.Error(), "bad.ts")
+	// Paths in error output should be absolute, not relative-from-tempdir.
+	// Otherwise diagnostics drag a long `../` chain through the user's
+	// filesystem layout and read as if the wrong file is being checked.
+	s.Contains(err.Error(), path, "diagnostic path should be the absolute file path")
+	s.NotContains(err.Error(), "../", "diagnostic path should not contain `../` segments")
 }
 
 // TestCheckIgnoresAncestorTsconfig is the regression test for the

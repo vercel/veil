@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -80,7 +82,32 @@ func (c *execChecker) Check(files []string) error {
 	cmd.Dir = os.TempDir()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("typecheck failed:\n%s", strings.TrimSpace(string(out)))
+		return fmt.Errorf("typecheck failed:\n%s", strings.TrimSpace(absolutizePaths(string(out), cmd.Dir)))
 	}
 	return nil
+}
+
+// diagnosticPath matches the leading `<path>.ts(L,C):` portion of a tsc
+// or tsgo diagnostic line. We only rewrite this prefix; the trailing
+// message (which may contain `.ts` substrings inside type literals) is
+// left alone.
+var diagnosticPath = regexp.MustCompile(`(?m)^([^()\n]+\.tsx?)(\([0-9]+,[0-9]+\):)`)
+
+// absolutizePaths rewrites each diagnostic line's leading file path to
+// an absolute path resolved against cwd. Without this, tsc reports
+// `../../../../Users/...` because we run it from os.TempDir() to dodge
+// TS5112, which is technically correct but reads as if the wrong file
+// is being checked.
+func absolutizePaths(out, cwd string) string {
+	return diagnosticPath.ReplaceAllStringFunc(out, func(match string) string {
+		m := diagnosticPath.FindStringSubmatch(match)
+		if len(m) != 3 {
+			return match
+		}
+		path := m[1]
+		if !filepath.IsAbs(path) {
+			path = filepath.Clean(filepath.Join(cwd, path))
+		}
+		return path + m[2]
+	})
 }

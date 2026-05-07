@@ -188,6 +188,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 
 	ctx := map[string]any{
 		"resource": resourceMap,
+		"path":     r.Path,
 		"vars":     opts.Variables,
 		"root":     root,
 	}
@@ -206,7 +207,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		logger.Info("applying dependencies", "count", len(deps))
 	}
 	for _, dep := range deps {
-		newBundle, err := applyDependency(logger, bundle, dep, kindName, resourceName, resourceMap, root, opts)
+		newBundle, err := applyDependency(logger, bundle, dep, kindName, resourceName, r.Path, resourceMap, root, opts)
 		if err != nil {
 			return nil, fmt.Errorf("dependency %s/%s: %w", dep.GetKind(), dep.GetName(), err)
 		}
@@ -329,7 +330,7 @@ func resourceToMap(r *veilv1.Resource) (map[string]any, error) {
 // would see at render time, then runs every dependent hook the target
 // kind registers for this consumer kind. Each hook receives the
 // consumer's bundle and may mutate it before returning.
-func applyDependency(parent *slog.Logger, bundle hook.Bundle, dep *veilv1.Dependency, consumerKind, consumerName string, consumerMap map[string]any, root string, opts *Options) (hook.Bundle, error) {
+func applyDependency(parent *slog.Logger, bundle hook.Bundle, dep *veilv1.Dependency, consumerKind, consumerName, consumerPath string, consumerMap map[string]any, root string, opts *Options) (hook.Bundle, error) {
 	if opts.Catalog == nil {
 		return nil, fmt.Errorf("no catalog configured")
 	}
@@ -376,6 +377,7 @@ func applyDependency(parent *slog.Logger, bundle hook.Bundle, dep *veilv1.Depend
 	depCtx := map[string]any{
 		"self":     targetMap,
 		"consumer": consumerMap,
+		"path":     consumerPath,
 		"params":   paramsMap,
 		"vars":     opts.Variables,
 		"root":     root,
