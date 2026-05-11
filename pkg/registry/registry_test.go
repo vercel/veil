@@ -49,6 +49,37 @@ func (s *RegistrySuite) writeRegistry(subdir string, kinds ...string) string {
 	return regPath
 }
 
+// TestLoadKindReadsYAMLRegistry exercises the YAML ingestion path: a
+// registry.yaml pointing at a kind.yaml round-trips through
+// protoencode.ToJSON inside ReadResource without any explicit
+// conversion at the call sites.
+func (s *RegistrySuite) TestLoadKindReadsYAMLRegistry() {
+	dir := filepath.Join(s.root, "yaml")
+	kindDir := filepath.Join(dir, "service")
+	s.Require().NoError(os.MkdirAll(kindDir, 0755))
+
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "kind.yaml"),
+		[]byte("name: service\n"), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "kind.schema.json"),
+		[]byte(`{"type":"object"}`), 0644))
+
+	regYAML := `kinds:
+  service:
+    name: service
+    path: ./service/kind.yaml
+    schema: ./service/kind.schema.json
+`
+	regPath := filepath.Join(dir, "registry.yaml")
+	s.Require().NoError(os.WriteFile(regPath, []byte(regYAML), 0644))
+
+	r, err := Load([]Reference{{Path: regPath}})
+	s.Require().NoError(err)
+
+	loaded, err := r.LoadKind("service")
+	s.Require().NoError(err)
+	s.Equal("service", loaded.GetName())
+}
+
 func (s *RegistrySuite) TestLoadKindResolvesDefaultAlias() {
 	regPath := s.writeRegistry("default", "service")
 

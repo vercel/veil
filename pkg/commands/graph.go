@@ -26,7 +26,7 @@ func Graph() *cli.Command {
 	configDefault := "veil.json"
 	if cwd, err := os.Getwd(); err == nil {
 		if reg, err := config.Discover(cwd); err == nil {
-			configDefault = filepath.Join(reg.Root, "veil.json")
+			configDefault = reg.ConfigPath
 		}
 	}
 

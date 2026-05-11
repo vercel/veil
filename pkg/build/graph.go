@@ -2,14 +2,12 @@ package build
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	"github.com/goccy/go-json"
-
 	"github.com/vercel/veil/pkg/config"
+	"github.com/vercel/veil/pkg/protoencode"
 )
 
 // KindGraph is a directed graph of kinds and the dependency relationships
@@ -153,18 +151,16 @@ func (n *KindNode) Dependents() []*DependencyEdge {
 
 // loadParamsSchema reads the params_path JSON Schema for a dependent
 // declaration, resolving relative paths against the kind directory.
+// The schema may be authored in JSON or YAML — extension decides how
+// the bytes are parsed.
 func loadParamsSchema(k *config.Kind, p string) (map[string]any, error) {
 	abs := p
 	if !filepath.IsAbs(abs) {
 		abs = filepath.Join(k.Dir, p)
 	}
-	data, err := os.ReadFile(abs)
-	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", p, err)
-	}
 	var s map[string]any
-	if err := json.Unmarshal(data, &s); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", p, err)
+	if err := protoencode.ReadFile(abs, &s); err != nil {
+		return nil, fmt.Errorf("reading %s: %w", p, err)
 	}
 	return s, nil
 }

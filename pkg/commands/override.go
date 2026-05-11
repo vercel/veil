@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/goccy/go-json"
 	"github.com/urfave/cli/v3"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
@@ -236,49 +235,36 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// registerOverride mutates the resource JSON in place to append the new
-// override under metadata.overrides. The file is round-tripped through
-// a generic map so unrelated fields and formatting hints stay intact.
+// registerOverride mutates the resource file in place to append the
+// new override under metadata.overrides. Format (JSON or YAML) is
+// detected from the file's extension and preserved across the
+// rewrite; the data round-trips through a generic map so unrelated
+// fields stay intact.
 func registerOverride(resourcePath, source, path string, skipHooks bool) error {
-	data, err := os.ReadFile(resourcePath)
-	if err != nil {
-		return fmt.Errorf("reading %s: %w", resourcePath, err)
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return fmt.Errorf("parsing %s: %w", resourcePath, err)
-	}
-	meta, _ := doc["metadata"].(map[string]any)
-	if meta == nil {
-		meta = map[string]any{}
-		doc["metadata"] = meta
-	}
-	overrides, _ := meta["overrides"].([]any)
-	for _, raw := range overrides {
-		entry, ok := raw.(map[string]any)
-		if !ok {
-			continue
+	return mutateGeneric(resourcePath, func(doc map[string]any) error {
+		meta, _ := doc["metadata"].(map[string]any)
+		if meta == nil {
+			meta = map[string]any{}
+			doc["metadata"] = meta
 		}
-		if entry["source"] == source {
-			return fmt.Errorf("an override for %q already exists in %s", source, resourcePath)
+		overrides, _ := meta["overrides"].([]any)
+		for _, raw := range overrides {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if entry["source"] == source {
+				return fmt.Errorf("an override for %q already exists in %s", source, resourcePath)
+			}
 		}
-	}
-	entry := map[string]any{
-		"source": source,
-		"path":   path,
-	}
-	if skipHooks {
-		entry["skip_hooks"] = true
-	}
-	meta["overrides"] = append(overrides, entry)
-
-	out, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encoding %s: %w", resourcePath, err)
-	}
-	out = append(out, '\n')
-	if err := os.WriteFile(resourcePath, out, 0644); err != nil {
-		return fmt.Errorf("writing %s: %w", resourcePath, err)
-	}
-	return nil
+		entry := map[string]any{
+			"source": source,
+			"path":   path,
+		}
+		if skipHooks {
+			entry["skip_hooks"] = true
+		}
+		meta["overrides"] = append(overrides, entry)
+		return nil
+	})
 }

@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/protoencode"
 )
@@ -64,13 +66,9 @@ func Load(refs []Reference) (Registry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("registry %s: %w", src.Path, err)
 		}
-		data, err := ReadResource(abs)
-		if err != nil {
-			return nil, fmt.Errorf("loading registry %s: %w", src.Path, err)
-		}
 		var r veilv1.Registry
-		if err := protoencode.Unmarshal.Unmarshal(data, &r); err != nil {
-			return nil, fmt.Errorf("parsing registry %s: %w", src.Path, err)
+		if err := ReadProtoResource(abs, &r); err != nil {
+			return nil, fmt.Errorf("loading registry %s: %w", src.Path, err)
 		}
 		if loaders[src.Alias] == nil {
 			loaders[src.Alias] = make(map[string]func() (*LoadedKind, error))
@@ -183,13 +181,9 @@ func aliasedName(alias, name string) string {
 // variables are captured by parameter, not by reference.
 func loadKindFn(name, kindPath, schemaPath string) func() (*LoadedKind, error) {
 	return func() (*LoadedKind, error) {
-		data, err := ReadResource(kindPath)
-		if err != nil {
-			return nil, fmt.Errorf("loading kind %s: %w", name, err)
-		}
 		var ck veilv1.Kind
-		if err := protoencode.Unmarshal.Unmarshal(data, &ck); err != nil {
-			return nil, fmt.Errorf("parsing kind %s: %w", name, err)
+		if err := ReadProtoResource(kindPath, &ck); err != nil {
+			return nil, fmt.Errorf("loading kind %s: %w", name, err)
 		}
 		return &LoadedKind{Kind: &ck, SchemaPath: schemaPath}, nil
 	}
@@ -200,28 +194,59 @@ func loadKindFn(name, kindPath, schemaPath string) func() (*LoadedKind, error) {
 // JSON file; callers needing different policies can fork this.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
-// ReadResource reads a registry resource from either the local
-// filesystem or an HTTP(S) URL, depending on the prefix of loc.
-// Exposed so other packages (notably pkg/render) can read schema files
-// using the same dispatch — a kind.schema.json published alongside a
-// remote registry needs to be fetched, not statted on disk.
-func ReadResource(loc string) ([]byte, error) {
-	if isHTTPURL(loc) {
-		return fetchURL(loc)
+// ReadResource opens a registry resource (HTTP URL or local file)
+// and decodes one document into v using the decoder implied by loc's
+// extension. Exposed so other packages (notably pkg/render) can read
+// schema files using the same dispatch — a kind.schema.json
+// published alongside a remote registry needs to be fetched, not
+// statted on disk.
+//
+// For proto messages use ReadProtoResource — that path routes
+// through protojson which understands snake_case field names.
+func ReadResource(loc string, v any) error {
+	rc, err := openResource(loc)
+	if err != nil {
+		return err
 	}
-	return os.ReadFile(loc)
+	defer rc.Close()
+	return protoencode.DecodeReader(loc, rc, v)
 }
 
-func fetchURL(u string) ([]byte, error) {
+// ReadProtoResource is the proto-typed companion to ReadResource:
+// opens loc and unmarshals one document into m via protojson, going
+// through the yaml.v3 + JSON re-encode hop for .yaml/.yml sources.
+func ReadProtoResource(loc string, m proto.Message) error {
+	rc, err := openResource(loc)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	return protoencode.DecodeProto(loc, rc, m)
+}
+
+// openResource returns a ReadCloser for loc, dispatching on the URL
+// scheme. The caller is responsible for Close.
+func openResource(loc string) (io.ReadCloser, error) {
+	if isHTTPURL(loc) {
+		return fetchURLBody(loc)
+	}
+	return os.Open(loc)
+}
+
+// fetchURLBody returns the HTTP response body as a ReadCloser the
+// caller streams from and Closes. Non-200 responses are mapped to
+// an error and the body is drained on the way out so the connection
+// can be reused.
+func fetchURLBody(u string) (io.ReadCloser, error) {
 	resp, err := httpClient.Get(u)
 	if err != nil {
 		return nil, fmt.Errorf("fetching %s: %w", u, err)
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
 		return nil, fmt.Errorf("fetching %s: HTTP %d %s", u, resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
-	return io.ReadAll(resp.Body)
+	return resp.Body, nil
 }
 
 func isHTTPURL(s string) bool {

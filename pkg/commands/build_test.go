@@ -204,6 +204,64 @@ func (s *BuildSuite) TestBuildEmbedsVariablesInCompiledKind() {
 	s.False(hasDefault)
 }
 
+// TestBuildAcceptsYAMLSchemaAndKind exercises the full source-side
+// YAML ingestion path: kind.yaml + schema.yaml authored together,
+// referenced from veil.yaml, all run through `veil build`. The
+// compiled output is always JSON regardless of source format.
+func (s *BuildSuite) TestBuildAcceptsYAMLSchemaAndKind() {
+	altRoot := filepath.Join(s.root, "yaml-project")
+	kindDir := filepath.Join(altRoot, ".veil", "kinds", "svc")
+	s.Require().NoError(os.MkdirAll(filepath.Join(kindDir, "sources"), 0755))
+	s.Require().NoError(os.MkdirAll(filepath.Join(kindDir, "hooks", "src"), 0755))
+
+	schemaYAML := `type: object
+properties:
+  replicas:
+    type: integer
+`
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "schema.yaml"), []byte(schemaYAML), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "sources", "deploy.yaml"),
+		[]byte("kind: Deployment\n"), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "hooks", "src", "noop.ts"), []byte(
+		"import type { FS, RenderHook, RenderHookContext } from './veil-types';\nconst h: RenderHook = { render(ctx: RenderHookContext, fs: FS) { return fs; } };\nexport default h;\n",
+	), 0644))
+
+	kindYAML := `name: svc
+sources:
+  - ./sources/deploy.yaml
+hooks:
+  render:
+    - path: ./hooks/src/noop.ts
+schema: ./schema.yaml
+`
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "kind.yaml"), []byte(kindYAML), 0644))
+
+	veilYAML := `kinds:
+  - ./.veil/kinds/svc/kind.yaml
+registries:
+  "": ./public/r/registry.json
+`
+	s.Require().NoError(os.WriteFile(filepath.Join(altRoot, "veil.yaml"), []byte(veilYAML), 0644))
+
+	out := filepath.Join(s.root, "dist-yaml")
+	_, err := s.run("build", "--config", filepath.Join(altRoot, "veil.yaml"), "--out", out)
+	s.Require().NoError(err)
+
+	// Compiled output is always JSON, even though the inputs were YAML.
+	s.FileExists(filepath.Join(out, "svc", "kind.json"))
+	s.FileExists(filepath.Join(out, "svc", "kind.schema.json"))
+
+	compiled := s.readJSON(filepath.Join(out, "svc", "kind.json"))
+	s.Equal("svc", compiled["name"])
+
+	schema := s.readJSON(filepath.Join(out, "svc", "kind.schema.json"))
+	props := schema["properties"].(map[string]any)
+	spec := props["spec"].(map[string]any)
+	specProps := spec["properties"].(map[string]any)
+	replicas := specProps["replicas"].(map[string]any)
+	s.Equal("integer", replicas["type"])
+}
+
 func (s *BuildSuite) TestBuildHonorsConfigAndOutFlags() {
 	altRoot := filepath.Join(s.root, "custom-root")
 	kindDir := filepath.Join(altRoot, ".veil", "kinds", "svc")

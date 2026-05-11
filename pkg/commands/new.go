@@ -16,6 +16,7 @@ import (
 	"github.com/vercel/veil/pkg/embeds"
 	"github.com/vercel/veil/pkg/fsutil"
 	"github.com/vercel/veil/pkg/interact"
+	"github.com/vercel/veil/pkg/protoencode"
 	"github.com/vercel/veil/pkg/registry"
 )
 
@@ -185,20 +186,20 @@ func runNewKind(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 
-	veilJSONPath := filepath.Join(reg.Root, "veil.json")
-	prevVeil, err := os.ReadFile(veilJSONPath)
+	configPath := reg.ConfigPath
+	prevVeil, err := os.ReadFile(configPath)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", veilJSONPath, err)
+		return fmt.Errorf("reading %s: %w", configPath, err)
 	}
 	rel, err := filepath.Rel(reg.Root, filepath.Join(kindDir, "kind.json"))
 	if err != nil {
 		return fmt.Errorf("computing relative kind path: %w", err)
 	}
 	relKind := "./" + filepath.ToSlash(rel)
-	if err := registerKindInVeilJSON(reg.Root, relKind); err != nil {
+	if err := registerKindInVeilJSON(configPath, relKind); err != nil {
 		return err
 	}
-	rb.restoreFile(veilJSONPath, prevVeil)
+	rb.restoreFile(configPath, prevVeil)
 
 	p.Successf("Scaffolded kind %q at %s", name, kindDir)
 
@@ -261,16 +262,16 @@ func runNewHook(ctx context.Context, c *cli.Command) error {
 	}
 	rb.removeFile(outPath)
 
-	kindJSONPath := filepath.Join(k.Dir, "kind.json")
-	prevKind, err := os.ReadFile(kindJSONPath)
+	kindPath := k.Path
+	prevKind, err := os.ReadFile(kindPath)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", kindJSONPath, err)
+		return fmt.Errorf("reading %s: %w", kindPath, err)
 	}
 	relHook := "./" + filepath.ToSlash(filepath.Join("hooks", "src", name+".ts"))
-	if err := appendHookToKind(k.Dir, "render", relHook); err != nil {
+	if err := appendHookToKind(kindPath, "render", relHook); err != nil {
 		return err
 	}
-	rb.restoreFile(kindJSONPath, prevKind)
+	rb.restoreFile(kindPath, prevKind)
 
 	p.Successf("Scaffolded hook %s", outPath)
 
@@ -402,10 +403,14 @@ func validateName(label, name string) error {
 	return nil
 }
 
-// ensureVeilJSON creates a bare veil.json at cwd if no veil.json exists
-// in cwd or any ancestor. Returns true when it created one.
+// ensureVeilJSON creates a bare veil.json at cwd if no project config
+// file (veil.json, veil.yaml, or veil.yml) exists in cwd or any
+// ancestor. Returns true when it created one. The scaffolder always
+// writes JSON — users who prefer YAML can rename and rewrite the
+// file by hand once it exists; subsequent mutations preserve whichever
+// format the file ends up in.
 func ensureVeilJSON(cwd string) (bool, error) {
-	if fsutil.FindAncestor(cwd, "veil.json") != "" {
+	if fsutil.FindAncestorAny(cwd, config.VeilFiles) != "" {
 		return false, nil
 	}
 	if err := writeJSON(filepath.Join(cwd, "veil.json"), bareVeilJSON()); err != nil {
@@ -441,85 +446,88 @@ func writeJSON(path string, v any) error {
 	return nil
 }
 
-// registerKindInVeilJSON appends relKind to the kinds[] array in veil.json,
-// preserving the existing list.
-func registerKindInVeilJSON(veilDir, relKind string) error {
-	path := filepath.Join(veilDir, "veil.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("reading %s: %w", path, err)
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("parsing %s: %w", path, err)
-	}
-
-	var kinds []string
-	if raw, ok := cfg["kinds"]; ok && raw != nil {
-		arr, ok := raw.([]any)
-		if !ok {
-			return fmt.Errorf("%s: \"kinds\" must be an array", path)
-		}
-		for _, v := range arr {
-			s, ok := v.(string)
+// registerKindInVeilJSON appends relKind to the kinds[] array in the
+// project config file (veil.json, veil.yaml, or veil.yml), preserving
+// the existing list. The file format is detected by extension; YAML
+// files round-trip back to YAML.
+func registerKindInVeilJSON(configPath, relKind string) error {
+	return mutateGeneric(configPath, func(cfg map[string]any) error {
+		var kinds []string
+		if raw, ok := cfg["kinds"]; ok && raw != nil {
+			arr, ok := raw.([]any)
 			if !ok {
-				return fmt.Errorf("%s: \"kinds\" entries must be strings", path)
+				return fmt.Errorf("%s: \"kinds\" must be an array", configPath)
 			}
-			kinds = append(kinds, s)
-		}
-	}
-
-	if slices.Contains(kinds, relKind) {
-		return nil
-	}
-	kinds = append(kinds, relKind)
-	cfg["kinds"] = kinds
-
-	return writeJSON(path, cfg)
-}
-
-// appendHookToKind appends relHook to the kind.json hooks.<lifecycle> array.
-func appendHookToKind(kindDir, lifecycle, relHook string) error {
-	path := filepath.Join(kindDir, "kind.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("reading %s: %w", path, err)
-	}
-
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("parsing %s: %w", path, err)
-	}
-
-	hooksObj, _ := raw["hooks"].(map[string]any)
-	if hooksObj == nil {
-		hooksObj = map[string]any{}
-	}
-
-	var list []map[string]any
-	if existing, ok := hooksObj[lifecycle]; ok && existing != nil {
-		arr, ok := existing.([]any)
-		if !ok {
-			return fmt.Errorf("%s: \"hooks.%s\" must be an array", path, lifecycle)
-		}
-		for _, v := range arr {
-			entry, ok := v.(map[string]any)
-			if !ok {
-				return fmt.Errorf("%s: \"hooks.%s\" entries must be objects with a \"path\" field", path, lifecycle)
+			for _, v := range arr {
+				s, ok := v.(string)
+				if !ok {
+					return fmt.Errorf("%s: \"kinds\" entries must be strings", configPath)
+				}
+				kinds = append(kinds, s)
 			}
-			list = append(list, entry)
 		}
-	}
-
-	for _, entry := range list {
-		if entry["path"] == relHook {
+		if slices.Contains(kinds, relKind) {
 			return nil
 		}
-	}
-	list = append(list, map[string]any{"path": relHook})
-	hooksObj[lifecycle] = list
-	raw["hooks"] = hooksObj
+		kinds = append(kinds, relKind)
+		cfg["kinds"] = kinds
+		return nil
+	})
+}
 
-	return writeJSON(path, raw)
+// appendHookToKind appends relHook to the kind file's hooks.<lifecycle>
+// array. The kind file may be JSON or YAML — the format is preserved
+// across the mutation.
+func appendHookToKind(kindPath, lifecycle, relHook string) error {
+	return mutateGeneric(kindPath, func(raw map[string]any) error {
+		hooksObj, _ := raw["hooks"].(map[string]any)
+		if hooksObj == nil {
+			hooksObj = map[string]any{}
+		}
+
+		var list []map[string]any
+		if existing, ok := hooksObj[lifecycle]; ok && existing != nil {
+			arr, ok := existing.([]any)
+			if !ok {
+				return fmt.Errorf("%s: \"hooks.%s\" must be an array", kindPath, lifecycle)
+			}
+			for _, v := range arr {
+				entry, ok := v.(map[string]any)
+				if !ok {
+					return fmt.Errorf("%s: \"hooks.%s\" entries must be objects with a \"path\" field", kindPath, lifecycle)
+				}
+				list = append(list, entry)
+			}
+		}
+
+		for _, entry := range list {
+			if entry["path"] == relHook {
+				return nil
+			}
+		}
+		list = append(list, map[string]any{"path": relHook})
+		hooksObj[lifecycle] = list
+		raw["hooks"] = hooksObj
+		return nil
+	})
+}
+
+// mutateGeneric reads a JSON or YAML file, calls fn on the parsed
+// top-level map, and writes the result back in the file's original
+// format. Format is detected by extension via protoencode's decoder
+// map — JSON files round-trip with two-space indent and a trailing
+// newline; YAML files round-trip via yaml.v3 (which sorts keys
+// alphabetically and strips comments).
+func mutateGeneric(path string, fn func(doc map[string]any) error) error {
+	var doc map[string]any
+	if err := protoencode.ReadFile(path, &doc); err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	if err := fn(doc); err != nil {
+		return err
+	}
+	if err := protoencode.WriteFileAny(path, doc); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	return nil
 }

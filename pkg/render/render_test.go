@@ -89,12 +89,14 @@ func (s *RenderSuite) writeJSON(path string, v any) {
 
 // catalogFor globs the test's resource directory and builds a Catalog
 // covering every resource the test wrote. Each test calls this after
-// writing its inputs.
+// writing its inputs. Pattern matches JSON and YAML — discovery is
+// format-agnostic, so a single helper covers every test in the suite.
 func (s *RenderSuite) catalogFor(dir string) (fs.FS, resource.Catalog) {
 	rel, err := filepath.Rel(s.root, dir)
 	s.Require().NoError(err)
 	fsys := os.DirFS(s.root)
-	handles, err := resource.Discover(s.T().Context(), fsys, []string{filepath.ToSlash(filepath.Join(rel, "*.json"))})
+	pattern := filepath.ToSlash(filepath.Join(rel, "*.{json,yaml,yml}"))
+	handles, err := resource.Discover(s.T().Context(), fsys, []string{pattern})
 	s.Require().NoError(err)
 	cat, err := resource.NewCatalog(fsys, handles)
 	s.Require().NoError(err)
@@ -207,6 +209,36 @@ func (s *RenderSuite) TestSchemaValidationFailure() {
 	s.Contains(err.Error(), "schema validation")
 	// Error message should not leak the in-memory schema URL.
 	s.NotContains(err.Error(), "mem://schema")
+}
+
+// TestRendersYAMLResourceWithYAMLOverlay exercises the full ingestion
+// path: resource and overlay are both authored in YAML, so discovery,
+// loading, and overlay merging all flow through the YAML→JSON
+// conversion in protoencode.
+func (s *RenderSuite) TestRendersYAMLResourceWithYAMLOverlay() {
+	dir := filepath.Join(s.root, "svc")
+	s.Require().NoError(os.MkdirAll(dir, 0755))
+
+	overlayYAML := "spec:\n  replicas: 1\n"
+	s.Require().NoError(os.WriteFile(filepath.Join(dir, "staging.yaml"), []byte(overlayYAML), 0644))
+
+	resourceYAML := `metadata:
+  kind: worker
+  name: my-worker
+  overlays:
+    - if:
+        env: ^staging$
+      file: ./staging.yaml
+spec:
+  replicas: 3
+`
+	s.Require().NoError(os.WriteFile(filepath.Join(dir, "my-worker.yaml"), []byte(resourceYAML), 0644))
+
+	out := filepath.Join(s.root, "out")
+	rendered, err := s.renderWorker(dir, out, map[string]any{"env": "staging"})
+	s.Require().NoError(err)
+	s.Equal("my-worker", rendered.Name)
+	s.FileExists(filepath.Join(out, "my-worker", "greeting.txt"))
 }
 
 func (s *RenderSuite) TestSchemaValidationCatchesMissingRequiredField() {

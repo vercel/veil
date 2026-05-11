@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/goccy/go-json"
@@ -22,23 +21,35 @@ const (
 	// build` writes its publishable output (compiled kinds + registry).
 	// Mirrors shadcn's `public/r/` convention.
 	PublicDir = "public"
-	veilFile  = "veil.json"
 )
+
+// VeilFiles is the ordered list of project-root config filenames
+// `Discover` walks ancestors looking for. JSON is preferred when more
+// than one is present, since that's the original default and what the
+// scaffolders write.
+var VeilFiles = []string{"veil.json", "veil.yaml", "veil.yml"}
 
 // Kind is a kind definition loaded from disk. It embeds the proto-generated
 // KindDefinition (so all wire fields — Name, Sources, Hooks, Schema,
 // Dependents — are accessible directly) and adds Dir for resolving the
-// kind's relative paths against the local filesystem.
+// kind's relative paths against the local filesystem. Path is the
+// absolute path of the file the definition was loaded from — used by
+// mutation commands so a kind authored in YAML is rewritten as YAML.
 type Kind struct {
 	*veilv1.KindDefinition
-	Dir string
+	Path string
+	Dir  string
 }
 
 // Registry is the set of kind definitions and project-level configuration
 // discovered from veil.json, plus the project root directory (which is not
-// part of any wire format).
+// part of any wire format). ConfigPath is the absolute path of the
+// config file the registry was loaded from (veil.json, veil.yaml, or
+// veil.yml) — mutation commands use it so a project authored in YAML
+// stays in YAML across edits.
 type Registry struct {
 	Root              string
+	ConfigPath        string
 	Kinds             []*Kind
 	Variables         map[string]*veilv1.Variable
 	Registries        map[string]string
@@ -155,14 +166,14 @@ func MakeValue(v any) (*structpb.Value, error) {
 }
 
 // Discover walks upward from startDir to find a directory containing
-// veil.json, loads the config, resolves all kind paths, and returns the
-// loaded registry.
+// a project config file (veil.json, veil.yaml, or veil.yml), loads it,
+// resolves all kind paths, and returns the loaded registry.
 func Discover(startDir string) (*Registry, error) {
-	root, err := findProjectRoot(startDir)
+	configPath, err := findProjectRoot(startDir)
 	if err != nil {
 		return nil, err
 	}
-	return Load(filepath.Join(root, veilFile))
+	return Load(configPath)
 }
 
 // Load reads a veil.json at the given path and resolves all kind references
@@ -206,6 +217,7 @@ func Load(configPath string) (*Registry, error) {
 
 	return &Registry{
 		Root:              root,
+		ConfigPath:        configPath,
 		Kinds:             kinds,
 		Variables:         merged,
 		Registries:        cfg.Registries,
@@ -308,24 +320,22 @@ func containsValue(haystack []any, needle any) bool {
 	return false
 }
 
-// findProjectRoot walks upward from dir looking for a bare veil.json,
-// returning the directory that contains it.
+// findProjectRoot walks upward from dir looking for a project config
+// file (veil.json, veil.yaml, or veil.yml), returning the absolute
+// path of the file. Order matters: veil.json wins over the YAML
+// variants when more than one is present in the same directory.
 func findProjectRoot(dir string) (string, error) {
-	found := fsutil.FindAncestor(dir, veilFile)
+	found := fsutil.FindAncestorAny(dir, VeilFiles)
 	if found == "" {
 		abs, _ := filepath.Abs(dir)
-		return "", fmt.Errorf("no %s found (searched up from %s)", veilFile, abs)
+		return "", fmt.Errorf("no veil.{json,yaml,yml} found (searched up from %s)", abs)
 	}
-	return filepath.Dir(found), nil
+	return found, nil
 }
 
 func loadConfig(path string) (*veilv1.VeilConfigDefinition, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
 	var cfg veilv1.VeilConfigDefinition
-	if err := protoencode.Unmarshal.Unmarshal(data, &cfg); err != nil {
+	if err := protoencode.ReadProtoFile(path, &cfg); err != nil {
 		return nil, err
 	}
 	if err := protoencode.Validate(&cfg); err != nil {
@@ -335,16 +345,21 @@ func loadConfig(path string) (*veilv1.VeilConfigDefinition, error) {
 }
 
 func loadKind(path string) (*Kind, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
+	// loadKind has to read the kind file into a generic map first so
+	// it can expand the `hooks.render` string shorthand before
+	// protojson sees the document — protojson rejects the bare-string
+	// form, so the shorthand has to be normalized at the map layer.
+	var raw map[string]any
+	if err := protoencode.ReadFile(path, &raw); err != nil {
 		return nil, err
 	}
-	data, err = expandRenderHookShorthand(data)
+	expandRenderHookShorthand(raw)
+	jsonBytes, err := json.Marshal(raw)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("re-encoding %s for protojson: %w", path, err)
 	}
 	var pk veilv1.KindDefinition
-	if err := protoencode.Unmarshal.Unmarshal(data, &pk); err != nil {
+	if err := protoencode.Unmarshal.Unmarshal(jsonBytes, &pk); err != nil {
 		return nil, err
 	}
 	if err := protoencode.Validate(&pk); err != nil {
@@ -353,37 +368,27 @@ func loadKind(path string) (*Kind, error) {
 	if err := validateDependents(pk.GetHooks().GetDependents()); err != nil {
 		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
-	return &Kind{KindDefinition: &pk, Dir: filepath.Dir(path)}, nil
+	return &Kind{KindDefinition: &pk, Path: path, Dir: filepath.Dir(path)}, nil
 }
 
 // expandRenderHookShorthand rewrites any string entry in `hooks.render`
 // into the full `{path: <string>}` object form. Authors can write
 // `"render": ["./hooks/foo.ts"]` as shorthand for the proto-defined
 // RenderHookDefinition shape; protojson rejects the bare string, so we
-// normalize before unmarshalling.
-func expandRenderHookShorthand(data []byte) ([]byte, error) {
-	var doc map[string]any
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return data, nil
-	}
+// normalize before unmarshalling. Mutates doc in place.
+func expandRenderHookShorthand(doc map[string]any) {
 	hooks, ok := doc["hooks"].(map[string]any)
 	if !ok {
-		return data, nil
+		return
 	}
 	render, ok := hooks["render"].([]any)
 	if !ok {
-		return data, nil
+		return
 	}
-	changed := false
 	for i, entry := range render {
 		if s, ok := entry.(string); ok {
 			render[i] = map[string]any{"path": s}
-			changed = true
 		}
 	}
-	if !changed {
-		return data, nil
-	}
 	hooks["render"] = render
-	return json.Marshal(doc)
 }

@@ -6,7 +6,8 @@ import (
 	"io/fs"
 
 	"github.com/bmatcuk/doublestar/v4"
-	"github.com/goccy/go-json"
+
+	"github.com/vercel/veil/pkg/protoencode"
 )
 
 // Handle is a lightweight reference to a resource on disk: its
@@ -60,19 +61,15 @@ func Discover(ctx context.Context, fsys fs.FS, patterns []string) ([]*Handle, er
 
 // peekIdentity reads just enough of an fs.FS file to recover the
 // resource's (kind, name). Returns ok=false when the file isn't valid
-// JSON, doesn't have the expected metadata fields, or omits spec —
-// the same set of conditions that the full-parse path would also
-// reject as "not a resource". Overlays naturally fall into this
+// JSON or YAML, doesn't have the expected metadata fields, or omits
+// spec — the same set of conditions that the full-parse path would
+// also reject as "not a resource". Overlays naturally fall into this
 // "skip" path because they lack name/kind/spec; we don't consult
 // metadata.file_type here, since that field exists only to shape
 // JSON schemas at build time, not to drive runtime behavior.
 func peekIdentity(fsys fs.FS, path string) (kind, name string, ok bool) {
-	data, err := fs.ReadFile(fsys, path)
-	if err != nil {
-		return "", "", false
-	}
 	var idx resourceIndex
-	if err := json.Unmarshal(data, &idx); err != nil {
+	if err := protoencode.ReadFS(fsys, path, &idx); err != nil {
 		return "", "", false
 	}
 	if idx.Metadata.Kind == "" || idx.Metadata.Name == "" || idx.Spec == nil {
@@ -82,12 +79,16 @@ func peekIdentity(fsys fs.FS, path string) (kind, name string, ok bool) {
 }
 
 // resourceIndex is a minimal proto-shape Resource used by peekIdentity.
-// Spec is *json.RawMessage so we can distinguish "spec absent" (nil)
-// from "spec is JSON null" (non-nil pointer pointing at "null").
+// Spec is map[string]any so the unified JSON/YAML decoder path can
+// populate it the same way for either format — discovery only needs
+// to know whether `spec` is present, not what's inside, so the cost
+// of materializing the map is negligible for the small resource
+// files this peek runs against. The yaml tags mirror the json tags
+// because yaml.v3 doesn't read json tags by default.
 type resourceIndex struct {
 	Metadata struct {
-		Kind string `json:"kind"`
-		Name string `json:"name"`
-	} `json:"metadata"`
-	Spec *json.RawMessage `json:"spec,omitempty"`
+		Kind string `json:"kind" yaml:"kind"`
+		Name string `json:"name" yaml:"name"`
+	} `json:"metadata" yaml:"metadata"`
+	Spec map[string]any `json:"spec,omitempty" yaml:"spec,omitempty"`
 }

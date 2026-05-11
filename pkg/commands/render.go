@@ -25,7 +25,7 @@ func Render() *cli.Command {
 	configDefault := "veil.json"
 	if cwd, err := os.Getwd(); err == nil {
 		if reg, err := config.Discover(cwd); err == nil {
-			configDefault = filepath.Join(reg.Root, "veil.json")
+			configDefault = reg.ConfigPath
 		}
 	}
 
@@ -90,7 +90,7 @@ func runRender(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 
-	configPath := filepath.Join(reg.Root, "veil.json")
+	configPath := reg.ConfigPath
 	if cwd, err := os.Getwd(); err == nil {
 		if rel, err := filepath.Rel(cwd, configPath); err == nil && !strings.HasPrefix(rel, "..") {
 			configPath = rel
