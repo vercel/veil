@@ -32,7 +32,7 @@ func Build() *cli.Command {
 	outDefault := filepath.Join(config.PublicDir, "r")
 	if cwd, err := os.Getwd(); err == nil {
 		if reg, err := config.Discover(cwd); err == nil {
-			configDefault = filepath.Join(reg.Root, "veil.json")
+			configDefault = reg.ConfigPath
 			outDefault = filepath.Join(reg.Root, config.PublicDir, "r")
 		}
 	}
@@ -70,7 +70,7 @@ func runBuild(ctx context.Context, c *cli.Command) error {
 	}
 	slog.Debug("loaded registry", "root", reg.Root, "kinds", len(reg.Kinds))
 
-	configPath := filepath.Join(reg.Root, "veil.json")
+	configPath := reg.ConfigPath
 	if cwd, err := os.Getwd(); err == nil {
 		if rel, err := filepath.Rel(cwd, configPath); err == nil && !strings.HasPrefix(rel, "..") {
 			configPath = rel
@@ -330,19 +330,22 @@ func compileDependents(k *config.Kind, projectRoot string, fsys fs.FS) ([]*veilv
 		if !filepath.IsAbs(paramsAbs) {
 			paramsAbs = filepath.Join(k.Dir, d.ParamsPath)
 		}
-		paramsRaw, err := os.ReadFile(paramsAbs)
-		if err != nil {
+		// Source may be authored in JSON or YAML; the compiled
+		// kind.json always embeds JSON-encoded params so downstream
+		// consumers (render, hook bundler) don't need a YAML parser
+		// to interpret it.
+		var probe map[string]any
+		if err := protoencode.ReadFile(paramsAbs, &probe); err != nil {
 			return nil, fmt.Errorf("dependents[%q]: reading params_path %s: %w", d.Kind, d.ParamsPath, err)
 		}
-		// Validate it parses as JSON; embed verbatim text to preserve formatting.
-		var probe map[string]any
-		if err := json.Unmarshal(paramsRaw, &probe); err != nil {
-			return nil, fmt.Errorf("dependents[%q]: params_path %s is not valid JSON: %w", d.Kind, d.ParamsPath, err)
+		paramsJSON, err := json.Marshal(probe)
+		if err != nil {
+			return nil, fmt.Errorf("dependents[%q]: encoding params_path %s as JSON: %w", d.Kind, d.ParamsPath, err)
 		}
 		out = append(out, &veilv1.DependentHook{
 			Kind:         d.Kind,
 			Hooks:        hooks,
-			ParamsSchema: string(paramsRaw),
+			ParamsSchema: string(paramsJSON),
 		})
 	}
 	return out, nil

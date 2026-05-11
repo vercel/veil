@@ -25,15 +25,13 @@ type Resource struct {
 
 // Load reads a single resource file from fsys and returns its parsed
 // form. Used by Catalog implementations to materialize a Handle on
-// demand.
+// demand. Source format is detected by extension — .json files go
+// straight to protojson, .yaml/.yml files are decoded via yaml.v3
+// then handed to protojson as JSON.
 func Load(fsys fs.FS, path string) (*Resource, error) {
-	data, err := fs.ReadFile(fsys, path)
-	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
-	}
 	r := &veilv1.Resource{}
-	if err := protoencode.Unmarshal.Unmarshal(data, r); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	if err := protoencode.ReadProtoFS(fsys, path, r); err != nil {
+		return nil, fmt.Errorf("loading %s: %w", path, err)
 	}
 	return &Resource{Resource: r, Path: path}, nil
 }

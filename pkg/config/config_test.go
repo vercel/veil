@@ -452,6 +452,62 @@ func (s *DiscoverSuite) TestRejectsEmptyRegistryLocation() {
 	s.Contains(err.Error(), "blank")
 }
 
+// TestLoadsVeilYAML exercises the YAML ingestion path: a project rooted
+// at veil.yaml is discovered the same way as one rooted at veil.json,
+// and a kind declared in kind.yaml loads through the same code path.
+func (s *DiscoverSuite) TestLoadsVeilYAML() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+
+	kindYAML := `name: service
+sources:
+  - ./sources/deployment.yaml
+hooks:
+  render:
+    - path: ./hooks/inject-env.ts
+schema: ./schemas/service.schema.json
+`
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.yaml"), []byte(kindYAML), 0644))
+
+	veilYAML := `kinds:
+  - ./.veil/kinds/service.yaml
+registries:
+  "": ./registry.json
+`
+	configPath := filepath.Join(root, "veil.yaml")
+	s.Require().NoError(os.WriteFile(configPath, []byte(veilYAML), 0644))
+
+	reg, err := Discover(root)
+	s.Require().NoError(err)
+	s.Equal(configPath, reg.ConfigPath, "ConfigPath echoes back the on-disk file")
+	s.Equal(root, reg.Root)
+	s.Require().Len(reg.Kinds, 1)
+
+	k := reg.Kinds[0]
+	s.Equal("service", k.Name)
+	s.Equal([]string{"./sources/deployment.yaml"}, k.Sources)
+	s.Equal(filepath.Join(kindsDir, "service.yaml"), k.Path)
+	s.Equal(kindsDir, k.Dir)
+	render := k.GetHooks().GetRender()
+	s.Require().Len(render, 1)
+	s.Equal("./hooks/inject-env.ts", render[0].GetPath())
+}
+
+// TestVeilJSONWinsOverYAMLAtSameDir documents the precedence rule:
+// when both veil.json and veil.yaml exist in the same directory, JSON
+// wins (matches the historical behavior + scaffolder default).
+func (s *DiscoverSuite) TestVeilJSONWinsOverYAMLAtSameDir() {
+	root := s.T().TempDir()
+	jsonPath := s.writeVeilJSON(root, `{"kinds":[], `+stockRegistries+`}`)
+	s.Require().NoError(os.WriteFile(filepath.Join(root, "veil.yaml"),
+		[]byte("kinds: []\nregistries:\n  \"\": ./registry.json\n"), 0644))
+
+	reg, err := Discover(root)
+	s.Require().NoError(err)
+	s.Equal(jsonPath, reg.ConfigPath)
+}
+
 func (s *DiscoverSuite) TestAcceptsRenderHookObjectWithAccess() {
 	root := s.T().TempDir()
 	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")

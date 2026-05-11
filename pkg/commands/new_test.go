@@ -9,9 +9,18 @@ import (
 
 	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/suite"
+	"gopkg.in/yaml.v3"
 
 	"github.com/vercel/veil/pkg/embeds"
 )
+
+func encodeYAMLForTest(v any) ([]byte, error) {
+	return yaml.Marshal(v)
+}
+
+func decodeYAMLForTest(data []byte, into any) error {
+	return yaml.Unmarshal(data, into)
+}
 
 type NewSuite struct {
 	suite.Suite
@@ -353,4 +362,81 @@ func (s *NewSuite) readJSON(path string) map[string]any {
 	var out map[string]any
 	s.Require().NoError(json.Unmarshal(data, &out))
 	return out
+}
+
+// TestNewHookPreservesYAMLKindFormat verifies that when the kind file
+// was authored as YAML, `veil new hook` reads it as YAML, mutates,
+// and writes it back as YAML — not silently converted to JSON.
+func (s *NewSuite) TestNewHookPreservesYAMLKindFormat() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	// Rewrite the scaffolded JSON kind as YAML, drop the JSON file so
+	// the loader picks up the YAML variant.
+	kindDir := filepath.Join(s.root, ".veil", "kinds", "worker")
+	jsonPath := filepath.Join(kindDir, "kind.json")
+	jsonData, err := os.ReadFile(jsonPath)
+	s.Require().NoError(err)
+
+	var raw map[string]any
+	s.Require().NoError(json.Unmarshal(jsonData, &raw))
+	// Drop $schema — yaml.v3 has no opinion about the value, but
+	// keeping it would survive the round-trip and only adds noise.
+	delete(raw, "$schema")
+
+	yamlBytes, err := encodeYAMLForTest(raw)
+	s.Require().NoError(err)
+	yamlPath := filepath.Join(kindDir, "kind.yaml")
+	s.Require().NoError(os.WriteFile(yamlPath, yamlBytes, 0644))
+	s.Require().NoError(os.Remove(jsonPath))
+
+	// Point veil.json at the YAML file.
+	veilPath := filepath.Join(s.root, "veil.json")
+	veil := s.readJSON(veilPath)
+	veil["kinds"] = []any{"./.veil/kinds/worker/kind.yaml"}
+	veilOut, err := json.MarshalIndent(veil, "", "  ")
+	s.Require().NoError(err)
+	s.Require().NoError(os.WriteFile(veilPath, append(veilOut, '\n'), 0644))
+
+	_, err = s.run("new", "hook", "annotate", "--kind", "worker")
+	s.Require().NoError(err)
+
+	// kind.yaml still exists, kind.json was not resurrected.
+	s.FileExists(yamlPath)
+	_, statErr := os.Stat(jsonPath)
+	s.True(os.IsNotExist(statErr), "kind.json should not have been recreated")
+
+	// kind.yaml must be parseable as YAML and have the new hook.
+	roundTripped, err := os.ReadFile(yamlPath)
+	s.Require().NoError(err)
+	var reparsed map[string]any
+	s.Require().NoError(decodeYAMLForTest(roundTripped, &reparsed))
+	hooks := reparsed["hooks"].(map[string]any)
+	render := hooks["render"].([]any)
+	s.Require().Len(render, 2)
+	s.Equal("./hooks/src/hello-world.ts", render[0].(map[string]any)["path"])
+	s.Equal("./hooks/src/annotate.ts", render[1].(map[string]any)["path"])
+}
+
+// TestNewKindPreservesYAMLVeilConfig verifies that when veil.yaml is
+// the project config, `veil new kind` rewrites it as YAML rather than
+// silently swapping in a veil.json.
+func (s *NewSuite) TestNewKindPreservesYAMLVeilConfig() {
+	veilYAML := "kinds: []\nregistries:\n  \"\": ./public/r/registry.json\n"
+	veilPath := filepath.Join(s.root, "veil.yaml")
+	s.Require().NoError(os.WriteFile(veilPath, []byte(veilYAML), 0644))
+
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	// veil.yaml is still the project config; no veil.json appeared.
+	s.FileExists(veilPath)
+	_, statErr := os.Stat(filepath.Join(s.root, "veil.json"))
+	s.True(os.IsNotExist(statErr), "veil.json should not have been created")
+
+	roundTripped, err := os.ReadFile(veilPath)
+	s.Require().NoError(err)
+	var reparsed map[string]any
+	s.Require().NoError(decodeYAMLForTest(roundTripped, &reparsed))
+	s.Equal([]any{"./.veil/kinds/worker/kind.json"}, reparsed["kinds"])
 }

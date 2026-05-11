@@ -528,17 +528,15 @@ func applyOverlays(fsys fs.FS, r *resource.Resource, vars map[string]any) (map[s
 		// Overlay paths are fs.FS-relative (forward-slash, no leading
 		// dot), resolved against the resource's own directory so a
 		// resource at "services/api/api.json" with overlay "./staging.json"
-		// reads "services/api/staging.json".
+		// reads "services/api/staging.json". Source format is detected
+		// from the overlay path — .yaml/.yml overlays go through the
+		// yaml.v3 decoder, others through encoding/json.
 		overlayPath := path.Join(path.Dir(r.Path), filepath.ToSlash(ov.GetFile()))
-		data, err := fs.ReadFile(fsys, overlayPath)
-		if err != nil {
-			return nil, fmt.Errorf("reading overlay %s: %w", overlayPath, err)
-		}
 		var overlayDoc struct {
-			Spec map[string]any `json:"spec"`
+			Spec map[string]any `json:"spec" yaml:"spec"`
 		}
-		if err := json.Unmarshal(data, &overlayDoc); err != nil {
-			return nil, fmt.Errorf("parsing overlay %s: %w", overlayPath, err)
+		if err := protoencode.ReadFS(fsys, overlayPath, &overlayDoc); err != nil {
+			return nil, fmt.Errorf("reading overlay %s: %w", overlayPath, err)
 		}
 		result = deepMerge(result, overlayDoc.Spec)
 	}
@@ -590,12 +588,8 @@ func stringifyVar(v any) string {
 // each spec field, including its `default` values. Returns an empty map
 // if the composite schema has no spec subschema.
 func loadSpecSubschema(schemaPath string) (map[string]any, error) {
-	data, err := registry.ReadResource(schemaPath)
-	if err != nil {
-		return nil, err
-	}
 	var root map[string]any
-	if err := json.Unmarshal(data, &root); err != nil {
+	if err := registry.ReadResource(schemaPath, &root); err != nil {
 		return nil, err
 	}
 	props, _ := root["properties"].(map[string]any)
@@ -633,13 +627,9 @@ func applySchemaDefaults(data map[string]any, schema map[string]any) {
 // merged via resolveResource — i.e. overlays are applied, so what's
 // validated is exactly what hooks (and the final renderer) will see.
 func validateResource(schemaPath string, r *veilv1.Resource) error {
-	data, err := registry.ReadResource(schemaPath)
-	if err != nil {
-		return fmt.Errorf("reading schema %s: %w", schemaPath, err)
-	}
 	var schemaDoc any
-	if err := json.Unmarshal(data, &schemaDoc); err != nil {
-		return fmt.Errorf("parsing schema %s: %w", schemaPath, err)
+	if err := registry.ReadResource(schemaPath, &schemaDoc); err != nil {
+		return fmt.Errorf("reading schema %s: %w", schemaPath, err)
 	}
 	compiler := jsonschema.NewCompiler()
 	if err := compiler.AddResource("mem://schema", schemaDoc); err != nil {

@@ -21,6 +21,7 @@ import (
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/config"
+	"github.com/vercel/veil/pkg/protoencode"
 	"github.com/vercel/veil/pkg/typegen"
 )
 
@@ -203,8 +204,10 @@ func ResourceSchema(k *config.Kind, metadataSchema map[string]any, graph *KindGr
 	return os.WriteFile(outPath, data, 0644)
 }
 
-// LoadSpecSchema reads and parses the kind's schema file. If no schema
-// is defined, returns a permissive object schema.
+// LoadSpecSchema reads and parses the kind's schema file. Schema files
+// may be authored in JSON or YAML — the extension on k.Schema decides
+// how the bytes are parsed. If no schema is defined, returns a
+// permissive object schema.
 func LoadSpecSchema(k *config.Kind) (map[string]any, error) {
 	if k.Schema == "" {
 		return map[string]any{
@@ -218,14 +221,9 @@ func LoadSpecSchema(k *config.Kind) (map[string]any, error) {
 		schemaPath = filepath.Join(k.Dir, schemaPath)
 	}
 
-	data, err := os.ReadFile(schemaPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading schema %s: %w", schemaPath, err)
-	}
-
 	var spec map[string]any
-	if err := json.Unmarshal(data, &spec); err != nil {
-		return nil, fmt.Errorf("parsing schema %s: %w", schemaPath, err)
+	if err := protoencode.ReadFile(schemaPath, &spec); err != nil {
+		return nil, fmt.Errorf("reading schema %s: %w", schemaPath, err)
 	}
 	return spec, nil
 }
