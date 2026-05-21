@@ -53,14 +53,19 @@ func newKind() *cli.Command {
 
 func newHook() *cli.Command {
 	return &cli.Command{
-		Name:      "hook",
-		Usage:     "Scaffold a new hook for a kind",
-		UsageText: "veil new hook <name> --kind <kind>",
+		Name:  "hook",
+		Usage: "Scaffold a new hook for a kind or a resource",
+		UsageText: `veil new hook <name> --kind <kind>
+   veil new hook <name> --resource <path-to-resource-yaml>
+   veil new hook <name>     # auto-detects kind / resource from cwd`,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:     "kind",
-				Usage:    "Name of the kind this hook belongs to",
-				Required: true,
+				Name:  "kind",
+				Usage: "Name of the kind this hook belongs to (mutually exclusive with --resource)",
+			},
+			&cli.StringFlag{
+				Name:  "resource",
+				Usage: "Path to the resource yaml this hook belongs to (mutually exclusive with --kind)",
 			},
 		},
 		Arguments: []cli.Argument{
@@ -221,13 +226,41 @@ func runNewHook(ctx context.Context, c *cli.Command) error {
 	if err := validateName("hook name", name); err != nil {
 		return err
 	}
+
 	kindName := c.String("kind")
+	resourcePath := c.String("resource")
+	if kindName != "" && resourcePath != "" {
+		return fmt.Errorf("--kind and --resource are mutually exclusive")
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
+	// Auto-detect when the user passed neither flag. Look for an
+	// unambiguous parent in cwd: a single kind.{yaml,json} or a single
+	// resource yaml with metadata.kind set. Multiple matches → ask the
+	// user to specify; no matches → ask the user to specify.
+	if kindName == "" && resourcePath == "" {
+		detectedKind, detectedResource, err := detectHookParent(cwd)
+		if err != nil {
+			return err
+		}
+		kindName = detectedKind
+		resourcePath = detectedResource
+	}
+
+	if resourcePath != "" {
+		return runNewHookOnResource(cwd, name, resourcePath, p)
+	}
+	return runNewHookOnKind(ctx, cwd, name, kindName, p)
+}
+
+// runNewHookOnKind is the original `veil new hook --kind X` path: write
+// the hook .ts under <kindDir>/hooks/src/, append it to the kind file's
+// hooks.render, and re-run the build pipeline.
+func runNewHookOnKind(ctx context.Context, cwd, name, kindName string, p interact.Printer) error {
 	reg, err := config.Discover(cwd)
 	if err != nil {
 		return err
@@ -284,6 +317,150 @@ func runNewHook(ctx context.Context, c *cli.Command) error {
 	}
 	rb.commit()
 	return nil
+}
+
+// runNewHookOnResource scaffolds a resource-local hook. The .ts lands
+// alongside the resource (under <resourceDir>/hooks/<name>.ts so the
+// dir matches the path the resource yaml declares) and the resource's
+// metadata.hooks.render array gets the new entry. No build re-run —
+// resource hooks compile on demand at render time.
+func runNewHookOnResource(cwd, name, resourcePath string, p interact.Printer) error {
+	abs := resourcePath
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(cwd, resourcePath)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return fmt.Errorf("resource %s: %w", resourcePath, err)
+	}
+	if !looksLikeResourceFile(abs) {
+		return fmt.Errorf("%s does not look like a resource file (no metadata.kind)", resourcePath)
+	}
+
+	resourceDir := filepath.Dir(abs)
+	outPath := filepath.Join(resourceDir, "hooks", name+".ts")
+	if _, err := os.Stat(outPath); err == nil {
+		return fmt.Errorf("hook %s already exists", outPath)
+	}
+
+	var rb rollback
+	defer rb.run()
+
+	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+		return fmt.Errorf("creating hooks directory: %w", err)
+	}
+	ts := build.HookTemplate(name)
+	if err := os.WriteFile(outPath, []byte(ts), 0644); err != nil {
+		return fmt.Errorf("writing hook: %w", err)
+	}
+	rb.removeFile(outPath)
+
+	prev, err := os.ReadFile(abs)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", abs, err)
+	}
+	relHook := "./" + filepath.ToSlash(filepath.Join("hooks", name+".ts"))
+	if err := appendHookToResource(abs, "render", relHook); err != nil {
+		return err
+	}
+	rb.restoreFile(abs, prev)
+
+	p.Successf("Scaffolded hook %s (registered on %s)", outPath, abs)
+	rb.commit()
+	return nil
+}
+
+// detectHookParent scans cwd looking for an unambiguous kind or
+// resource file the new hook should attach to. Used when the user
+// runs `veil new hook <name>` without explicit --kind / --resource.
+//
+// Resolution rules:
+//
+//   - If cwd contains exactly one kind.{json,yaml,yml} → kind mode for
+//     that file (returns the kind name).
+//   - Otherwise, if cwd contains exactly one resource yaml/json whose
+//     metadata.kind is set → resource mode for that file (returns the
+//     resource path).
+//   - Anything ambiguous (multiple candidates, mixed kind + resource
+//     files, or none) returns an actionable error.
+func detectHookParent(cwd string) (kindName, resourcePath string, err error) {
+	var kindFiles []string
+	for _, candidate := range []string{"kind.json", "kind.yaml", "kind.yml"} {
+		p := filepath.Join(cwd, candidate)
+		if _, statErr := os.Stat(p); statErr == nil {
+			kindFiles = append(kindFiles, p)
+		}
+	}
+	if len(kindFiles) > 1 {
+		return "", "", fmt.Errorf("multiple kind files in %s — pass --kind explicitly", cwd)
+	}
+	if len(kindFiles) == 1 {
+		var raw map[string]any
+		if err := protoencode.ReadFile(kindFiles[0], &raw); err != nil {
+			return "", "", fmt.Errorf("reading %s: %w", kindFiles[0], err)
+		}
+		n, _ := raw["name"].(string)
+		if n == "" {
+			return "", "", fmt.Errorf("%s: missing name field — pass --kind explicitly", kindFiles[0])
+		}
+		return n, "", nil
+	}
+
+	resourceCandidates, err := findResourceFiles(cwd)
+	if err != nil {
+		return "", "", err
+	}
+	switch len(resourceCandidates) {
+	case 0:
+		return "", "", fmt.Errorf("no kind.{json,yaml,yml} or resource yaml found in %s — pass --kind or --resource", cwd)
+	case 1:
+		return "", resourceCandidates[0], nil
+	default:
+		return "", "", fmt.Errorf("multiple resource files in %s — pass --resource explicitly", cwd)
+	}
+}
+
+// findResourceFiles enumerates *.json / *.yaml / *.yml entries
+// directly inside dir and returns the subset whose top-level
+// metadata.kind is a non-empty string. Files that don't parse or
+// don't look like resources are silently skipped — detect is best
+// effort.
+func findResourceFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", dir, err)
+	}
+	var hits []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := filepath.Ext(e.Name())
+		if ext != ".json" && ext != ".yaml" && ext != ".yml" {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		if looksLikeResourceFile(p) {
+			hits = append(hits, p)
+		}
+	}
+	return hits, nil
+}
+
+// looksLikeResourceFile reports whether path parses as a JSON/YAML
+// document with a non-empty metadata.kind field. The cheapest
+// possible "is this a resource" check — no schema validation, no
+// proto decode.
+func looksLikeResourceFile(path string) bool {
+	var raw map[string]any
+	if err := protoencode.ReadFile(path, &raw); err != nil {
+		return false
+	}
+	meta, _ := raw["metadata"].(map[string]any)
+	if meta == nil {
+		return false
+	}
+	kind, _ := meta["kind"].(string)
+	return kind != ""
 }
 
 func runNewResource(ctx context.Context, c *cli.Command) error {
@@ -471,6 +648,53 @@ func registerKindInVeilJSON(configPath, relKind string) error {
 		}
 		kinds = append(kinds, relKind)
 		cfg["kinds"] = kinds
+		return nil
+	})
+}
+
+// appendHookToResource appends relHook to the resource file's
+// metadata.hooks.<lifecycle> array. The resource file may be JSON or
+// YAML — the format is preserved across the mutation. Creates the
+// metadata.hooks block (and the lifecycle array within it) when
+// absent.
+func appendHookToResource(resourcePath, lifecycle, relHook string) error {
+	return mutateGeneric(resourcePath, func(raw map[string]any) error {
+		meta, _ := raw["metadata"].(map[string]any)
+		if meta == nil {
+			return fmt.Errorf("%s: missing metadata block", resourcePath)
+		}
+		hooksObj, _ := meta["hooks"].(map[string]any)
+		if hooksObj == nil {
+			hooksObj = map[string]any{}
+		}
+
+		var list []map[string]any
+		if existing, ok := hooksObj[lifecycle]; ok && existing != nil {
+			arr, ok := existing.([]any)
+			if !ok {
+				return fmt.Errorf("%s: \"metadata.hooks.%s\" must be an array", resourcePath, lifecycle)
+			}
+			for _, v := range arr {
+				switch entry := v.(type) {
+				case string:
+					list = append(list, map[string]any{"path": entry})
+				case map[string]any:
+					list = append(list, entry)
+				default:
+					return fmt.Errorf("%s: \"metadata.hooks.%s\" entries must be strings or objects with a \"path\" field", resourcePath, lifecycle)
+				}
+			}
+		}
+
+		for _, entry := range list {
+			if entry["path"] == relHook {
+				return nil
+			}
+		}
+		list = append(list, map[string]any{"path": relHook})
+		hooksObj[lifecycle] = list
+		meta["hooks"] = hooksObj
+		raw["metadata"] = meta
 		return nil
 	})
 }
