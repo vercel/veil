@@ -24,6 +24,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
+	"github.com/vercel/veil/pkg/bundle"
 	"github.com/vercel/veil/pkg/hook"
 	"github.com/vercel/veil/pkg/interact"
 	"github.com/vercel/veil/pkg/protoencode"
@@ -212,6 +213,47 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 			return nil, fmt.Errorf("dependency %s/%s: %w", dep.GetKind(), dep.GetName(), err)
 		}
 		bundle = newBundle
+	}
+
+	// Resource-level render hooks: paths declared inline on the resource
+	// yaml under metadata.hooks.render. Compiled on demand at render
+	// time (no kind.json entry — they belong to the resource). Run
+	// after the kind's render + dependents so they see the fully
+	// kind-rendered bundle.
+	resourceHooks := r.GetMetadata().GetHooks().GetRender()
+	if len(resourceHooks) > 0 {
+		logger.Info("running resource hooks", "count", len(resourceHooks))
+		resourceDir := path.Dir(r.Path)
+		for _, def := range resourceHooks {
+			hookPath := def.GetPath()
+			if hookPath == "" {
+				return nil, fmt.Errorf("metadata.hooks.render: entry has empty path")
+			}
+			compiled, err := compileResourceHook(opts.FS, resourceDir, hookPath, def.GetAccess())
+			if err != nil {
+				return nil, fmt.Errorf("resource hook %s: %w", hookPath, err)
+			}
+			newBundle, err := invokeHook(logger, compiled, kindName, resourceName, ctx, bundle)
+			if err != nil {
+				return nil, fmt.Errorf("resource hook %s: %w", hookPath, err)
+			}
+			bundle = newBundle
+		}
+	}
+
+	// Validation hooks: run after every other lifecycle point. Every
+	// hook runs regardless of failures, the runner snapshots away its
+	// FS/ctx mutations, and the aggregated issue list fails the
+	// render at the end if any error-severity issues come back.
+	validateHooks := kind.GetHooks().GetValidate()
+	if len(validateHooks) > 0 {
+		issues, err := runValidateHooks(logger, validateHooks, kindName, resourceName, ctx, bundle)
+		if err != nil {
+			return nil, fmt.Errorf("validate: %w", err)
+		}
+		if report := formatValidationReport(kindName, resourceName, issues); report != "" {
+			return nil, errors.New(report)
+		}
 	}
 
 	// Re-stamp every skip_hooks override so the rendered output is the
@@ -414,6 +456,154 @@ func resolveTargetResource(r *resource.Resource, opts *Options) (*veilv1.Resourc
 	}
 	applySchemaDefaults(mergedSpec, specSchema)
 	return resolveResource(r.Resource, mergedSpec)
+}
+
+// compileResourceHook bundles a resource-level hook on the fly. Paths
+// are resolved relative to the resource file's directory (resourceDir).
+// The compiled Hook carries the access info copied from the
+// definition so the runner can pre-flight env access the same way it
+// does for kind-bundled hooks.
+func compileResourceHook(fsys fs.FS, resourceDir, hookPath string, access *veilv1.HookAccess) (*veilv1.Hook, error) {
+	entrypoint := hookPath
+	if !path.IsAbs(entrypoint) {
+		entrypoint = path.Join(resourceDir, entrypoint)
+	}
+	entrypoint = strings.TrimPrefix(entrypoint, "/")
+	code, err := bundle.Bundle(entrypoint, fsys, &bundle.Options{
+		Minify:     true,
+		GlobalName: "__veilMod",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("bundling %s: %w", hookPath, err)
+	}
+	return &veilv1.Hook{
+		Name:    hookPath,
+		Content: code,
+		Access:  access,
+	}, nil
+}
+
+// runValidateHooks invokes every validate hook on the kind, collecting
+// each one's reported issues plus any thrown errors. A throw from one
+// hook does not abort the loop — the runner records it as an
+// error-severity issue and keeps going so the user sees every problem
+// at once.
+func runValidateHooks(parent *slog.Logger, hooks []*veilv1.Hook, kindName, resourceName string, ctx any, bdl hook.Bundle) ([]hook.ValidationIssue, error) {
+	parent.Info("running validate hooks", "count", len(hooks))
+	var issues []hook.ValidationIssue
+	for _, h := range hooks {
+		hookIssues, err := invokeValidateHook(parent, h, kindName, resourceName, ctx, bdl)
+		if err != nil {
+			// Aggregate the throw as a single error-severity issue,
+			// then keep iterating so subsequent hooks still get a
+			// chance to report.
+			issues = append(issues, hook.ValidationIssue{
+				Message:  fmt.Sprintf("validate hook %s threw: %s", h.GetName(), err),
+				Severity: "error",
+			})
+			continue
+		}
+		issues = append(issues, hookIssues...)
+	}
+	return issues, nil
+}
+
+// formatValidationReport returns a single aggregated message
+// describing every error-severity issue across the validate hooks.
+// Warning-severity issues are surfaced through the interactive
+// printer (so they're visible to the user) but do not cause the
+// render to fail. Returns "" when there are no error-severity issues.
+func formatValidationReport(kindName, resourceName string, issues []hook.ValidationIssue) string {
+	if len(issues) == 0 {
+		return ""
+	}
+	var errs, warns []hook.ValidationIssue
+	for _, i := range issues {
+		if i.Severity == "warning" {
+			warns = append(warns, i)
+		} else {
+			errs = append(errs, i)
+		}
+	}
+	if len(warns) > 0 {
+		p := interact.Default()
+		for _, w := range warns {
+			loc := ""
+			if w.Path != "" {
+				loc = " [" + w.Path + "]"
+			}
+			p.Warnf("WARN [%s/%s] validate%s: %s", kindName, resourceName, loc, w.Message)
+		}
+	}
+	if len(errs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d validation issue(s):\n", len(errs))
+	for _, e := range errs {
+		loc := ""
+		if e.Path != "" {
+			loc = " [" + e.Path + "]"
+		}
+		fmt.Fprintf(&b, "  - %s: %s%s\n", kindName+"/"+resourceName, e.Message, loc)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// invokeValidateHook is the validate-lifecycle twin of invokeHook —
+// same construction + env resolution, but it calls ValidateHook
+// instead and returns the issue list. Any FS or ctx mutations the
+// hook makes inside the runtime are not read back out: the only
+// observable output is the issues slice.
+func invokeValidateHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceName string, ctx any, bdl hook.Bundle) ([]hook.ValidationIssue, error) {
+	hookName := h.GetName()
+	logger := parent.With("hook", hookName)
+
+	env, err := resolveHookEnv(h, kindName, resourceName, hookName)
+	if err != nil {
+		return nil, err
+	}
+	if len(env) > 0 {
+		names := make([]string, 0, len(env))
+		for k := range env {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		logger.Info("granting env access", "vars", names)
+	}
+
+	logger.Info("running validate hook")
+	start := time.Now()
+
+	display := func(level, msg string) {
+		p := interact.Default()
+		switch level {
+		case "warn":
+			p.Warnf("WARN [%s/%s/%s] %s", kindName, resourceName, hookName, msg)
+		case "error":
+			p.Errorf("ERROR [%s/%s/%s] %s", kindName, resourceName, hookName, msg)
+		}
+	}
+
+	hk, err := hook.New(
+		h.GetContent(),
+		hook.WithLogger(logger),
+		hook.WithDisplay(display),
+		hook.WithEnv(env),
+	)
+	if err != nil {
+		logger.Error("validate hook failed", "stage", "init", "duration", time.Since(start).String(), "err", err.Error())
+		return nil, err
+	}
+	defer hk.Close()
+
+	issues, err := hk.ValidateHook(ctx, bdl)
+	if err != nil {
+		logger.Error("validate hook failed", "stage", "validate", "duration", time.Since(start).String(), "err", err.Error())
+		return nil, err
+	}
+	logger.Info("validate hook completed", "duration", time.Since(start).String(), "issues", len(issues))
+	return issues, nil
 }
 
 // invokeHook constructs a Hook from compiled code, calls RenderHook,
