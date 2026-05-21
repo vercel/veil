@@ -243,6 +243,11 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 		return nil, fmt.Errorf("validate hooks: %w", err)
 	}
 
+	postRender, err := compileRenderHooks(k, projectRoot, fsys, k.GetHooks().GetPostRender())
+	if err != nil {
+		return nil, fmt.Errorf("post_render hooks: %w", err)
+	}
+
 	dependents, err := compileDependents(k, projectRoot, fsys)
 	if err != nil {
 		return nil, err
@@ -255,6 +260,7 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 			Render:     render,
 			Dependents: dependents,
 			Validate:   validate,
+			PostRender: postRender,
 		},
 		Variables: variables,
 	}, nil
@@ -391,6 +397,9 @@ func hookFiles(k *config.Kind) []string {
 	for _, d := range k.GetHooks().GetValidate() {
 		files = append(files, abs(d.GetPath()))
 	}
+	for _, d := range k.GetHooks().GetPostRender() {
+		files = append(files, abs(d.GetPath()))
+	}
 	for _, d := range k.GetHooks().GetDependents() {
 		for _, p := range d.GetPaths() {
 			files = append(files, abs(p))
@@ -427,6 +436,9 @@ func validateKind(k *config.Kind) error {
 	}
 	for _, d := range k.GetHooks().GetValidate() {
 		check("validate hook", []string{d.GetPath()})
+	}
+	for _, d := range k.GetHooks().GetPostRender() {
+		check("post_render hook", []string{d.GetPath()})
 	}
 
 	for _, d := range k.GetHooks().GetDependents() {

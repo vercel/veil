@@ -241,6 +241,24 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		}
 	}
 
+	// Kind post_render hooks: the kind's final normalization pass.
+	// Same RenderHook contract as `render`, but runs after resource
+	// hooks so the kind can react to whatever resource customizations
+	// produced (consistent formatting, key ordering, banner stamping,
+	// etc.). Validates run after this so they see the normalized
+	// output.
+	postRenderHooks := kind.GetHooks().GetPostRender()
+	if len(postRenderHooks) > 0 {
+		logger.Info("running post_render hooks", "count", len(postRenderHooks))
+		for _, h := range postRenderHooks {
+			newBundle, err := invokeHook(logger, h, kindName, resourceName, ctx, bundle)
+			if err != nil {
+				return nil, fmt.Errorf("post_render hook %s: %w", h.GetName(), err)
+			}
+			bundle = newBundle
+		}
+	}
+
 	// Validation hooks: run after every other lifecycle point. Every
 	// hook runs regardless of failures, the runner snapshots away its
 	// FS/ctx mutations, and the aggregated issue list fails the

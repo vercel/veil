@@ -4,7 +4,7 @@ package protoencode
 // write inside a HooksDefinition map.
 //
 // Both kind.yaml and resource yaml accept either form for `render` /
-// `validate` arrays:
+// `validate` / `post_render` arrays:
 //
 //	render:
 //	  - ./hooks/foo.ts                  # bare string shorthand
@@ -25,7 +25,7 @@ func ExpandHookShorthand(hooks map[string]any) {
 	if hooks == nil {
 		return
 	}
-	for _, key := range []string{"render", "validate"} {
+	for _, key := range []string{"render", "validate", "post_render"} {
 		arr, ok := hooks[key].([]any)
 		if !ok {
 			continue

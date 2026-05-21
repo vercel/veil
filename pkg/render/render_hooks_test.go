@@ -85,6 +85,32 @@ func (s *RenderSuite) writeWorkerKindMultiValidate(contents ...string) {
 	s.writeJSON(filepath.Join(s.root, "r", "worker", "kind.json"), compiled)
 }
 
+// writeWorkerKindWithPostRender installs the worker kind with a
+// pre-bundled post_render hook (and the default helloHookIIFE under
+// render). Optional validateContent lets a single test exercise the
+// post_render-before-validate ordering with a real validator.
+func (s *RenderSuite) writeWorkerKindWithPostRender(postContent, validateContent string) {
+	hooks := map[string]any{
+		"render": []map[string]any{
+			{"name": "hooks/hello-world.ts", "content": helloHookIIFE},
+		},
+		"post_render": []map[string]any{
+			{"name": "hooks/post.ts", "content": postContent},
+		},
+	}
+	if validateContent != "" {
+		hooks["validate"] = []map[string]any{
+			{"name": "hooks/validate.ts", "content": validateContent},
+		}
+	}
+	compiled := map[string]any{
+		"name":    "worker",
+		"sources": map[string]string{"config.txt": "base"},
+		"hooks":   hooks,
+	}
+	s.writeJSON(filepath.Join(s.root, "r", "worker", "kind.json"), compiled)
+}
+
 func (s *RenderSuite) writeMinimalResource(dir string) {
 	s.Require().NoError(os.MkdirAll(dir, 0755))
 	s.writeJSON(filepath.Join(dir, "my-worker.json"), map[string]any{
@@ -297,6 +323,81 @@ const resourceMarkerHookTS = `export default {
 // observeMarkerValidateIIFE: returns one issue iff the resource-hook's
 // marker file is present in the FS at validate time.
 const observeMarkerValidateIIFE = `var __veilMod=(()=>{var h={validate:function(ctx,fs){var f=fs.get("from-resource.txt");if(!f||f.isDeleted())return [{message:"resource hook did not run before validate"}];return [{message:"resource-hook-seen-at-validate",severity:"warning"}];}};return{default:h};})();`
+
+// --- post_render IIFEs --------------------------------------------------
+
+// postNormalizeIIFE rewrites every file's content to a deterministic
+// uppercased form. Stand-in for "consistent formatting" — the real
+// motivating use case for post_render hooks.
+const postNormalizeIIFE = `var __veilMod=(()=>{var h={render:function(ctx,fs){var ks=fs.keys();for(var i=0;i<ks.length;i++){var f=fs.get(ks[i]);f.setContent(f.getContent().toUpperCase());}return fs;}};return{default:h};})();`
+
+// observeResourceMarkerPostIIFE adds a marker file iff a prior
+// resource hook's output is visible — used to assert resource hooks
+// run before post_render.
+const observeResourceMarkerPostIIFE = `var __veilMod=(()=>{var h={render:function(ctx,fs){var f=fs.get("from-resource.txt");fs.add("post-saw-resource.txt",f&&!f.isDeleted()?"yes":"no");return fs;}};return{default:h};})();`
+
+// --- post_render lifecycle ----------------------------------------------
+
+func (s *RenderSuite) TestPostRenderMutationsPersistToOutput() {
+	// Post-render's promise: mutations DO land in the final output (unlike
+	// validate). Run a normalizer that uppercases every file and confirm
+	// the written file is uppercased.
+	s.writeWorkerKindWithPostRender(postNormalizeIIFE, "")
+	dir := filepath.Join(s.root, "svc")
+	s.writeMinimalResource(dir)
+
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderWorker(dir, out, nil)
+	s.Require().NoError(err)
+
+	cfg, err := os.ReadFile(filepath.Join(out, "my-worker", "config.txt"))
+	s.Require().NoError(err)
+	// Kind hello-world hook prepends "my-worker:" → then post uppercases.
+	s.Equal("MY-WORKER:BASE", string(cfg))
+}
+
+func (s *RenderSuite) TestPostRenderRunsAfterResourceHooks() {
+	// Resource hook drops a marker file; post_render looks for it and
+	// records what it saw. If post ran first, the marker would be missing.
+	s.writeWorkerKindWithPostRender(observeResourceMarkerPostIIFE, "")
+	dir := filepath.Join(s.root, "svc")
+	s.Require().NoError(os.MkdirAll(dir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(dir, "marker.ts"), []byte(resourceMarkerHookTS), 0644))
+
+	s.writeJSON(filepath.Join(dir, "my-worker.json"), map[string]any{
+		"metadata": map[string]any{
+			"kind": "worker",
+			"name": "my-worker",
+			"hooks": map[string]any{
+				"render": []map[string]any{{"path": "./marker.ts"}},
+			},
+		},
+		"spec": map[string]any{"replicas": 3},
+	})
+
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderWorker(dir, out, nil)
+	s.Require().NoError(err)
+
+	saw, err := os.ReadFile(filepath.Join(out, "my-worker", "post-saw-resource.txt"))
+	s.Require().NoError(err)
+	s.Equal("yes", string(saw))
+}
+
+func (s *RenderSuite) TestPostRenderRunsBeforeValidate() {
+	// Post-render uppercases everything; validate then reports a warning
+	// only if it observes the uppercased text. If validate ran first, it
+	// would see the un-uppercased text and report the failure issue.
+	postUpper := postNormalizeIIFE
+	observeUpperValidateIIFE := `var __veilMod=(()=>{var h={validate:function(ctx,fs){var f=fs.get("config.txt");if(!f||f.getContent()!==f.getContent().toUpperCase())return [{message:"post_render did not run before validate"}];return [{message:"validate-saw-uppercased",severity:"warning"}];}};return{default:h};})();`
+
+	s.writeWorkerKindWithPostRender(postUpper, observeUpperValidateIIFE)
+	dir := filepath.Join(s.root, "svc")
+	s.writeMinimalResource(dir)
+
+	_, err := s.renderWorker(dir, filepath.Join(s.root, "out"), nil)
+	s.Require().NoError(err) // warning severity does not fail
+}
 
 func (s *RenderSuite) TestValidateRunsAfterResourceHooks() {
 	s.writeWorkerKind(observeMarkerValidateIIFE)

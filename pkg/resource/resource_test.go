@@ -70,6 +70,22 @@ spec: {}
 	s.Contains(err.Error(), "metadata.hooks.validate is not supported on resources")
 }
 
+func (s *ResourceLoadSuite) TestLoadRejectsResourceLevelPostRender() {
+	const yaml = `metadata:
+  kind: worker
+  name: foo
+  hooks:
+    post_render:
+      - ./post.ts
+spec: {}
+`
+	fsys := fstest.MapFS{"svc/foo.yaml": &fstest.MapFile{Data: []byte(yaml)}}
+
+	_, err := Load(fsys, "svc/foo.yaml")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "metadata.hooks.post_render is not supported on resources")
+}
+
 func (s *ResourceLoadSuite) TestLoadIgnoresMissingHooks() {
 	const yaml = `metadata:
   kind: worker

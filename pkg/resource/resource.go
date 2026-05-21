@@ -55,6 +55,9 @@ func Load(fsys fs.FS, path string) (*Resource, error) {
 			if _, hasValidate := hooks["validate"]; hasValidate {
 				return nil, fmt.Errorf("loading %s: metadata.hooks.validate is not supported on resources (validation hooks are declared on the kind)", path)
 			}
+			if _, hasPost := hooks["post_render"]; hasPost {
+				return nil, fmt.Errorf("loading %s: metadata.hooks.post_render is not supported on resources (post_render is the kind's final normalization pass)", path)
+			}
 			protoencode.ExpandHookShorthand(hooks)
 		}
 	}
