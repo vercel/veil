@@ -233,6 +233,58 @@ const (
 })()`
 )
 
+// Validate-hook script fragments. Same ctx + fs shape as render, but the
+// invoked function is `validate(ctx, fs)` and the return value is
+// normalized into a `ValidationIssue[]`. Bundle/ctx mutations are
+// ignored — the runner discards everything except the issues array.
+//
+// Result normalization handles the three accepted return shapes
+// (string, ValidationIssue, array of either) plus undefined/null. A
+// throw bubbles through QuickJS as a normal error; the Go-side caller
+// is responsible for catching and aggregating rather than letting it
+// abort the validate loop.
+const (
+	validateHookScriptPrefix = `await (async () => {
+  __veilLogs.length = 0;
+  if (!__veilMod || !__veilMod.default || typeof __veilMod.default.validate !== 'function') {
+    return JSON.stringify({ issues: [], logs: __veilLogs });
+  }
+  const __ctx = `
+	validateHookScriptMiddle = `;
+  __ctx.std = globalThis.__veilHost.std;
+  __ctx.os = globalThis.__veilHost.os;
+  __ctx.fetch = globalThis.__veilHost.fetch;
+  __ctx.env = globalThis.__veilHost.env;
+  const __fs = __veilMakeFS(`
+	validateHookScriptSuffix = `);
+  let __res = __veilMod.default.validate(__ctx, __fs);
+  if (__res && typeof __res.then === 'function') __res = await __res;
+  function __veilNormIssue(x) {
+    if (x == null) return null;
+    if (typeof x === 'string') return { message: x };
+    if (typeof x === 'object') {
+      var msg = x.message == null ? '' : String(x.message);
+      var out = { message: msg };
+      if (x.path != null) out.path = String(x.path);
+      if (x.severity != null) out.severity = String(x.severity);
+      return out;
+    }
+    return { message: String(x) };
+  }
+  var __issues = [];
+  if (Array.isArray(__res)) {
+    for (var i = 0; i < __res.length; i++) {
+      var n = __veilNormIssue(__res[i]);
+      if (n) __issues.push(n);
+    }
+  } else {
+    var n = __veilNormIssue(__res);
+    if (n) __issues.push(n);
+  }
+  return JSON.stringify({ issues: __issues, logs: __veilLogs });
+})()`
+)
+
 // Option configures a Hook.
 type Option func(*options)
 
@@ -296,9 +348,24 @@ type Hook interface {
 	// unchanged.
 	RenderHook(ctx any, bundle Bundle) (Bundle, error)
 
+	// ValidateHook runs the hook's `validate(ctx, fs)` function and
+	// returns the normalized list of issues the hook reported. If the
+	// JS module has no `validate` defined, returns an empty slice.
+	// Any mutations the hook makes to ctx or fs are discarded — the
+	// only observable output is the issues slice.
+	ValidateHook(ctx any, bundle Bundle) ([]ValidationIssue, error)
+
 	// Close releases the underlying runtime resources. Safe to call more
 	// than once.
 	Close() error
+}
+
+// ValidationIssue is one entry in a validate hook's report. Mirrors the
+// TypeScript `ValidationIssue` interface generated into veil-types.ts.
+type ValidationIssue struct {
+	Message  string `json:"message"`
+	Path     string `json:"path,omitempty"`
+	Severity string `json:"severity,omitempty"`
 }
 
 // New creates a Hook backed by compiled JS code (IIFE form emitted by
@@ -643,6 +710,11 @@ type hookResult struct {
 	Logs []logEntry `json:"logs,omitempty"`
 }
 
+type validateHookResult struct {
+	Issues []ValidationIssue `json:"issues,omitempty"`
+	Logs   []logEntry        `json:"logs,omitempty"`
+}
+
 type logEntry struct {
 	Level   string `json:"level"`
 	Message string `json:"message"`
@@ -729,6 +801,76 @@ func (h *jsHook) RenderHook(ctx any, bundle Bundle) (Bundle, error) {
 		return bundle, nil
 	}
 	return result.FS, nil
+}
+
+// ValidateHook runs the compiled module's `validate(ctx, fs)` and
+// returns the normalized issue list. Mirrors the render path for
+// timeout / stuck-runtime handling so a runaway validate hook gets
+// the same wall-clock cutoff. Any FS or ctx mutations the hook
+// performs only live inside the QuickJS sandbox — the runner reads
+// nothing back except the issues array, so reverting state to a
+// snapshot isn't necessary.
+func (h *jsHook) ValidateHook(ctx any, bundle Bundle) ([]ValidationIssue, error) {
+	if h.closed {
+		return nil, errors.New("hook: ValidateHook called after Close")
+	}
+	if h.stuck {
+		return nil, errors.New("hook: runtime abandoned after prior timeout")
+	}
+
+	ctxJSON, err := json.Marshal(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling ctx: %w", err)
+	}
+	bundleJSON, err := json.Marshal(bundle)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling bundle: %w", err)
+	}
+
+	var b strings.Builder
+	b.Grow(len(validateHookScriptPrefix) + len(ctxJSON) + len(validateHookScriptMiddle) + len(bundleJSON) + len(validateHookScriptSuffix))
+	b.WriteString(validateHookScriptPrefix)
+	b.Write(ctxJSON)
+	b.WriteString(validateHookScriptMiddle)
+	b.Write(bundleJSON)
+	b.WriteString(validateHookScriptSuffix)
+	script := b.String()
+
+	type outcome struct {
+		raw string
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		val, err := h.rt.Eval("validate.js", qjs.Code(script), qjs.FlagAsync())
+		if err != nil {
+			done <- outcome{err: err}
+			return
+		}
+		raw := val.String()
+		val.Free()
+		done <- outcome{raw: raw}
+	}()
+
+	var res outcome
+	select {
+	case res = <-done:
+	case <-time.After(h.cfg.timeout):
+		h.stuck = true
+		return nil, fmt.Errorf("hook exceeded %s timeout", h.cfg.timeout)
+	}
+
+	if res.err != nil {
+		return nil, fmt.Errorf("invoking validate: %w", rewriteErr(res.err, h.sourcemap))
+	}
+
+	var result validateHookResult
+	if err := json.Unmarshal([]byte(res.raw), &result); err != nil {
+		return nil, fmt.Errorf("parsing validate result: %w (raw: %s)", err, res.raw)
+	}
+
+	h.emitLogs(result.Logs)
+	return result.Issues, nil
 }
 
 func (h *jsHook) emitLogs(logs []logEntry) {
