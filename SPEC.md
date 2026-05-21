@@ -215,7 +215,7 @@ are passed through the hook pipeline and ultimately rendered to disk.
 An object grouping hook code files (TS/JS) by lifecycle point. Each lifecycle key holds an ordered
 list of hook files, and each file exports an interface specific to that lifecycle.
 
-Three lifecycles exist today:
+Four lifecycles exist today:
 
 - **`render`** — runs during the consumer's own `veil render`. Each entry is an object with a
   required `path` (TS/JS file that exports a `RenderHook`) plus optional `access` declaring host
@@ -224,9 +224,14 @@ Three lifecycles exist today:
 - **`dependents`** — per-consumer hooks that fire when *another* kind declares a dependency on this
   one. Each entry binds a consumer kind to one or more hook file paths and a JSON Schema for the
   params the consumer must supply. See [Dependencies](#dependencies) for the full design.
+- **`post_render`** — the kind's final normalization pass. Same `{path, access?}` shape and same
+  `RenderHook(ctx, fs)` contract as `render` (mutating, declaration-ordered). Runs after every
+  resource-level render hook so the kind can react to whatever resource customizations produced —
+  consistent formatting, deterministic key ordering, banner stamping, etc. Kind-scoped only;
+  resources cannot declare `metadata.hooks.post_render`.
 - **`validate`** — read-only checks that run *after* every other lifecycle point on a resource
-  (kind `render`, dependents, and any resource-level hooks) has finished. Each entry has the same
-  `{path, access?}` shape as `render`. Mutations a validate hook makes to the FS or ctx are
+  (kind `render`, dependents, resource hooks, and `post_render`) has finished. Each entry has the
+  same `{path, access?}` shape as `render`. Mutations a validate hook makes to the FS or ctx are
   discarded by the runner; the only observable output is the array of `ValidationIssue` entries
   the hook returns. **Every validate hook runs regardless of failures** so the author sees every
   issue at once; the render fails at the end with an aggregated report if any error-severity
@@ -241,7 +246,9 @@ For a single resource being rendered, the runner executes hooks in this order:
 2. For each declared dependency, the target kind's `hooks.dependents` matching this kind.
 3. The resource's own `metadata.hooks.render` (see [Resource](#resource) — paths relative to the
    resource file). Resource hooks see the bundle after every kind-level write.
-4. The kind's `hooks.validate`. Every validate hook runs; mutations are dropped; reports
+4. The kind's `hooks.post_render`. Mutating; runs after resource hooks so the kind owns the final
+   normalization pass. Resources cannot inject themselves into this stage.
+5. The kind's `hooks.validate`. Every validate hook runs; mutations are dropped; reports
    aggregate into a single failure (or pass) before any output is written.
 
 #### `access` — declared host resources
@@ -422,13 +429,13 @@ Common to all resources. Contains:
   `skip_hooks` (default `false`). `veil override` manages this list — see [Override](#override) for
   semantics and the [CLI section](#veil-override-resource-source) for usage.
 - **`hooks`**: Optional. Mirrors the kind-level `hooks` shape but only `render` is honored on a
-  resource — `dependents` and `validate` are kind-scoped concepts and the loader rejects them on
-  a resource with a clear error. Resource-local render hooks let resource definers tweak the
-  rendered bundle without expanding the kind spec. Each entry is `{path, access?}` (string
-  shorthand also accepted); paths resolve relative to the resource file's directory. The hooks
-  are compiled on demand at render time (no kind.json entry) and run **after** the kind's
-  `render` + dependents but **before** the kind's `validate`. They share the same
-  `RenderHook(ctx, fs)` shape and capabilities as kind render hooks.
+  resource — `dependents`, `post_render`, and `validate` are kind-scoped concepts and the loader
+  rejects them on a resource with a clear error. Resource-local render hooks let resource definers
+  tweak the rendered bundle without expanding the kind spec. Each entry is `{path, access?}`
+  (string shorthand also accepted); paths resolve relative to the resource file's directory. The
+  hooks are compiled on demand at render time (no kind.json entry) and run **after** the kind's
+  `render` + dependents but **before** the kind's `post_render` and `validate`. They share the
+  same `RenderHook(ctx, fs)` shape and capabilities as kind render hooks.
 
   ```yaml
   metadata:
