@@ -346,14 +346,17 @@ func loadConfig(path string) (*veilv1.VeilConfigDefinition, error) {
 
 func loadKind(path string) (*Kind, error) {
 	// loadKind has to read the kind file into a generic map first so
-	// it can expand the `hooks.render` string shorthand before
-	// protojson sees the document — protojson rejects the bare-string
-	// form, so the shorthand has to be normalized at the map layer.
+	// it can expand the `hooks.{render,validate}` string shorthand
+	// before protojson sees the document — protojson rejects the
+	// bare-string form, so the shorthand has to be normalized at the
+	// map layer.
 	var raw map[string]any
 	if err := protoencode.ReadFile(path, &raw); err != nil {
 		return nil, err
 	}
-	expandRenderHookShorthand(raw)
+	if hooks, ok := raw["hooks"].(map[string]any); ok {
+		protoencode.ExpandHookShorthand(hooks)
+	}
 	jsonBytes, err := json.Marshal(raw)
 	if err != nil {
 		return nil, fmt.Errorf("re-encoding %s for protojson: %w", path, err)
@@ -369,26 +372,4 @@ func loadKind(path string) (*Kind, error) {
 		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
 	return &Kind{KindDefinition: &pk, Path: path, Dir: filepath.Dir(path)}, nil
-}
-
-// expandRenderHookShorthand rewrites any string entry in `hooks.render`
-// into the full `{path: <string>}` object form. Authors can write
-// `"render": ["./hooks/foo.ts"]` as shorthand for the proto-defined
-// RenderHookDefinition shape; protojson rejects the bare string, so we
-// normalize before unmarshalling. Mutates doc in place.
-func expandRenderHookShorthand(doc map[string]any) {
-	hooks, ok := doc["hooks"].(map[string]any)
-	if !ok {
-		return
-	}
-	render, ok := hooks["render"].([]any)
-	if !ok {
-		return
-	}
-	for i, entry := range render {
-		if s, ok := entry.(string); ok {
-			render[i] = map[string]any{"path": s}
-		}
-	}
-	hooks["render"] = render
 }
