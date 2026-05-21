@@ -43,6 +43,12 @@ message Hooks {
   // inlined params JSON Schema so render does not need access to the
   // original kind directory.
   repeated DependentHook dependents = 2;
+
+  // Compiled validation hooks that run after every other lifecycle
+  // point has completed. Bundle / ctx mutations from these hooks are
+  // discarded; only the returned `ValidationIssue` entries (or thrown
+  // errors) are observable. Mirrors HooksDefinition.validate.
+  repeated Hook validate = 3;
 }
 
 // Registry is the top-level index written to <out>/registry.json by

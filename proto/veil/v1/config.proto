@@ -179,6 +179,17 @@ message HooksDefinition {
   // dependency on this one, plus the params schema the consumer must
   // supply. See SPEC.md "Dependencies" for the full design.
   repeated DependentDefinition dependents = 2;
+
+  // Validation hooks that run after every other lifecycle point
+  // (kind.render, dependents, and resource-level render hooks) has
+  // completed. Each hook receives the same context + FS as render
+  // hooks but any mutations are discarded by the runner; the only
+  // observable output is the collection of `ValidationIssue` entries
+  // the hook returns (or throws). Every validate hook runs regardless
+  // of failures so the user sees every issue at once; the render
+  // fails at the end with an aggregated report if any issues are
+  // reported.
+  repeated RenderHookDefinition validate = 3;
 }
 
 // RenderHookDefinition is a single render-hook entry in kind.json: a

@@ -532,7 +532,17 @@ type HooksDefinition struct {
 	// hook(s) that run when a resource of that kind declares a
 	// dependency on this one, plus the params schema the consumer must
 	// supply. See SPEC.md "Dependencies" for the full design.
-	Dependents    []*DependentDefinition `protobuf:"bytes,2,rep,name=dependents,proto3" json:"dependents,omitempty"`
+	Dependents []*DependentDefinition `protobuf:"bytes,2,rep,name=dependents,proto3" json:"dependents,omitempty"`
+	// Validation hooks that run after every other lifecycle point
+	// (kind.render, dependents, and resource-level render hooks) has
+	// completed. Each hook receives the same context + FS as render
+	// hooks but any mutations are discarded by the runner; the only
+	// observable output is the collection of `ValidationIssue` entries
+	// the hook returns (or throws). Every validate hook runs regardless
+	// of failures so the user sees every issue at once; the render
+	// fails at the end with an aggregated report if any issues are
+	// reported.
+	Validate      []*RenderHookDefinition `protobuf:"bytes,3,rep,name=validate,proto3" json:"validate,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -577,6 +587,13 @@ func (x *HooksDefinition) GetRender() []*RenderHookDefinition {
 func (x *HooksDefinition) GetDependents() []*DependentDefinition {
 	if x != nil {
 		return x.Dependents
+	}
+	return nil
+}
+
+func (x *HooksDefinition) GetValidate() []*RenderHookDefinition {
+	if x != nil {
+		return x.Validate
 	}
 	return nil
 }
@@ -869,12 +886,13 @@ const file_veil_v1_config_proto_rawDesc = "" +
 	"\tvariables\x18\x06 \x03(\v2&.veil.v1.KindDefinition.VariablesEntryB$\xbaH!\x9a\x01\x1e\"\x1cr\x1a2\x18^[a-zA-Z_][a-zA-Z0-9_]*$R\tvariables\x1aO\n" +
 	"\x0eVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +
-	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\"\x86\x01\n" +
+	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\"\xc1\x01\n" +
 	"\x0fHooksDefinition\x125\n" +
 	"\x06render\x18\x01 \x03(\v2\x1d.veil.v1.RenderHookDefinitionR\x06render\x12<\n" +
 	"\n" +
 	"dependents\x18\x02 \x03(\v2\x1c.veil.v1.DependentDefinitionR\n" +
-	"dependents\"c\n" +
+	"dependents\x129\n" +
+	"\bvalidate\x18\x03 \x03(\v2\x1d.veil.v1.RenderHookDefinitionR\bvalidate\"c\n" +
 	"\x14RenderHookDefinition\x12\x1e\n" +
 	"\x04path\x18\x01 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04path\x12+\n" +
@@ -938,15 +956,16 @@ var file_veil_v1_config_proto_depIdxs = []int32{
 	14, // 8: veil.v1.KindDefinition.variables:type_name -> veil.v1.KindDefinition.VariablesEntry
 	8,  // 9: veil.v1.HooksDefinition.render:type_name -> veil.v1.RenderHookDefinition
 	11, // 10: veil.v1.HooksDefinition.dependents:type_name -> veil.v1.DependentDefinition
-	9,  // 11: veil.v1.RenderHookDefinition.access:type_name -> veil.v1.HookAccess
-	10, // 12: veil.v1.HookAccess.env:type_name -> veil.v1.EnvAccess
-	5,  // 13: veil.v1.VeilConfigDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
-	5,  // 14: veil.v1.KindDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
-	15, // [15:15] is the sub-list for method output_type
-	15, // [15:15] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	8,  // 11: veil.v1.HooksDefinition.validate:type_name -> veil.v1.RenderHookDefinition
+	9,  // 12: veil.v1.RenderHookDefinition.access:type_name -> veil.v1.HookAccess
+	10, // 13: veil.v1.HookAccess.env:type_name -> veil.v1.EnvAccess
+	5,  // 14: veil.v1.VeilConfigDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
+	5,  // 15: veil.v1.KindDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
+	16, // [16:16] is the sub-list for method output_type
+	16, // [16:16] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_veil_v1_config_proto_init() }
