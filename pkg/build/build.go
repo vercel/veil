@@ -77,6 +77,8 @@ func VeilTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph *Kin
 	}
 	fmt.Fprintf(&b, renderHookContextTemplate, specTypeName)
 	b.WriteString(hookInterface)
+	b.WriteString("\n")
+	b.WriteString(validateHookInterface)
 	if dependentTypes != "" {
 		b.WriteString("\n")
 		b.WriteString(dependentTypes)
@@ -585,5 +587,41 @@ const hookInterface = `export interface RenderHook {
    * the returned Promise transparently before handing the result off.
    */
   render(ctx: RenderHookContext, fs: FS): FS | void | Promise<FS | void>;
+}
+`
+
+const validateHookInterface = `export interface ValidationIssue {
+  /** Required. Human-readable description of what failed. Surfaced
+   *  verbatim in the aggregated render report. */
+  message: string;
+  /** Optional FS path or JSON-pointer-style locator that pinpoints where
+   *  the issue lives (e.g. ` + "`sources/app.yaml`" + ` or ` + "`spec.replicas`" + `). */
+  path?: string;
+  /** Optional severity tag. ` + "`'error'`" + ` (the default) fails the render;
+   *  ` + "`'warning'`" + ` is reported but does not fail. */
+  severity?: 'error' | 'warning';
+}
+
+/** A validate hook may return an issue list, a single issue, a single
+ *  message string, or nothing. Throwing is treated as a single
+ *  error-severity issue. */
+export type ValidationResult =
+  | void
+  | string
+  | ValidationIssue
+  | Array<string | ValidationIssue>;
+
+export interface ValidateHook {
+  /**
+   * Called during ` + "`veil render`" + ` after every other lifecycle point has
+   * finished (kind render hooks, dependents, and any resource-level
+   * hooks). Receives the same RenderHookContext + FS as a render hook
+   * but is purely observational: any mutations the hook makes to the
+   * FS or ctx are discarded by the runner. Returning a list of
+   * issues — or throwing — fails the render with an aggregated
+   * report. Every validate hook on the kind runs regardless of
+   * failures so authors see every issue at once. May be ` + "`async`" + `.
+   */
+  validate(ctx: RenderHookContext, fs: FS): ValidationResult | Promise<ValidationResult>;
 }
 `
