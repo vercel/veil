@@ -49,6 +49,13 @@ message Hooks {
   // discarded; only the returned `ValidationIssue` entries (or thrown
   // errors) are observable. Mirrors HooksDefinition.validate.
   repeated Hook validate = 3;
+
+  // Compiled post-render hooks. Run after resource-level render hooks
+  // and before validate; same RenderHook(ctx, fs) contract as
+  // Hooks.render but used for the kind's final normalization /
+  // formatting pass once resource customizations have applied.
+  // Mirrors HooksDefinition.post_render.
+  repeated Hook post_render = 4;
 }
 
 // Registry is the top-level index written to <out>/registry.json by

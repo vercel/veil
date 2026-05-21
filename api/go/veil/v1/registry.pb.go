@@ -118,7 +118,13 @@ type Hooks struct {
 	// point has completed. Bundle / ctx mutations from these hooks are
 	// discarded; only the returned `ValidationIssue` entries (or thrown
 	// errors) are observable. Mirrors HooksDefinition.validate.
-	Validate      []*Hook `protobuf:"bytes,3,rep,name=validate,proto3" json:"validate,omitempty"`
+	Validate []*Hook `protobuf:"bytes,3,rep,name=validate,proto3" json:"validate,omitempty"`
+	// Compiled post-render hooks. Run after resource-level render hooks
+	// and before validate; same RenderHook(ctx, fs) contract as
+	// Hooks.render but used for the kind's final normalization /
+	// formatting pass once resource customizations have applied.
+	// Mirrors HooksDefinition.post_render.
+	PostRender    []*Hook `protobuf:"bytes,4,rep,name=post_render,json=postRender,proto3" json:"post_render,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -170,6 +176,13 @@ func (x *Hooks) GetDependents() []*DependentHook {
 func (x *Hooks) GetValidate() []*Hook {
 	if x != nil {
 		return x.Validate
+	}
+	return nil
+}
+
+func (x *Hooks) GetPostRender() []*Hook {
+	if x != nil {
+		return x.PostRender
 	}
 	return nil
 }
@@ -441,13 +454,15 @@ const file_veil_v1_registry_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aO\n" +
 	"\x0eVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +
-	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\"\x91\x01\n" +
+	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\"\xc1\x01\n" +
 	"\x05Hooks\x12%\n" +
 	"\x06render\x18\x01 \x03(\v2\r.veil.v1.HookR\x06render\x126\n" +
 	"\n" +
 	"dependents\x18\x02 \x03(\v2\x16.veil.v1.DependentHookR\n" +
 	"dependents\x12)\n" +
-	"\bvalidate\x18\x03 \x03(\v2\r.veil.v1.HookR\bvalidate\"\xb0\x01\n" +
+	"\bvalidate\x18\x03 \x03(\v2\r.veil.v1.HookR\bvalidate\x12.\n" +
+	"\vpost_render\x18\x04 \x03(\v2\r.veil.v1.HookR\n" +
+	"postRender\"\xb0\x01\n" +
 	"\bRegistry\x12R\n" +
 	"\x05kinds\x18\x01 \x03(\v2\x1c.veil.v1.Registry.KindsEntryB\x1e\xbaH\x1b\x9a\x01\x18\"\x16r\x142\x12^[a-z][a-z0-9_-]*$R\x05kinds\x1aP\n" +
 	"\n" +
@@ -506,16 +521,17 @@ var file_veil_v1_registry_proto_depIdxs = []int32{
 	4,  // 3: veil.v1.Hooks.render:type_name -> veil.v1.Hook
 	5,  // 4: veil.v1.Hooks.dependents:type_name -> veil.v1.DependentHook
 	4,  // 5: veil.v1.Hooks.validate:type_name -> veil.v1.Hook
-	8,  // 6: veil.v1.Registry.kinds:type_name -> veil.v1.Registry.KindsEntry
-	9,  // 7: veil.v1.Hook.access:type_name -> veil.v1.HookAccess
-	4,  // 8: veil.v1.DependentHook.hooks:type_name -> veil.v1.Hook
-	10, // 9: veil.v1.Kind.VariablesEntry.value:type_name -> veil.v1.Variable
-	3,  // 10: veil.v1.Registry.KindsEntry.value:type_name -> veil.v1.RegistryEntry
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	4,  // 6: veil.v1.Hooks.post_render:type_name -> veil.v1.Hook
+	8,  // 7: veil.v1.Registry.kinds:type_name -> veil.v1.Registry.KindsEntry
+	9,  // 8: veil.v1.Hook.access:type_name -> veil.v1.HookAccess
+	4,  // 9: veil.v1.DependentHook.hooks:type_name -> veil.v1.Hook
+	10, // 10: veil.v1.Kind.VariablesEntry.value:type_name -> veil.v1.Variable
+	3,  // 11: veil.v1.Registry.KindsEntry.value:type_name -> veil.v1.RegistryEntry
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_veil_v1_registry_proto_init() }
