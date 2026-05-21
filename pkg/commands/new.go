@@ -324,6 +324,13 @@ func runNewHookOnKind(ctx context.Context, cwd, name, kindName string, p interac
 // dir matches the path the resource yaml declares) and the resource's
 // metadata.hooks.render array gets the new entry. No build re-run —
 // resource hooks compile on demand at render time.
+//
+// Resource hooks reuse the kind's generated TS surface (Spec, FS,
+// RenderHook, Dependency, etc.) so the scaffolder writes a
+// veil-types.ts next to the hook by calling the same build.VeilTypes
+// generator the kind compiler uses. The generator output is keyed to
+// the resource's kind, so authors get the same IDE completion they'd
+// get inside the kind's own hooks/src/.
 func runNewHookOnResource(cwd, name, resourcePath string, p interact.Printer) error {
 	abs := resourcePath
 	if !filepath.IsAbs(abs) {
@@ -336,8 +343,38 @@ func runNewHookOnResource(cwd, name, resourcePath string, p interact.Printer) er
 		return fmt.Errorf("%s does not look like a resource file (no metadata.kind)", resourcePath)
 	}
 
+	kindName, err := resourceKindName(abs)
+	if err != nil {
+		return err
+	}
+
+	reg, err := config.Discover(cwd)
+	if err != nil {
+		return err
+	}
+	var k *config.Kind
+	for _, candidate := range reg.Kinds {
+		if candidate.Name == kindName {
+			k = candidate
+			break
+		}
+	}
+	if k == nil {
+		return fmt.Errorf("resource references kind %q but no such kind is registered in veil.json", kindName)
+	}
+	graph, err := build.BuildGraph(reg.Kinds)
+	if err != nil {
+		return fmt.Errorf("building kind graph: %w", err)
+	}
+	types, err := build.VeilTypes(k, reg.Variables, graph)
+	if err != nil {
+		return fmt.Errorf("generating veil-types.ts for resource hook: %w", err)
+	}
+
 	resourceDir := filepath.Dir(abs)
-	outPath := filepath.Join(resourceDir, "hooks", name+".ts")
+	hooksDir := filepath.Join(resourceDir, "hooks")
+	outPath := filepath.Join(hooksDir, name+".ts")
+	typesPath := filepath.Join(hooksDir, "veil-types.ts")
 	if _, err := os.Stat(outPath); err == nil {
 		return fmt.Errorf("hook %s already exists", outPath)
 	}
@@ -345,9 +382,29 @@ func runNewHookOnResource(cwd, name, resourcePath string, p interact.Printer) er
 	var rb rollback
 	defer rb.run()
 
-	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
 		return fmt.Errorf("creating hooks directory: %w", err)
 	}
+
+	// veil-types.ts may already exist (from a prior `veil new hook
+	// --resource` on the same resource). Overwrite either way — the
+	// output is fully derived from the current kind state. Snapshot
+	// the prior bytes so a downstream failure restores them.
+	typesExists := false
+	var prevTypes []byte
+	if data, err := os.ReadFile(typesPath); err == nil {
+		typesExists = true
+		prevTypes = data
+	}
+	if err := os.WriteFile(typesPath, []byte(types), 0644); err != nil {
+		return fmt.Errorf("writing veil-types.ts: %w", err)
+	}
+	if typesExists {
+		rb.restoreFile(typesPath, prevTypes)
+	} else {
+		rb.removeFile(typesPath)
+	}
+
 	ts := build.HookTemplate(name)
 	if err := os.WriteFile(outPath, []byte(ts), 0644); err != nil {
 		return fmt.Errorf("writing hook: %w", err)
@@ -367,6 +424,25 @@ func runNewHookOnResource(cwd, name, resourcePath string, p interact.Printer) er
 	p.Successf("Scaffolded hook %s (registered on %s)", outPath, abs)
 	rb.commit()
 	return nil
+}
+
+// resourceKindName reads metadata.kind out of a resource file. Used by
+// the resource-hook scaffolder to figure out which kind's types to
+// generate next to the hook.
+func resourceKindName(path string) (string, error) {
+	var raw map[string]any
+	if err := protoencode.ReadFile(path, &raw); err != nil {
+		return "", fmt.Errorf("reading %s: %w", path, err)
+	}
+	meta, _ := raw["metadata"].(map[string]any)
+	if meta == nil {
+		return "", fmt.Errorf("%s: missing metadata block", path)
+	}
+	kind, _ := meta["kind"].(string)
+	if kind == "" {
+		return "", fmt.Errorf("%s: metadata.kind is not set", path)
+	}
+	return kind, nil
 }
 
 // detectHookParent scans cwd looking for an unambiguous kind or

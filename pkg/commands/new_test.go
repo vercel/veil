@@ -269,6 +269,15 @@ func (s *NewSuite) TestNewHookAppendsToResource() {
 	s.Require().NoError(err)
 	s.Contains(string(contents), "const annotate: RenderHook")
 
+	// veil-types.ts must land next to the hook so the import resolves.
+	typesPath := filepath.Join(s.root, "hooks", "veil-types.ts")
+	s.FileExists(typesPath)
+	types, err := os.ReadFile(typesPath)
+	s.Require().NoError(err)
+	s.Contains(string(types), "export interface WorkerSpec")
+	s.Contains(string(types), "export interface RenderHook")
+	s.Contains(string(types), "export interface ValidateHook")
+
 	res := s.readJSON(resourcePath)
 	meta := res["metadata"].(map[string]any)
 	hooks := meta["hooks"].(map[string]any)
@@ -337,6 +346,32 @@ func (s *NewSuite) TestNewHookAutoDetectsKindFromCwd() {
 
 	hookPath := filepath.Join(kindDir, "hooks", "src", "annotate.ts")
 	s.FileExists(hookPath)
+}
+
+func (s *NewSuite) TestNewHookRegeneratesResourceVeilTypesOnSecondInvocation() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+	_, err = s.run("new", "resource", "my-worker", "--kind", "worker")
+	s.Require().NoError(err)
+
+	resourcePath := filepath.Join(s.root, "my-worker.json")
+
+	_, err = s.run("new", "hook", "first", "--resource", resourcePath)
+	s.Require().NoError(err)
+
+	// Overwrite the on-disk veil-types.ts with garbage; the second
+	// `new hook` invocation should regenerate it (and the rest of the
+	// pipeline should still leave the file in a valid state).
+	typesPath := filepath.Join(s.root, "hooks", "veil-types.ts")
+	s.Require().NoError(os.WriteFile(typesPath, []byte("// stale"), 0644))
+
+	_, err = s.run("new", "hook", "second", "--resource", resourcePath)
+	s.Require().NoError(err)
+
+	types, err := os.ReadFile(typesPath)
+	s.Require().NoError(err)
+	s.Contains(string(types), "export interface WorkerSpec")
+	s.NotContains(string(types), "// stale")
 }
 
 func (s *NewSuite) TestNewHookAutoDetectRefusesAmbiguousResources() {
