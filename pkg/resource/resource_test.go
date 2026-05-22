@@ -30,7 +30,7 @@ spec: {}
 	r, err := Load(fsys, "svc/foo.yaml")
 	s.Require().NoError(err)
 
-	hooks := r.RenderHooks()
+	hooks := r.RenderHooks
 	s.Require().Len(hooks, 2)
 	s.Equal("./hook-a.ts", hooks[0].GetPath())
 	s.Equal("./hook-b.ts", hooks[1].GetPath())

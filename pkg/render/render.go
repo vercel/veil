@@ -220,7 +220,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	// time (no kind.json entry — they belong to the resource). Run
 	// after the kind's render + dependents so they see the fully
 	// kind-rendered bundle.
-	resourceHooks := r.RenderHooks()
+	resourceHooks := r.RenderHooks
 	if len(resourceHooks) > 0 {
 		logger.Info("running resource hooks", "count", len(resourceHooks))
 		resourceDir := path.Dir(r.Path)

@@ -24,18 +24,13 @@ import (
 //
 // metadata.hooks.render entries arrive as google.protobuf.Value
 // (each entry may be a bare string path or a {path, access?} object).
-// Load parses them into typed RenderHookDefinitions once; the render
-// pipeline reads them via RenderHooks().
+// Load parses them into typed RenderHookDefinitions once and stashes
+// them on RenderHooks; the render pipeline reads them directly.
 type Resource struct {
 	*veilv1.Resource
-	Path string
-
-	renderHooks []*veilv1.RenderHookDefinition
+	Path        string
+	RenderHooks []*veilv1.RenderHookDefinition
 }
-
-// RenderHooks returns the parsed metadata.hooks.render entries.
-// Empty when the resource doesn't declare any.
-func (r *Resource) RenderHooks() []*veilv1.RenderHookDefinition { return r.renderHooks }
 
 // Load reads a single resource file from fsys, unmarshals it via
 // protojson, parses the polymorphic hook entries, and validates the
@@ -60,7 +55,7 @@ func Load(fsys fs.FS, path string) (*Resource, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading %s: metadata.hooks.render: %w", path, err)
 	}
-	return &Resource{Resource: r, Path: path, renderHooks: parsed}, nil
+	return &Resource{Resource: r, Path: path, RenderHooks: parsed}, nil
 }
 
 // validateResourceHooks rejects the kind-only lifecycles when a
