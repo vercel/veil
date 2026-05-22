@@ -475,7 +475,15 @@ func formatNumberLiteral(f float64) string {
 // so plain relative paths like "data.txt" or "config/env.yaml" are what
 // hooks should use. `ctx.root` is the absolute root path, exposed for
 // logging or display.
-const hostInterfaces = `export interface Std {
+const hostInterfaces = `export interface YamlCodec {
+  /** Parse a YAML string into a JS value. Throws on malformed YAML. */
+  parse(s: string): unknown;
+  /** Serialize a JS value to YAML. Output uses 2-space indent and
+   *  alphabetized keys (the gopkg.in/yaml.v3 default for maps). */
+  stringify(value: unknown): string;
+}
+
+export interface Std {
   /** Read the entire file as a string, or null on failure. The path is
    *  resolved relative to the veil project root — the first ancestor
    *  directory (walking up from where ` + "`veil`" + ` was invoked) that
@@ -483,6 +491,10 @@ const hostInterfaces = `export interface Std {
   loadFile(path: string): string | null;
   /** Read the value of an environment variable, or undefined if unset. */
   getenv(name: string): string | undefined;
+  /** YAML codec — parse and stringify without an npm dependency. Backed
+   *  by gopkg.in/yaml.v3 on the host side. JSON is available via the
+   *  native JSON global. */
+  yaml: YamlCodec;
 }
 
 /** File metadata returned by os.stat / os.lstat. All values are numbers. */

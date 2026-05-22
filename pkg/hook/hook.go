@@ -7,6 +7,7 @@
 package hook
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/fastschema/qjs"
 	"github.com/go-sourcemap/sourcemap"
 	"github.com/goccy/go-json"
+	yaml "gopkg.in/yaml.v3"
 )
 
 // Defaults applied when no corresponding Option is passed to New.
@@ -405,18 +407,20 @@ func New(code string, opts ...Option) (Hook, error) {
 	}
 	fsVal.Free()
 
-	// Bind the Go-side fetch handler. installFetch sets it as a temporary
-	// __veilFetch global that the host-namespace lockdown step closes over
-	// and then deletes — hooks themselves never see __veilFetch.
-	if err := installFetch(rt, cfg); err != nil {
+	// Bind the Go-side host functions (fetch + yaml codec) as
+	// temporary globals (__veilFetch, __veilYamlParse,
+	// __veilYamlStringify). The host-namespace lockdown step closes
+	// over them and deletes the raw bindings.
+	if err := installHostFuncs(rt, cfg); err != nil {
 		rt.Close()
-		return nil, fmt.Errorf("installing fetch binding: %w", err)
+		return nil, fmt.Errorf("installing host bindings: %w", err)
 	}
 
 	// Build the read-only std/os proxies, wrap fetch as a Promise-returning
 	// polyfill, bundle them into globalThis.__veilHost, and delete the raw
-	// std/os/__veilFetch globals. After this, the only surface hook code
-	// can reach is what we splice into ctx.std/ctx.os/ctx.fetch per call.
+	// std/os/__veilFetch/__veilYaml* globals. After this, the only surface
+	// hook code can reach is what we splice into ctx.std/ctx.os/ctx.fetch
+	// per call.
 	hostVal, err := rt.Eval("veil-host.js", qjs.Code(hostNamespaceJS))
 	if err != nil {
 		rt.Close()
@@ -475,11 +479,66 @@ type fetchResponseShape struct {
 	Body    string            `json:"body"`
 }
 
-// installFetch binds `__veilFetch(optsJSON) string` as a temporary global.
-// The host-namespace lockdown script closes over it to expose fetch on
-// hook contexts, then deletes the global. Enforces the allowlist, timeout,
-// and response-size cap configured via WithHTTP.
-func installFetch(rt *qjs.Runtime, cfg options) error {
+// installHostFuncs binds every Go-side host function the runtime needs
+// (fetch + the YAML codec helpers) onto the QuickJS global as a single
+// step. Bundling them avoids a subtle interaction where freeing the
+// global handle between separate install passes left subsequent
+// SetPropertyStr calls operating on a stale view of the object —
+// surfacing later as "TypeError: not an object" when the host-namespace
+// IIFE ran.
+func installHostFuncs(rt *qjs.Runtime, cfg options) error {
+	fetchFn, err := newFetchFunc(rt, cfg)
+	if err != nil {
+		return fmt.Errorf("wrapping fetch: %w", err)
+	}
+	parseFn, err := qjs.FuncToJS(rt.Context(), func(s string) (string, error) {
+		var v any
+		if err := yaml.Unmarshal([]byte(s), &v); err != nil {
+			return "", fmt.Errorf("yaml.parse: %w", err)
+		}
+		out, err := json.Marshal(v)
+		if err != nil {
+			return "", fmt.Errorf("yaml.parse: %w", err)
+		}
+		return string(out), nil
+	})
+	if err != nil {
+		return fmt.Errorf("wrapping yaml.parse: %w", err)
+	}
+	stringifyFn, err := qjs.FuncToJS(rt.Context(), func(jsonStr string) (string, error) {
+		var v any
+		if err := json.Unmarshal([]byte(jsonStr), &v); err != nil {
+			return "", fmt.Errorf("yaml.stringify: %w", err)
+		}
+		var buf bytes.Buffer
+		enc := yaml.NewEncoder(&buf)
+		enc.SetIndent(2)
+		if err := enc.Encode(v); err != nil {
+			return "", fmt.Errorf("yaml.stringify: %w", err)
+		}
+		if err := enc.Close(); err != nil {
+			return "", fmt.Errorf("yaml.stringify: %w", err)
+		}
+		return buf.String(), nil
+	})
+	if err != nil {
+		return fmt.Errorf("wrapping yaml.stringify: %w", err)
+	}
+
+	global := rt.Context().Global()
+	defer global.Free()
+	global.SetPropertyStr("__veilFetch", fetchFn)
+	global.SetPropertyStr("__veilYamlParse", parseFn)
+	global.SetPropertyStr("__veilYamlStringify", stringifyFn)
+	return nil
+}
+
+// newFetchFunc wraps the HTTP-fetch behavior in a `qjs.FuncToJS` value
+// so installHostFuncs can install it alongside the codec helpers. The
+// returned function takes an options JSON blob and returns a response
+// JSON blob; the JS-side polyfill in hostNamespaceJS rehydrates the
+// result into a Web-Fetch-shaped object.
+func newFetchFunc(rt *qjs.Runtime, cfg options) (*qjs.Value, error) {
 	timeoutMs := cfg.http.DefaultTimeoutMs
 	if timeoutMs <= 0 {
 		timeoutMs = DefaultHTTPTimeoutMs
@@ -569,18 +628,15 @@ func installFetch(rt *qjs.Runtime, cfg options) error {
 		return string(out), nil
 	})
 	if err != nil {
-		return fmt.Errorf("wrapping Go function: %w", err)
+		return nil, err
 	}
-
-	global := rt.Context().Global()
-	defer global.Free()
-	global.SetPropertyStr("__veilFetch", fn)
-	return nil
+	return fn, nil
 }
 
 // hostNamespaceJS is the final init step. It closes over the raw
-// std/os/__veilFetch globals, exposes only the read-only / Promise-shaped
-// proxies on globalThis.__veilHost, and replaces the originals so hook
+// std/os/__veilFetch/__veilYaml* globals, exposes only the read-only /
+// Promise-shaped proxies on globalThis.__veilHost, and replaces the
+// originals so hook
 // code can't reach the dangerous bindings. The per-call render script
 // splices the proxies onto ctx.std / ctx.os / ctx.fetch.
 //
@@ -651,9 +707,23 @@ const hostNamespaceJS = `
     });
   }
 
+  var nativeYamlParse = globalThis.__veilYamlParse;
+  var nativeYamlStringify = globalThis.__veilYamlStringify;
+
+  var yamlCodec = {
+    parse: function(s) {
+      if (s == null) throw new Error('std.yaml.parse: input is required');
+      return JSON.parse(nativeYamlParse(String(s)));
+    },
+    stringify: function(value) {
+      return nativeYamlStringify(JSON.stringify(value == null ? null : value));
+    }
+  };
+
   var stdProxy = {
     loadFile: function(path) { return nativeStd.loadFile(path); },
-    getenv:   function(name) { return nativeStd.getenv(name); }
+    getenv:   function(name) { return nativeStd.getenv(name); },
+    yaml:     yamlCodec
   };
   var osProxy = {
     readdir:  function(p) { return nativeOs.readdir(p); },
@@ -679,6 +749,8 @@ const hostNamespaceJS = `
 
   delete globalThis.os;
   delete globalThis.__veilFetch;
+  delete globalThis.__veilYamlParse;
+  delete globalThis.__veilYamlStringify;
 })();
 `
 
