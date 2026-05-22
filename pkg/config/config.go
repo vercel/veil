@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/goccy/go-json"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
@@ -345,31 +344,26 @@ func loadConfig(path string) (*veilv1.VeilConfigDefinition, error) {
 }
 
 func loadKind(path string) (*Kind, error) {
-	// loadKind has to read the kind file into a generic map first so
-	// it can expand the `hooks.{render,validate}` string shorthand
-	// before protojson sees the document — protojson rejects the
-	// bare-string form, so the shorthand has to be normalized at the
-	// map layer.
-	var raw map[string]any
-	if err := protoencode.ReadFile(path, &raw); err != nil {
-		return nil, err
-	}
-	if hooks, ok := raw["hooks"].(map[string]any); ok {
-		protoencode.ExpandHookShorthand(hooks)
-	}
-	jsonBytes, err := json.Marshal(raw)
+	// The kind file's `hooks.{render,validate,post_render}` arrays
+	// accept a bare-string shorthand (`["./hooks/foo.ts"]`) that
+	// protojson rejects. ReadProtoFileWithRewrite hands us the parsed
+	// generic map before protojson sees it; we expand the shorthand
+	// in place and the helper finishes the round-trip into the proto.
+	pk := &veilv1.KindDefinition{}
+	err := protoencode.ReadProtoFileWithRewrite(path, pk, func(doc map[string]any) error {
+		if hooks, ok := doc["hooks"].(map[string]any); ok {
+			protoencode.ExpandHookShorthand(hooks)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("re-encoding %s for protojson: %w", path, err)
-	}
-	var pk veilv1.KindDefinition
-	if err := protoencode.Unmarshal.Unmarshal(jsonBytes, &pk); err != nil {
 		return nil, err
 	}
-	if err := protoencode.Validate(&pk); err != nil {
+	if err := protoencode.Validate(pk); err != nil {
 		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
 	if err := validateDependents(pk.GetHooks().GetDependents()); err != nil {
 		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
-	return &Kind{KindDefinition: &pk, Path: path, Dir: filepath.Dir(path)}, nil
+	return &Kind{KindDefinition: pk, Path: path, Dir: filepath.Dir(path)}, nil
 }

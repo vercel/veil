@@ -187,20 +187,71 @@ func ReadProtoFS(fsys fs.FS, p string, m proto.Message) error {
 // that already hold an io.Reader (registry HTTP fetches, embedded
 // resources) can reuse the same dispatch.
 func DecodeProto(p string, r io.Reader, m proto.Message) error {
-	if IsYAML(p) {
-		var doc any
-		if err := yaml.NewDecoder(r).Decode(&doc); err != nil {
-			return fmt.Errorf("decoding %s as YAML: %w", p, err)
-		}
-		bytes, err := stdjson.Marshal(doc)
+	return DecodeProtoWithRewrite(p, r, m, nil)
+}
+
+// ReadProtoFileWithRewrite is the rewriting variant of ReadProtoFile:
+// the source is decoded into a generic map first, handed to `rewrite`
+// for in-place mutation, and only then unmarshalled into m via the
+// shared protojson configuration. Use this when the on-disk shape
+// accepts shorthand or extension fields that protojson can't see —
+// the rewrite step turns them into something the proto can decode
+// without callers having to glue together
+// `ReadFile + json.Marshal + Unmarshal.Unmarshal` by hand.
+//
+// `rewrite` may be nil, in which case this is identical to
+// ReadProtoFile.
+func ReadProtoFileWithRewrite(p string, m proto.Message, rewrite func(map[string]any) error) error {
+	f, err := os.Open(p)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return DecodeProtoWithRewrite(p, f, m, rewrite)
+}
+
+// ReadProtoFSWithRewrite is the fs.FS variant of
+// ReadProtoFileWithRewrite.
+func ReadProtoFSWithRewrite(fsys fs.FS, p string, m proto.Message, rewrite func(map[string]any) error) error {
+	f, err := fsys.Open(p)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return DecodeProtoWithRewrite(p, f, m, rewrite)
+}
+
+// DecodeProtoWithRewrite decodes one document from r into a generic
+// map (handling both JSON and YAML via the extension on p), invokes
+// `rewrite` to mutate the map in place if non-nil, then marshals the
+// result through protojson into m.
+//
+// When `rewrite` is nil and p is .json, the original byte stream is
+// passed straight to protojson — saves the round-trip through a
+// generic map for the common case.
+func DecodeProtoWithRewrite(p string, r io.Reader, m proto.Message, rewrite func(map[string]any) error) error {
+	// Fast path: a JSON source with no rewrite can go straight to
+	// protojson without round-tripping through a generic map.
+	if rewrite == nil && !IsYAML(p) {
+		bytes, err := io.ReadAll(r)
 		if err != nil {
-			return fmt.Errorf("re-encoding %s as JSON for protojson: %w", p, err)
+			return fmt.Errorf("reading %s: %w", p, err)
 		}
 		return Unmarshal.Unmarshal(bytes, m)
 	}
-	bytes, err := io.ReadAll(r)
+
+	var doc map[string]any
+	if err := DecodeReader(p, r, &doc); err != nil {
+		return err
+	}
+	if rewrite != nil {
+		if err := rewrite(doc); err != nil {
+			return err
+		}
+	}
+	bytes, err := stdjson.Marshal(doc)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", p, err)
+		return fmt.Errorf("re-encoding %s as JSON for protojson: %w", p, err)
 	}
 	return Unmarshal.Unmarshal(bytes, m)
 }
