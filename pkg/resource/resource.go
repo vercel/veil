@@ -8,11 +8,11 @@
 package resource
 
 import (
-	"bytes"
 	"fmt"
 	"io/fs"
 
-	"github.com/goccy/go-json"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/protoencode"
@@ -21,23 +21,27 @@ import (
 // Resource pairs a proto-defined Resource with the fs.FS-relative
 // path it was loaded from. The path is needed to resolve overlay
 // references but isn't part of the Resource's wire shape.
+//
+// metadata.hooks.render entries arrive as google.protobuf.Value
+// (each entry may be a bare string path or a {path, access?} object).
+// Load parses them into typed RenderHookDefinitions once; the render
+// pipeline reads them via RenderHooks().
 type Resource struct {
 	*veilv1.Resource
 	Path string
+
+	renderHooks []*veilv1.RenderHookDefinition
 }
 
-// Load reads a single resource file from fsys and returns its parsed
-// form.
-//
-// Resource yaml accepts `metadata.hooks.render: ["./hooks/foo.ts"]`
-// as bare-string shorthand for the full RenderHookDefinition shape;
-// expandHookShorthand normalizes that into the form protojson
-// understands before unmarshalling.
-//
-// After unmarshal we validate on the proto: resources only support
-// the `render` lifecycle under metadata.hooks. The other lifecycles
-// (dependents, validate, post_render) are kind-scoped — letting a
-// resource quietly populate them would shadow the kind's own hooks.
+// RenderHooks returns the parsed metadata.hooks.render entries.
+// Empty when the resource doesn't declare any.
+func (r *Resource) RenderHooks() []*veilv1.RenderHookDefinition { return r.renderHooks }
+
+// Load reads a single resource file from fsys, unmarshals it via
+// protojson, parses the polymorphic hook entries, and validates the
+// result. Resources only support the `render` lifecycle under
+// metadata.hooks; the other lifecycles (dependents, validate,
+// post_render) are kind-scoped and rejected here.
 func Load(fsys fs.FS, path string) (*Resource, error) {
 	f, err := fsys.Open(path)
 	if err != nil {
@@ -45,33 +49,22 @@ func Load(fsys fs.FS, path string) (*Resource, error) {
 	}
 	defer f.Close()
 
-	var doc map[string]any
-	if err := protoencode.Decode(f, &doc); err != nil {
-		return nil, fmt.Errorf("loading %s: %w", path, err)
-	}
-	if md, ok := doc["metadata"].(map[string]any); ok {
-		if hooks, ok := md["hooks"].(map[string]any); ok {
-			expandHookShorthand(hooks)
-		}
-	}
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		return nil, fmt.Errorf("loading %s: re-encoding for protojson: %w", path, err)
-	}
 	r := &veilv1.Resource{}
-	if err := protoencode.UnmarshalProto(bytes.NewReader(raw), r); err != nil {
+	if err := protoencode.UnmarshalProto(f, r); err != nil {
 		return nil, fmt.Errorf("loading %s: %w", path, err)
 	}
 	if err := validateResourceHooks(r.GetMetadata().GetHooks()); err != nil {
 		return nil, fmt.Errorf("loading %s: %w", path, err)
 	}
-	return &Resource{Resource: r, Path: path}, nil
+	parsed, err := parseHookEntries(r.GetMetadata().GetHooks().GetRender())
+	if err != nil {
+		return nil, fmt.Errorf("loading %s: metadata.hooks.render: %w", path, err)
+	}
+	return &Resource{Resource: r, Path: path, renderHooks: parsed}, nil
 }
 
 // validateResourceHooks rejects the kind-only lifecycles when a
-// resource declares them on metadata.hooks. Operates on the
-// unmarshalled proto so the checks read like ordinary proto-field
-// validation, no generic-map gymnastics.
+// resource declares them on metadata.hooks.
 func validateResourceHooks(hooks *veilv1.HooksDefinition) error {
 	if hooks == nil {
 		return nil
@@ -88,26 +81,46 @@ func validateResourceHooks(hooks *veilv1.HooksDefinition) error {
 	return nil
 }
 
-// expandHookShorthand rewrites bare-string entries inside the
-// HooksDefinition-shaped sub-map into the proto's full
-// `{path: <string>}` form. Local helper rather than a shared
-// utility because the shorthand is a YAML/JSON convenience layer
-// specific to resource and kind loading — protoencode shouldn't
-// know what a HooksDefinition is.
-func expandHookShorthand(hooks map[string]any) {
-	if hooks == nil {
-		return
+// parseHookEntries narrows each on-wire google.protobuf.Value into a
+// RenderHookDefinition. Identical in spirit to the version in
+// pkg/config — both wrap the same wire polymorphism but at different
+// load points (kind vs resource).
+func parseHookEntries(entries []*structpb.Value) ([]*veilv1.RenderHookDefinition, error) {
+	out := make([]*veilv1.RenderHookDefinition, 0, len(entries))
+	for i, v := range entries {
+		def, err := parseHookEntry(v)
+		if err != nil {
+			return nil, fmt.Errorf("[%d]: %w", i, err)
+		}
+		out = append(out, def)
 	}
-	for _, key := range []string{"render", "validate", "post_render"} {
-		arr, ok := hooks[key].([]any)
-		if !ok {
-			continue
+	return out, nil
+}
+
+func parseHookEntry(v *structpb.Value) (*veilv1.RenderHookDefinition, error) {
+	if v == nil {
+		return nil, fmt.Errorf("hook entry is nil")
+	}
+	switch kind := v.Kind.(type) {
+	case *structpb.Value_StringValue:
+		if kind.StringValue == "" {
+			return nil, fmt.Errorf("hook entry path is empty")
 		}
-		for i, entry := range arr {
-			if s, ok := entry.(string); ok {
-				arr[i] = map[string]any{"path": s}
-			}
+		return &veilv1.RenderHookDefinition{Path: kind.StringValue}, nil
+	case *structpb.Value_StructValue:
+		raw, err := protojson.Marshal(kind.StructValue)
+		if err != nil {
+			return nil, fmt.Errorf("marshalling hook entry: %w", err)
 		}
-		hooks[key] = arr
+		def := &veilv1.RenderHookDefinition{}
+		if err := protoencode.Unmarshal.Unmarshal(raw, def); err != nil {
+			return nil, fmt.Errorf("unmarshalling hook entry: %w", err)
+		}
+		if def.GetPath() == "" {
+			return nil, fmt.Errorf("hook entry object missing required `path` field")
+		}
+		return def, nil
+	default:
+		return nil, fmt.Errorf("hook entry must be a string path or {path, access?} object, got %T", v.Kind)
 	}
 }

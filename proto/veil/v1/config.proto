@@ -167,12 +167,20 @@ message KindDefinition {
 // that lifecycle point. Additional lifecycle points will be added as
 // fields on this message so the kind.json shape can extend without
 // breaking changes.
+//
+// Entries in the render / validate / post_render arrays are typed as
+// `google.protobuf.Value` so each entry can be EITHER a bare string
+// (treated as the hook's source path with no extra access grants) OR
+// an object matching RenderHookDefinition (path plus optional
+// `access` block). The wire format is whatever the user wrote;
+// the build pipeline converts each Value into a RenderHookDefinition
+// before compilation.
 message HooksDefinition {
   // Hooks run during `veil render` (each exports a Hook whose optional
-  // `renderHook(ctx, fs)` transforms the bundle). Each entry is an
-  // object with a required `path` plus optional `access` declaring the
-  // host resources the hook may read.
-  repeated RenderHookDefinition render = 1;
+  // `renderHook(ctx, fs)` transforms the bundle). See RenderHookDefinition
+  // for the full per-entry shape; a bare string is shorthand for
+  // `{path: <string>}` with no `access` grants.
+  repeated google.protobuf.Value render = 1;
 
   // Per-consumer dependent hooks. Each entry binds a consumer kind to
   // hook(s) that run when a resource of that kind declares a
@@ -189,7 +197,7 @@ message HooksDefinition {
   // validate hook runs regardless of failures so the user sees every
   // issue at once; the render fails at the end with an aggregated
   // report if any issues are reported.
-  repeated RenderHookDefinition validate = 3;
+  repeated google.protobuf.Value validate = 3;
 
   // Post-render hooks that run after resource-level render hooks but
   // before validate. Same `RenderHook(ctx, fs)` contract as the
@@ -199,7 +207,7 @@ message HooksDefinition {
   // from `render` lets a kind react to whatever resource hooks
   // produced (which the kind couldn't see at the `render` stage)
   // without giving up the deterministic last-mile pass.
-  repeated RenderHookDefinition post_render = 4;
+  repeated google.protobuf.Value post_render = 4;
 }
 
 // RenderHookDefinition is a single render-hook entry in kind.json: a

@@ -521,13 +521,21 @@ func (x *KindDefinition) GetVariables() map[string]*Variable {
 // that lifecycle point. Additional lifecycle points will be added as
 // fields on this message so the kind.json shape can extend without
 // breaking changes.
+//
+// Entries in the render / validate / post_render arrays are typed as
+// `google.protobuf.Value` so each entry can be EITHER a bare string
+// (treated as the hook's source path with no extra access grants) OR
+// an object matching RenderHookDefinition (path plus optional
+// `access` block). The wire format is whatever the user wrote;
+// the build pipeline converts each Value into a RenderHookDefinition
+// before compilation.
 type HooksDefinition struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Hooks run during `veil render` (each exports a Hook whose optional
-	// `renderHook(ctx, fs)` transforms the bundle). Each entry is an
-	// object with a required `path` plus optional `access` declaring the
-	// host resources the hook may read.
-	Render []*RenderHookDefinition `protobuf:"bytes,1,rep,name=render,proto3" json:"render,omitempty"`
+	// `renderHook(ctx, fs)` transforms the bundle). See RenderHookDefinition
+	// for the full per-entry shape; a bare string is shorthand for
+	// `{path: <string>}` with no `access` grants.
+	Render []*structpb.Value `protobuf:"bytes,1,rep,name=render,proto3" json:"render,omitempty"`
 	// Per-consumer dependent hooks. Each entry binds a consumer kind to
 	// hook(s) that run when a resource of that kind declares a
 	// dependency on this one, plus the params schema the consumer must
@@ -542,7 +550,7 @@ type HooksDefinition struct {
 	// validate hook runs regardless of failures so the user sees every
 	// issue at once; the render fails at the end with an aggregated
 	// report if any issues are reported.
-	Validate []*RenderHookDefinition `protobuf:"bytes,3,rep,name=validate,proto3" json:"validate,omitempty"`
+	Validate []*structpb.Value `protobuf:"bytes,3,rep,name=validate,proto3" json:"validate,omitempty"`
 	// Post-render hooks that run after resource-level render hooks but
 	// before validate. Same `RenderHook(ctx, fs)` contract as the
 	// `render` lifecycle — mutating, declaration-ordered — but their
@@ -551,7 +559,7 @@ type HooksDefinition struct {
 	// from `render` lets a kind react to whatever resource hooks
 	// produced (which the kind couldn't see at the `render` stage)
 	// without giving up the deterministic last-mile pass.
-	PostRender    []*RenderHookDefinition `protobuf:"bytes,4,rep,name=post_render,json=postRender,proto3" json:"post_render,omitempty"`
+	PostRender    []*structpb.Value `protobuf:"bytes,4,rep,name=post_render,json=postRender,proto3" json:"post_render,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -586,7 +594,7 @@ func (*HooksDefinition) Descriptor() ([]byte, []int) {
 	return file_veil_v1_config_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *HooksDefinition) GetRender() []*RenderHookDefinition {
+func (x *HooksDefinition) GetRender() []*structpb.Value {
 	if x != nil {
 		return x.Render
 	}
@@ -600,14 +608,14 @@ func (x *HooksDefinition) GetDependents() []*DependentDefinition {
 	return nil
 }
 
-func (x *HooksDefinition) GetValidate() []*RenderHookDefinition {
+func (x *HooksDefinition) GetValidate() []*structpb.Value {
 	if x != nil {
 		return x.Validate
 	}
 	return nil
 }
 
-func (x *HooksDefinition) GetPostRender() []*RenderHookDefinition {
+func (x *HooksDefinition) GetPostRender() []*structpb.Value {
 	if x != nil {
 		return x.PostRender
 	}
@@ -902,14 +910,14 @@ const file_veil_v1_config_proto_rawDesc = "" +
 	"\tvariables\x18\x06 \x03(\v2&.veil.v1.KindDefinition.VariablesEntryB$\xbaH!\x9a\x01\x1e\"\x1cr\x1a2\x18^[a-zA-Z_][a-zA-Z0-9_]*$R\tvariables\x1aO\n" +
 	"\x0eVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +
-	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\"\x81\x02\n" +
-	"\x0fHooksDefinition\x125\n" +
-	"\x06render\x18\x01 \x03(\v2\x1d.veil.v1.RenderHookDefinitionR\x06render\x12<\n" +
+	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\"\xec\x01\n" +
+	"\x0fHooksDefinition\x12.\n" +
+	"\x06render\x18\x01 \x03(\v2\x16.google.protobuf.ValueR\x06render\x12<\n" +
 	"\n" +
 	"dependents\x18\x02 \x03(\v2\x1c.veil.v1.DependentDefinitionR\n" +
-	"dependents\x129\n" +
-	"\bvalidate\x18\x03 \x03(\v2\x1d.veil.v1.RenderHookDefinitionR\bvalidate\x12>\n" +
-	"\vpost_render\x18\x04 \x03(\v2\x1d.veil.v1.RenderHookDefinitionR\n" +
+	"dependents\x122\n" +
+	"\bvalidate\x18\x03 \x03(\v2\x16.google.protobuf.ValueR\bvalidate\x127\n" +
+	"\vpost_render\x18\x04 \x03(\v2\x16.google.protobuf.ValueR\n" +
 	"postRender\"c\n" +
 	"\x14RenderHookDefinition\x12\x1e\n" +
 	"\x04path\x18\x01 \x01(\tB\n" +
@@ -972,10 +980,10 @@ var file_veil_v1_config_proto_depIdxs = []int32{
 	15, // 6: veil.v1.Variable.enum:type_name -> google.protobuf.Value
 	7,  // 7: veil.v1.KindDefinition.hooks:type_name -> veil.v1.HooksDefinition
 	14, // 8: veil.v1.KindDefinition.variables:type_name -> veil.v1.KindDefinition.VariablesEntry
-	8,  // 9: veil.v1.HooksDefinition.render:type_name -> veil.v1.RenderHookDefinition
+	15, // 9: veil.v1.HooksDefinition.render:type_name -> google.protobuf.Value
 	11, // 10: veil.v1.HooksDefinition.dependents:type_name -> veil.v1.DependentDefinition
-	8,  // 11: veil.v1.HooksDefinition.validate:type_name -> veil.v1.RenderHookDefinition
-	8,  // 12: veil.v1.HooksDefinition.post_render:type_name -> veil.v1.RenderHookDefinition
+	15, // 11: veil.v1.HooksDefinition.validate:type_name -> google.protobuf.Value
+	15, // 12: veil.v1.HooksDefinition.post_render:type_name -> google.protobuf.Value
 	9,  // 13: veil.v1.RenderHookDefinition.access:type_name -> veil.v1.HookAccess
 	10, // 14: veil.v1.HookAccess.env:type_name -> veil.v1.EnvAccess
 	5,  // 15: veil.v1.VeilConfigDefinition.VariablesEntry.value:type_name -> veil.v1.Variable

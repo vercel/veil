@@ -30,64 +30,7 @@
         "^(postRender)$": {
           "description": "Post-render hooks that run after resource-level render hooks but\n before validate. Same `RenderHook(ctx, fs)` contract as the\n `render` lifecycle — mutating, declaration-ordered — but their\n job is the kind's final word on normalization: consistent\n formatting, key ordering, banner stamping, etc. Splitting this\n from `render` lets a kind react to whatever resource hooks\n produced (which the kind couldn't see at the `render` stage)\n without giving up the deterministic last-mile pass.",
           "items": {
-            "description": "RenderHookDefinition is a single render-hook entry in kind.json: a\n path to the hook source file plus optional `access` declaring the\n host resources the hook may read.",
-            "oneOf": [
-              {
-                "description": "Path to the hook source file. Resolved relative to the enclosing\n kind.json file.",
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "access": {
-                    "additionalProperties": false,
-                    "description": "Optional declaration of host resources this hook needs (env vars,\n and eventually filesystem / network as they're added).",
-                    "properties": {
-                      "env": {
-                        "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
-                        "items": {
-                          "additionalProperties": false,
-                          "description": "EnvAccess names a single host environment variable a hook needs.",
-                          "properties": {
-                            "description": {
-                              "description": "A brief description of what this key is used for and why. Surfaced\n when the var is missing so the user can correct the issue.",
-                              "minLength": 1,
-                              "type": "string"
-                            },
-                            "name": {
-                              "description": "The env var being requested by the hook. Must match the conventions\n for valid POSIX environment-variable identifiers.",
-                              "minLength": 1,
-                              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "name",
-                            "description"
-                          ],
-                          "title": "Env Access",
-                          "type": "object"
-                        },
-                        "type": "array"
-                      }
-                    },
-                    "title": "Hook Access",
-                    "type": "object"
-                  },
-                  "path": {
-                    "description": "Path to the hook source file. Resolved relative to the enclosing\n kind.json file.",
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "path"
-                ],
-                "type": "object"
-              }
-            ],
-            "title": "Render Hook Definition"
+            "title": "Value"
           },
           "type": "array"
         }
@@ -139,197 +82,26 @@
         "post_render": {
           "description": "Post-render hooks that run after resource-level render hooks but\n before validate. Same `RenderHook(ctx, fs)` contract as the\n `render` lifecycle — mutating, declaration-ordered — but their\n job is the kind's final word on normalization: consistent\n formatting, key ordering, banner stamping, etc. Splitting this\n from `render` lets a kind react to whatever resource hooks\n produced (which the kind couldn't see at the `render` stage)\n without giving up the deterministic last-mile pass.",
           "items": {
-            "description": "RenderHookDefinition is a single render-hook entry in kind.json: a\n path to the hook source file plus optional `access` declaring the\n host resources the hook may read.",
-            "oneOf": [
-              {
-                "description": "Path to the hook source file. Resolved relative to the enclosing\n kind.json file.",
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "access": {
-                    "additionalProperties": false,
-                    "description": "Optional declaration of host resources this hook needs (env vars,\n and eventually filesystem / network as they're added).",
-                    "properties": {
-                      "env": {
-                        "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
-                        "items": {
-                          "additionalProperties": false,
-                          "description": "EnvAccess names a single host environment variable a hook needs.",
-                          "properties": {
-                            "description": {
-                              "description": "A brief description of what this key is used for and why. Surfaced\n when the var is missing so the user can correct the issue.",
-                              "minLength": 1,
-                              "type": "string"
-                            },
-                            "name": {
-                              "description": "The env var being requested by the hook. Must match the conventions\n for valid POSIX environment-variable identifiers.",
-                              "minLength": 1,
-                              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "name",
-                            "description"
-                          ],
-                          "title": "Env Access",
-                          "type": "object"
-                        },
-                        "type": "array"
-                      }
-                    },
-                    "title": "Hook Access",
-                    "type": "object"
-                  },
-                  "path": {
-                    "description": "Path to the hook source file. Resolved relative to the enclosing\n kind.json file.",
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "path"
-                ],
-                "type": "object"
-              }
-            ],
-            "title": "Render Hook Definition"
+            "title": "Value"
           },
           "type": "array"
         },
         "render": {
-          "description": "Hooks run during `veil render` (each exports a Hook whose optional\n `renderHook(ctx, fs)` transforms the bundle). Each entry is an\n object with a required `path` plus optional `access` declaring the\n host resources the hook may read.",
+          "description": "Hooks run during `veil render` (each exports a Hook whose optional\n `renderHook(ctx, fs)` transforms the bundle). See RenderHookDefinition\n for the full per-entry shape; a bare string is shorthand for\n `{path: \u003cstring\u003e}` with no `access` grants.",
           "items": {
-            "description": "RenderHookDefinition is a single render-hook entry in kind.json: a\n path to the hook source file plus optional `access` declaring the\n host resources the hook may read.",
-            "oneOf": [
-              {
-                "description": "Path to the hook source file. Resolved relative to the enclosing\n kind.json file.",
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "access": {
-                    "additionalProperties": false,
-                    "description": "Optional declaration of host resources this hook needs (env vars,\n and eventually filesystem / network as they're added).",
-                    "properties": {
-                      "env": {
-                        "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
-                        "items": {
-                          "additionalProperties": false,
-                          "description": "EnvAccess names a single host environment variable a hook needs.",
-                          "properties": {
-                            "description": {
-                              "description": "A brief description of what this key is used for and why. Surfaced\n when the var is missing so the user can correct the issue.",
-                              "minLength": 1,
-                              "type": "string"
-                            },
-                            "name": {
-                              "description": "The env var being requested by the hook. Must match the conventions\n for valid POSIX environment-variable identifiers.",
-                              "minLength": 1,
-                              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "name",
-                            "description"
-                          ],
-                          "title": "Env Access",
-                          "type": "object"
-                        },
-                        "type": "array"
-                      }
-                    },
-                    "title": "Hook Access",
-                    "type": "object"
-                  },
-                  "path": {
-                    "description": "Path to the hook source file. Resolved relative to the enclosing\n kind.json file.",
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "path"
-                ],
-                "type": "object"
-              }
-            ],
-            "title": "Render Hook Definition"
+            "title": "Value"
           },
           "type": "array"
         },
         "validate": {
           "description": "Validation hooks that run after every other lifecycle point\n (kind.render, dependents, resource-level render hooks, and\n post_render hooks) has completed. Each hook receives the same\n context + FS as render hooks but any mutations are discarded by\n the runner; the only observable output is the collection of\n `ValidationIssue` entries the hook returns (or throws). Every\n validate hook runs regardless of failures so the user sees every\n issue at once; the render fails at the end with an aggregated\n report if any issues are reported.",
           "items": {
-            "description": "RenderHookDefinition is a single render-hook entry in kind.json: a\n path to the hook source file plus optional `access` declaring the\n host resources the hook may read.",
-            "oneOf": [
-              {
-                "description": "Path to the hook source file. Resolved relative to the enclosing\n kind.json file.",
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "access": {
-                    "additionalProperties": false,
-                    "description": "Optional declaration of host resources this hook needs (env vars,\n and eventually filesystem / network as they're added).",
-                    "properties": {
-                      "env": {
-                        "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
-                        "items": {
-                          "additionalProperties": false,
-                          "description": "EnvAccess names a single host environment variable a hook needs.",
-                          "properties": {
-                            "description": {
-                              "description": "A brief description of what this key is used for and why. Surfaced\n when the var is missing so the user can correct the issue.",
-                              "minLength": 1,
-                              "type": "string"
-                            },
-                            "name": {
-                              "description": "The env var being requested by the hook. Must match the conventions\n for valid POSIX environment-variable identifiers.",
-                              "minLength": 1,
-                              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "name",
-                            "description"
-                          ],
-                          "title": "Env Access",
-                          "type": "object"
-                        },
-                        "type": "array"
-                      }
-                    },
-                    "title": "Hook Access",
-                    "type": "object"
-                  },
-                  "path": {
-                    "description": "Path to the hook source file. Resolved relative to the enclosing\n kind.json file.",
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "path"
-                ],
-                "type": "object"
-              }
-            ],
-            "title": "Render Hook Definition"
+            "title": "Value"
           },
           "type": "array"
         }
       },
-      "title": "Hooks Definition",
+      "title": "HooksDefinition groups a kind's hook files by lifecycle point. Each\n field is an ordered list; the order determines invocation order at\n that lifecycle point. Additional lifecycle points will be added as\n fields on this message so the kind.json shape can extend without\n breaking changes.",
       "type": "object"
     },
     "kind": {

@@ -220,22 +220,18 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	// time (no kind.json entry — they belong to the resource). Run
 	// after the kind's render + dependents so they see the fully
 	// kind-rendered bundle.
-	resourceHooks := r.GetMetadata().GetHooks().GetRender()
+	resourceHooks := r.RenderHooks()
 	if len(resourceHooks) > 0 {
 		logger.Info("running resource hooks", "count", len(resourceHooks))
 		resourceDir := path.Dir(r.Path)
 		for _, def := range resourceHooks {
-			hookPath := def.GetPath()
-			if hookPath == "" {
-				return nil, fmt.Errorf("metadata.hooks.render: entry has empty path")
-			}
-			compiled, err := compileResourceHook(opts.FS, resourceDir, hookPath, def.GetAccess())
+			compiled, err := compileResourceHook(opts.FS, resourceDir, def.GetPath(), def.GetAccess())
 			if err != nil {
-				return nil, fmt.Errorf("resource hook %s: %w", hookPath, err)
+				return nil, fmt.Errorf("resource hook %s: %w", def.GetPath(), err)
 			}
 			newBundle, err := invokeHook(logger, compiled, kindName, resourceName, ctx, bundle)
 			if err != nil {
-				return nil, fmt.Errorf("resource hook %s: %w", hookPath, err)
+				return nil, fmt.Errorf("resource hook %s: %w", def.GetPath(), err)
 			}
 			bundle = newBundle
 		}

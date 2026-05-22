@@ -1,12 +1,10 @@
 package config
 
 import (
-	"bytes"
 	"fmt"
-	"os"
 	"path/filepath"
 
-	"github.com/goccy/go-json"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
@@ -37,11 +35,32 @@ var VeilFiles = []string{"veil.json", "veil.yaml", "veil.yml"}
 // kind's relative paths against the local filesystem. Path is the
 // absolute path of the file the definition was loaded from — used by
 // mutation commands so a kind authored in YAML is rewritten as YAML.
+//
+// HooksDefinition stores each lifecycle's entries as
+// google.protobuf.Value because the on-disk shape allows either a bare
+// path string or a {path, access?} object. loadKind parses those
+// Values into typed RenderHookDefinitions once at load time and caches
+// the result here, so consumers (the build pipeline, file enumeration,
+// scaffolding) iterate the typed slice instead of doing the
+// Value-narrowing per call.
 type Kind struct {
 	*veilv1.KindDefinition
 	Path string
 	Dir  string
+
+	renderHooks     []*veilv1.RenderHookDefinition
+	validateHooks   []*veilv1.RenderHookDefinition
+	postRenderHooks []*veilv1.RenderHookDefinition
 }
+
+// RenderHooks returns the parsed render-lifecycle entries.
+func (k *Kind) RenderHooks() []*veilv1.RenderHookDefinition { return k.renderHooks }
+
+// ValidateHooks returns the parsed validate-lifecycle entries.
+func (k *Kind) ValidateHooks() []*veilv1.RenderHookDefinition { return k.validateHooks }
+
+// PostRenderHooks returns the parsed post_render-lifecycle entries.
+func (k *Kind) PostRenderHooks() []*veilv1.RenderHookDefinition { return k.postRenderHooks }
 
 // Registry is the set of kind definitions and project-level configuration
 // discovered from veil.json, plus the project root directory (which is not
@@ -346,61 +365,78 @@ func loadConfig(path string) (*veilv1.VeilConfigDefinition, error) {
 	return &cfg, nil
 }
 
-func loadKind(filepathArg string) (*Kind, error) {
-	f, err := os.Open(filepathArg)
-	if err != nil {
+func loadKind(path string) (*Kind, error) {
+	pk := &veilv1.KindDefinition{}
+	if err := protoencode.ReadProtoFile(path, pk); err != nil {
 		return nil, err
 	}
-	defer f.Close()
-
-	// The kind file's `hooks.{render,validate,post_render}` arrays
-	// accept a bare-string shorthand (`["./hooks/foo.ts"]`) that
-	// protojson rejects. Decode into a generic map first so we can
-	// expand the shorthand in place, then re-encode and hand the
-	// resulting JSON to protojson.
-	var doc map[string]any
-	if err := protoencode.Decode(f, &doc); err != nil {
-		return nil, fmt.Errorf("loading %s: %w", filepathArg, err)
-	}
-	if hooks, ok := doc["hooks"].(map[string]any); ok {
-		expandHookShorthand(hooks)
-	}
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		return nil, fmt.Errorf("loading %s: re-encoding for protojson: %w", filepathArg, err)
-	}
-	pk := &veilv1.KindDefinition{}
-	if err := protoencode.UnmarshalProto(bytes.NewReader(raw), pk); err != nil {
-		return nil, fmt.Errorf("loading %s: %w", filepathArg, err)
-	}
 	if err := protoencode.Validate(pk); err != nil {
-		return nil, fmt.Errorf("kind at %s: %w", filepathArg, err)
+		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
 	if err := validateDependents(pk.GetHooks().GetDependents()); err != nil {
-		return nil, fmt.Errorf("kind at %s: %w", filepathArg, err)
+		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
-	return &Kind{KindDefinition: pk, Path: filepathArg, Dir: filepath.Dir(filepathArg)}, nil
+	k := &Kind{KindDefinition: pk, Path: path, Dir: filepath.Dir(path)}
+	for _, lc := range []struct {
+		label   string
+		entries []*structpb.Value
+		dest    *[]*veilv1.RenderHookDefinition
+	}{
+		{"hooks.render", pk.GetHooks().GetRender(), &k.renderHooks},
+		{"hooks.validate", pk.GetHooks().GetValidate(), &k.validateHooks},
+		{"hooks.post_render", pk.GetHooks().GetPostRender(), &k.postRenderHooks},
+	} {
+		parsed, err := parseHookEntries(lc.entries)
+		if err != nil {
+			return nil, fmt.Errorf("kind at %s: %s: %w", path, lc.label, err)
+		}
+		*lc.dest = parsed
+	}
+	return k, nil
 }
 
-// expandHookShorthand normalizes the bare-string entries that
-// kind.yaml accepts inside hooks.{render,validate,post_render} into
-// the proto-defined {path: <string>} form. Local helper rather than a
-// shared utility because the shorthand is a kind-yaml convenience
-// layer; protoencode is generic and shouldn't know about it.
-func expandHookShorthand(hooks map[string]any) {
-	if hooks == nil {
-		return
+// parseHookEntries narrows each on-wire google.protobuf.Value into a
+// RenderHookDefinition. The wire field is polymorphic — each entry is
+// either a bare string path or a {path, access?} object — because
+// protojson can't express "string OR struct" on a typed field.
+// Pulling the narrowing into loadKind means every consumer of the
+// returned *Kind sees the typed slice and nothing else.
+func parseHookEntries(entries []*structpb.Value) ([]*veilv1.RenderHookDefinition, error) {
+	out := make([]*veilv1.RenderHookDefinition, 0, len(entries))
+	for i, v := range entries {
+		def, err := parseHookEntry(v)
+		if err != nil {
+			return nil, fmt.Errorf("[%d]: %w", i, err)
+		}
+		out = append(out, def)
 	}
-	for _, key := range []string{"render", "validate", "post_render"} {
-		arr, ok := hooks[key].([]any)
-		if !ok {
-			continue
+	return out, nil
+}
+
+func parseHookEntry(v *structpb.Value) (*veilv1.RenderHookDefinition, error) {
+	if v == nil {
+		return nil, fmt.Errorf("hook entry is nil")
+	}
+	switch kind := v.Kind.(type) {
+	case *structpb.Value_StringValue:
+		if kind.StringValue == "" {
+			return nil, fmt.Errorf("hook entry path is empty")
 		}
-		for i, entry := range arr {
-			if s, ok := entry.(string); ok {
-				arr[i] = map[string]any{"path": s}
-			}
+		return &veilv1.RenderHookDefinition{Path: kind.StringValue}, nil
+	case *structpb.Value_StructValue:
+		raw, err := protojson.Marshal(kind.StructValue)
+		if err != nil {
+			return nil, fmt.Errorf("marshalling hook entry: %w", err)
 		}
-		hooks[key] = arr
+		def := &veilv1.RenderHookDefinition{}
+		if err := protoencode.Unmarshal.Unmarshal(raw, def); err != nil {
+			return nil, fmt.Errorf("unmarshalling hook entry: %w", err)
+		}
+		if def.GetPath() == "" {
+			return nil, fmt.Errorf("hook entry object missing required `path` field")
+		}
+		return def, nil
+	default:
+		return nil, fmt.Errorf("hook entry must be a string path or {path, access?} object, got %T", v.Kind)
 	}
 }

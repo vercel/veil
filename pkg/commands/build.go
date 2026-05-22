@@ -233,17 +233,17 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 		sources[filepath.ToSlash(key)] = string(data)
 	}
 
-	render, err := compileRenderHooks(k, projectRoot, fsys, k.GetHooks().GetRender())
+	render, err := compileRenderHookDefs(k, projectRoot, fsys, k.RenderHooks())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("render hooks: %w", err)
 	}
 
-	validate, err := compileRenderHooks(k, projectRoot, fsys, k.GetHooks().GetValidate())
+	validate, err := compileRenderHookDefs(k, projectRoot, fsys, k.ValidateHooks())
 	if err != nil {
 		return nil, fmt.Errorf("validate hooks: %w", err)
 	}
 
-	postRender, err := compileRenderHooks(k, projectRoot, fsys, k.GetHooks().GetPostRender())
+	postRender, err := compileRenderHookDefs(k, projectRoot, fsys, k.PostRenderHooks())
 	if err != nil {
 		return nil, fmt.Errorf("post_render hooks: %w", err)
 	}
@@ -280,10 +280,11 @@ func compileHookList(k *config.Kind, projectRoot string, fsys fs.FS, paths []str
 	return hooks, nil
 }
 
-// compileRenderHooks compiles render-hook entries, copying each entry's
-// declared `access` onto the resulting compiled Hook so the runner can
-// pre-flight required env vars at render time.
-func compileRenderHooks(k *config.Kind, projectRoot string, fsys fs.FS, defs []*veilv1.RenderHookDefinition) ([]*veilv1.Hook, error) {
+// compileRenderHookDefs compiles a slice of typed RenderHookDefinitions,
+// bundling each path and stamping the entry's declared `access` onto
+// the resulting compiled Hook so the runner can pre-flight required
+// env vars at render time.
+func compileRenderHookDefs(k *config.Kind, projectRoot string, fsys fs.FS, defs []*veilv1.RenderHookDefinition) ([]*veilv1.Hook, error) {
 	hooks := make([]*veilv1.Hook, 0, len(defs))
 	for _, d := range defs {
 		hk, err := compileHook(k, projectRoot, fsys, d.GetPath())
@@ -391,13 +392,13 @@ func hookFiles(k *config.Kind) []string {
 		return filepath.Join(k.Dir, p)
 	}
 	var files []string
-	for _, d := range k.GetHooks().GetRender() {
+	for _, d := range k.RenderHooks() {
 		files = append(files, abs(d.GetPath()))
 	}
-	for _, d := range k.GetHooks().GetValidate() {
+	for _, d := range k.ValidateHooks() {
 		files = append(files, abs(d.GetPath()))
 	}
-	for _, d := range k.GetHooks().GetPostRender() {
+	for _, d := range k.PostRenderHooks() {
 		files = append(files, abs(d.GetPath()))
 	}
 	for _, d := range k.GetHooks().GetDependents() {
@@ -431,13 +432,13 @@ func validateKind(k *config.Kind) error {
 		}
 	}
 	check("source", k.Sources)
-	for _, d := range k.GetHooks().GetRender() {
+	for _, d := range k.RenderHooks() {
 		check("render hook", []string{d.GetPath()})
 	}
-	for _, d := range k.GetHooks().GetValidate() {
+	for _, d := range k.ValidateHooks() {
 		check("validate hook", []string{d.GetPath()})
 	}
-	for _, d := range k.GetHooks().GetPostRender() {
+	for _, d := range k.PostRenderHooks() {
 		check("post_render hook", []string{d.GetPath()})
 	}
 
