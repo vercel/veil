@@ -121,14 +121,21 @@ func (s *YAMLSuite) TestRoundTripPreservesData() {
 	s.NotZero(back["a"])
 }
 
-// TestDecodeReaderAcceptsInMemoryBytes exercises the io.Reader path
-// — used by registry's HTTP fetches.
-func (s *YAMLSuite) TestDecodeReaderAcceptsInMemoryBytes() {
+// TestDecodeAutoDetectsFormatFromBytes exercises the io.Reader path
+// — used by registry's HTTP fetches — and confirms NewDecoder picks
+// JSON vs YAML by peeking the first non-whitespace byte rather than
+// any path/extension hint.
+func (s *YAMLSuite) TestDecodeAutoDetectsFormatFromBytes() {
 	var doc map[string]any
-	s.Require().NoError(DecodeReader("from-http.yaml", strings.NewReader("a: 1\n"), &doc))
+	s.Require().NoError(Decode(strings.NewReader("a: 1\n"), &doc))
 	s.NotZero(doc["a"])
 
 	var json map[string]any
-	s.Require().NoError(DecodeReader("from-http.json", bytes.NewReader([]byte(`{"a":1}`)), &json))
+	s.Require().NoError(Decode(bytes.NewReader([]byte(`{"a":1}`)), &json))
 	s.NotZero(json["a"])
+
+	// Leading whitespace doesn't fool the detector.
+	var withSpace map[string]any
+	s.Require().NoError(Decode(strings.NewReader("   \n  {\"a\":1}"), &withSpace))
+	s.NotZero(withSpace["a"])
 }

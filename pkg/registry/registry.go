@@ -209,19 +209,25 @@ func ReadResource(loc string, v any) error {
 		return err
 	}
 	defer rc.Close()
-	return protoencode.DecodeReader(loc, rc, v)
+	if err := protoencode.Decode(rc, v); err != nil {
+		return fmt.Errorf("decoding %s: %w", loc, err)
+	}
+	return nil
 }
 
 // ReadProtoResource is the proto-typed companion to ReadResource:
 // opens loc and unmarshals one document into m via protojson, going
-// through the yaml.v3 + JSON re-encode hop for .yaml/.yml sources.
+// through the yaml.v3 + JSON re-encode hop for YAML sources.
 func ReadProtoResource(loc string, m proto.Message) error {
 	rc, err := openResource(loc)
 	if err != nil {
 		return err
 	}
 	defer rc.Close()
-	return protoencode.DecodeProto(loc, rc, m)
+	if err := protoencode.UnmarshalProto(rc, m); err != nil {
+		return fmt.Errorf("decoding %s: %w", loc, err)
+	}
+	return nil
 }
 
 // openResource returns a ReadCloser for loc, dispatching on the URL
