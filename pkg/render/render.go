@@ -872,11 +872,14 @@ func stripSchemaURL(msg string) string {
 // entry's File.Path as the relative destination. Two entries resolving to
 // the same destination path are a hard error — a hook somewhere rerouted
 // two files onto the same output slot.
+//
+// outDir is created lazily — only when a file actually lands inside it.
+// A kind whose layout hook reroutes every file via `../foo.yaml` (so the
+// final write lands one level up) is common, and creating outDir upfront
+// in that case leaves an empty orphan subdirectory next to the real
+// output. After the write finishes, any outDir that's still empty is
+// removed.
 func writeBundle(outDir string, bundle hook.Bundle) ([]string, error) {
-	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return nil, fmt.Errorf("creating %s: %w", outDir, err)
-	}
-
 	// Iterate identity keys in sorted order so collision errors and
 	// returned file lists are deterministic.
 	identities := make([]string, 0, len(bundle))
@@ -912,6 +915,16 @@ func writeBundle(outDir string, bundle hook.Bundle) ([]string, error) {
 			return nil, fmt.Errorf("writing %s: %w", fullPath, err)
 		}
 	}
+
+	// If every file routed itself out of outDir (via setOutputPath with
+	// a `../`-prefixed destination), the only thing that landed there
+	// is whatever per-file MkdirAll incidentally created — at most the
+	// outDir itself. Remove it if it's empty so callers don't see an
+	// orphan directory next to their real output.
+	if entries, err := os.ReadDir(outDir); err == nil && len(entries) == 0 {
+		_ = os.Remove(outDir)
+	}
+
 	sort.Strings(pathsOut)
 	return pathsOut, nil
 }
