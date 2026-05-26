@@ -41,7 +41,7 @@ func (s *YAMLSuite) TestIsYAMLOnExtensions() {
 }
 
 // TestReadFileDispatchesByExtension confirms the decoder map: a .json
-// path goes through encoding/json, a .yaml path through yaml.v3.
+// path goes through the JSON decoder, a .yaml path through yaml.v3.
 func (s *YAMLSuite) TestReadFileDispatchesByExtension() {
 	dir := s.T().TempDir()
 	jsonPath := filepath.Join(dir, "doc.json")
