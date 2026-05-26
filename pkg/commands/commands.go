@@ -74,6 +74,7 @@ func NewApp() *cli.Command {
 			Override(),
 			Schema(),
 			Graph(),
+			Update(),
 		},
 	}
 }
