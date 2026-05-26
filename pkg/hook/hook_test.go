@@ -57,6 +57,50 @@ export default h;
 	s.Equal("out.txt", result["out.txt"].Path)
 }
 
+func (s *HookSuite) TestCtxStdYamlRoundTripsThroughHook() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    var parsed = ctx.std.yaml.parse("a: 1\nb:\n  - xx\n  - yy\n");
+    var roundtrip = ctx.std.yaml.stringify(parsed);
+    fs.add("parsed.json", JSON.stringify(parsed));
+    fs.add("dumped.yaml", roundtrip);
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code)
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	ctx := map[string]any{"name": "n", "spec": map[string]any{}, "vars": map[string]any{}}
+	result, err := hk.RenderHook(ctx, Bundle{})
+	s.Require().NoError(err)
+	s.Equal(`{"a":1,"b":["xx","yy"]}`, result["parsed.json"].Content)
+	// gopkg.in/yaml.v3 stringify: alphabetized keys + 2-space indent.
+	s.Equal("a: 1\nb:\n  - xx\n  - yy\n", result["dumped.yaml"].Content)
+}
+
+func (s *HookSuite) TestCtxStdYamlParseThrowsOnMalformed() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    ctx.std.yaml.parse("foo: [\n  unterminated");
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code)
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	_, err = hk.RenderHook(map[string]any{}, Bundle{})
+	s.Require().Error(err)
+	s.Contains(err.Error(), "yaml.parse")
+}
+
 func (s *HookSuite) TestRenderHookNoOpWhenUndefined() {
 	code := s.compile(`
 const h = {}; // no render

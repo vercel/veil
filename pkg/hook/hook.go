@@ -7,6 +7,7 @@
 package hook
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/fastschema/qjs"
 	"github.com/go-sourcemap/sourcemap"
 	"github.com/goccy/go-json"
+	yaml "gopkg.in/yaml.v3"
 )
 
 // Defaults applied when no corresponding Option is passed to New.
@@ -233,6 +235,58 @@ const (
 })()`
 )
 
+// Validate-hook script fragments. Same ctx + fs shape as render, but the
+// invoked function is `validate(ctx, fs)` and the return value is
+// normalized into a `ValidationIssue[]`. Bundle/ctx mutations are
+// ignored — the runner discards everything except the issues array.
+//
+// Result normalization handles the three accepted return shapes
+// (string, ValidationIssue, array of either) plus undefined/null. A
+// throw bubbles through QuickJS as a normal error; the Go-side caller
+// is responsible for catching and aggregating rather than letting it
+// abort the validate loop.
+const (
+	validateHookScriptPrefix = `await (async () => {
+  __veilLogs.length = 0;
+  if (!__veilMod || !__veilMod.default || typeof __veilMod.default.validate !== 'function') {
+    return JSON.stringify({ issues: [], logs: __veilLogs });
+  }
+  const __ctx = `
+	validateHookScriptMiddle = `;
+  __ctx.std = globalThis.__veilHost.std;
+  __ctx.os = globalThis.__veilHost.os;
+  __ctx.fetch = globalThis.__veilHost.fetch;
+  __ctx.env = globalThis.__veilHost.env;
+  const __fs = __veilMakeFS(`
+	validateHookScriptSuffix = `);
+  let __res = __veilMod.default.validate(__ctx, __fs);
+  if (__res && typeof __res.then === 'function') __res = await __res;
+  function __veilNormIssue(x) {
+    if (x == null) return null;
+    if (typeof x === 'string') return { message: x };
+    if (typeof x === 'object') {
+      var msg = x.message == null ? '' : String(x.message);
+      var out = { message: msg };
+      if (x.path != null) out.path = String(x.path);
+      if (x.severity != null) out.severity = String(x.severity);
+      return out;
+    }
+    return { message: String(x) };
+  }
+  var __issues = [];
+  if (Array.isArray(__res)) {
+    for (var i = 0; i < __res.length; i++) {
+      var n = __veilNormIssue(__res[i]);
+      if (n) __issues.push(n);
+    }
+  } else {
+    var n = __veilNormIssue(__res);
+    if (n) __issues.push(n);
+  }
+  return JSON.stringify({ issues: __issues, logs: __veilLogs });
+})()`
+)
+
 // Option configures a Hook.
 type Option func(*options)
 
@@ -296,9 +350,24 @@ type Hook interface {
 	// unchanged.
 	RenderHook(ctx any, bundle Bundle) (Bundle, error)
 
+	// ValidateHook runs the hook's `validate(ctx, fs)` function and
+	// returns the normalized list of issues the hook reported. If the
+	// JS module has no `validate` defined, returns an empty slice.
+	// Any mutations the hook makes to ctx or fs are discarded — the
+	// only observable output is the issues slice.
+	ValidateHook(ctx any, bundle Bundle) ([]ValidationIssue, error)
+
 	// Close releases the underlying runtime resources. Safe to call more
 	// than once.
 	Close() error
+}
+
+// ValidationIssue is one entry in a validate hook's report. Mirrors the
+// TypeScript `ValidationIssue` interface generated into veil-types.ts.
+type ValidationIssue struct {
+	Message  string `json:"message"`
+	Path     string `json:"path,omitempty"`
+	Severity string `json:"severity,omitempty"`
 }
 
 // New creates a Hook backed by compiled JS code (IIFE form emitted by
@@ -338,18 +407,20 @@ func New(code string, opts ...Option) (Hook, error) {
 	}
 	fsVal.Free()
 
-	// Bind the Go-side fetch handler. installFetch sets it as a temporary
-	// __veilFetch global that the host-namespace lockdown step closes over
-	// and then deletes — hooks themselves never see __veilFetch.
-	if err := installFetch(rt, cfg); err != nil {
+	// Bind the Go-side host functions (fetch + yaml codec) as
+	// temporary globals (__veilFetch, __veilYamlParse,
+	// __veilYamlStringify). The host-namespace lockdown step closes
+	// over them and deletes the raw bindings.
+	if err := installHostFuncs(rt, cfg); err != nil {
 		rt.Close()
-		return nil, fmt.Errorf("installing fetch binding: %w", err)
+		return nil, fmt.Errorf("installing host bindings: %w", err)
 	}
 
 	// Build the read-only std/os proxies, wrap fetch as a Promise-returning
 	// polyfill, bundle them into globalThis.__veilHost, and delete the raw
-	// std/os/__veilFetch globals. After this, the only surface hook code
-	// can reach is what we splice into ctx.std/ctx.os/ctx.fetch per call.
+	// std/os/__veilFetch/__veilYaml* globals. After this, the only surface
+	// hook code can reach is what we splice into ctx.std/ctx.os/ctx.fetch
+	// per call.
 	hostVal, err := rt.Eval("veil-host.js", qjs.Code(hostNamespaceJS))
 	if err != nil {
 		rt.Close()
@@ -408,11 +479,66 @@ type fetchResponseShape struct {
 	Body    string            `json:"body"`
 }
 
-// installFetch binds `__veilFetch(optsJSON) string` as a temporary global.
-// The host-namespace lockdown script closes over it to expose fetch on
-// hook contexts, then deletes the global. Enforces the allowlist, timeout,
-// and response-size cap configured via WithHTTP.
-func installFetch(rt *qjs.Runtime, cfg options) error {
+// installHostFuncs binds every Go-side host function the runtime needs
+// (fetch + the YAML codec helpers) onto the QuickJS global as a single
+// step. Bundling them avoids a subtle interaction where freeing the
+// global handle between separate install passes left subsequent
+// SetPropertyStr calls operating on a stale view of the object —
+// surfacing later as "TypeError: not an object" when the host-namespace
+// IIFE ran.
+func installHostFuncs(rt *qjs.Runtime, cfg options) error {
+	fetchFn, err := newFetchFunc(rt, cfg)
+	if err != nil {
+		return fmt.Errorf("wrapping fetch: %w", err)
+	}
+	parseFn, err := qjs.FuncToJS(rt.Context(), func(s string) (string, error) {
+		var v any
+		if err := yaml.Unmarshal([]byte(s), &v); err != nil {
+			return "", fmt.Errorf("yaml.parse: %w", err)
+		}
+		out, err := json.Marshal(v)
+		if err != nil {
+			return "", fmt.Errorf("yaml.parse: %w", err)
+		}
+		return string(out), nil
+	})
+	if err != nil {
+		return fmt.Errorf("wrapping yaml.parse: %w", err)
+	}
+	stringifyFn, err := qjs.FuncToJS(rt.Context(), func(jsonStr string) (string, error) {
+		var v any
+		if err := json.Unmarshal([]byte(jsonStr), &v); err != nil {
+			return "", fmt.Errorf("yaml.stringify: %w", err)
+		}
+		var buf bytes.Buffer
+		enc := yaml.NewEncoder(&buf)
+		enc.SetIndent(2)
+		if err := enc.Encode(v); err != nil {
+			return "", fmt.Errorf("yaml.stringify: %w", err)
+		}
+		if err := enc.Close(); err != nil {
+			return "", fmt.Errorf("yaml.stringify: %w", err)
+		}
+		return buf.String(), nil
+	})
+	if err != nil {
+		return fmt.Errorf("wrapping yaml.stringify: %w", err)
+	}
+
+	global := rt.Context().Global()
+	defer global.Free()
+	global.SetPropertyStr("__veilFetch", fetchFn)
+	global.SetPropertyStr("__veilYamlParse", parseFn)
+	global.SetPropertyStr("__veilYamlStringify", stringifyFn)
+	return nil
+}
+
+// newFetchFunc wraps the HTTP-fetch behavior in a `qjs.FuncToJS` value
+// so installHostFuncs can install it alongside the codec helpers. The
+// returned function takes an options JSON blob and returns a response
+// JSON blob; the JS-side polyfill in hostNamespaceJS rehydrates the
+// result into a Web-Fetch-shaped object.
+func newFetchFunc(rt *qjs.Runtime, cfg options) (*qjs.Value, error) {
 	timeoutMs := cfg.http.DefaultTimeoutMs
 	if timeoutMs <= 0 {
 		timeoutMs = DefaultHTTPTimeoutMs
@@ -502,18 +628,15 @@ func installFetch(rt *qjs.Runtime, cfg options) error {
 		return string(out), nil
 	})
 	if err != nil {
-		return fmt.Errorf("wrapping Go function: %w", err)
+		return nil, err
 	}
-
-	global := rt.Context().Global()
-	defer global.Free()
-	global.SetPropertyStr("__veilFetch", fn)
-	return nil
+	return fn, nil
 }
 
 // hostNamespaceJS is the final init step. It closes over the raw
-// std/os/__veilFetch globals, exposes only the read-only / Promise-shaped
-// proxies on globalThis.__veilHost, and replaces the originals so hook
+// std/os/__veilFetch/__veilYaml* globals, exposes only the read-only /
+// Promise-shaped proxies on globalThis.__veilHost, and replaces the
+// originals so hook
 // code can't reach the dangerous bindings. The per-call render script
 // splices the proxies onto ctx.std / ctx.os / ctx.fetch.
 //
@@ -584,9 +707,23 @@ const hostNamespaceJS = `
     });
   }
 
+  var nativeYamlParse = globalThis.__veilYamlParse;
+  var nativeYamlStringify = globalThis.__veilYamlStringify;
+
+  var yamlCodec = {
+    parse: function(s) {
+      if (s == null) throw new Error('std.yaml.parse: input is required');
+      return JSON.parse(nativeYamlParse(String(s)));
+    },
+    stringify: function(value) {
+      return nativeYamlStringify(JSON.stringify(value == null ? null : value));
+    }
+  };
+
   var stdProxy = {
     loadFile: function(path) { return nativeStd.loadFile(path); },
-    getenv:   function(name) { return nativeStd.getenv(name); }
+    getenv:   function(name) { return nativeStd.getenv(name); },
+    yaml:     yamlCodec
   };
   var osProxy = {
     readdir:  function(p) { return nativeOs.readdir(p); },
@@ -612,6 +749,8 @@ const hostNamespaceJS = `
 
   delete globalThis.os;
   delete globalThis.__veilFetch;
+  delete globalThis.__veilYamlParse;
+  delete globalThis.__veilYamlStringify;
 })();
 `
 
@@ -641,6 +780,11 @@ func (h *jsHook) Close() error {
 type hookResult struct {
 	FS   Bundle     `json:"fs,omitempty"`
 	Logs []logEntry `json:"logs,omitempty"`
+}
+
+type validateHookResult struct {
+	Issues []ValidationIssue `json:"issues,omitempty"`
+	Logs   []logEntry        `json:"logs,omitempty"`
 }
 
 type logEntry struct {
@@ -729,6 +873,76 @@ func (h *jsHook) RenderHook(ctx any, bundle Bundle) (Bundle, error) {
 		return bundle, nil
 	}
 	return result.FS, nil
+}
+
+// ValidateHook runs the compiled module's `validate(ctx, fs)` and
+// returns the normalized issue list. Mirrors the render path for
+// timeout / stuck-runtime handling so a runaway validate hook gets
+// the same wall-clock cutoff. Any FS or ctx mutations the hook
+// performs only live inside the QuickJS sandbox — the runner reads
+// nothing back except the issues array, so reverting state to a
+// snapshot isn't necessary.
+func (h *jsHook) ValidateHook(ctx any, bundle Bundle) ([]ValidationIssue, error) {
+	if h.closed {
+		return nil, errors.New("hook: ValidateHook called after Close")
+	}
+	if h.stuck {
+		return nil, errors.New("hook: runtime abandoned after prior timeout")
+	}
+
+	ctxJSON, err := json.Marshal(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling ctx: %w", err)
+	}
+	bundleJSON, err := json.Marshal(bundle)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling bundle: %w", err)
+	}
+
+	var b strings.Builder
+	b.Grow(len(validateHookScriptPrefix) + len(ctxJSON) + len(validateHookScriptMiddle) + len(bundleJSON) + len(validateHookScriptSuffix))
+	b.WriteString(validateHookScriptPrefix)
+	b.Write(ctxJSON)
+	b.WriteString(validateHookScriptMiddle)
+	b.Write(bundleJSON)
+	b.WriteString(validateHookScriptSuffix)
+	script := b.String()
+
+	type outcome struct {
+		raw string
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		val, err := h.rt.Eval("validate.js", qjs.Code(script), qjs.FlagAsync())
+		if err != nil {
+			done <- outcome{err: err}
+			return
+		}
+		raw := val.String()
+		val.Free()
+		done <- outcome{raw: raw}
+	}()
+
+	var res outcome
+	select {
+	case res = <-done:
+	case <-time.After(h.cfg.timeout):
+		h.stuck = true
+		return nil, fmt.Errorf("hook exceeded %s timeout", h.cfg.timeout)
+	}
+
+	if res.err != nil {
+		return nil, fmt.Errorf("invoking validate: %w", rewriteErr(res.err, h.sourcemap))
+	}
+
+	var result validateHookResult
+	if err := json.Unmarshal([]byte(res.raw), &result); err != nil {
+		return nil, fmt.Errorf("parsing validate result: %w (raw: %s)", err, res.raw)
+	}
+
+	h.emitLogs(result.Logs)
+	return result.Issues, nil
 }
 
 func (h *jsHook) emitLogs(logs []logEntry) {

@@ -8,10 +8,11 @@ package protoencode
 
 import (
 	"bytes"
-	stdjson "encoding/json"
 	"fmt"
 	"os"
 	"sync"
+
+	stdjson "github.com/goccy/go-json"
 
 	"buf.build/go/protovalidate"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -21,6 +22,11 @@ import (
 // Marshal is the canonical protojson marshaller. UseProtoNames keeps
 // field names snake_case (matching the .proto source).
 var Marshal = protojson.MarshalOptions{UseProtoNames: true}
+
+// PrettyMarshal is Marshal with two-space indentation for human-
+// readable output. Used by the JSON Encoder so on-disk documents are
+// diff-friendly.
+var PrettyMarshal = protojson.MarshalOptions{UseProtoNames: true, Indent: "  "}
 
 // Unmarshal is the canonical protojson unmarshaller. DiscardUnknown
 // keeps reads forgiving when users carry editor metadata like `$schema`

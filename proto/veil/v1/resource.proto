@@ -4,6 +4,7 @@ package veil.v1;
 
 import "buf/validate/validate.proto";
 import "google/protobuf/struct.proto";
+import "veil/v1/config.proto";
 
 // Resource is a consumer's instantiation of a kind.
 message Resource {
@@ -67,6 +68,15 @@ message Metadata {
   // resource-file shape). Set to `overlay` on overlay fragments so
   // the catalog walker can skip them without name/kind heuristics.
   FileType.Enum file_type = 5 [(buf.validate.field).enum.defined_only = true];
+
+  // Resource-local hooks declared inline on the resource yaml. Paths
+  // are resolved relative to the resource file's directory. Only
+  // `render` entries are honored on resources today; the runner
+  // rejects `dependents` and `validate` entries. Resource render
+  // hooks run after the kind's `render` + dependents, and before the
+  // kind's `validate` lifecycle. They let resource definers customize
+  // the rendered bundle without expanding the kind spec.
+  HooksDefinition hooks = 6;
 }
 
 // FileType is the wrapper message for the Metadata.file_type enum.

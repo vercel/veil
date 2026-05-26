@@ -344,7 +344,7 @@ func (s *DiscoverSuite) TestAcceptsRenderHookStringShorthand() {
 	s.Require().NoError(err)
 	s.Require().Len(reg.Kinds, 1)
 
-	render := reg.Kinds[0].GetHooks().GetRender()
+	render := reg.Kinds[0].RenderHooks()
 	s.Require().Len(render, 3)
 	s.Equal("./hooks/inject-env.ts", render[0].GetPath())
 	s.Nil(render[0].GetAccess())
@@ -489,7 +489,7 @@ registries:
 	s.Equal([]string{"./sources/deployment.yaml"}, k.Sources)
 	s.Equal(filepath.Join(kindsDir, "service.yaml"), k.Path)
 	s.Equal(kindsDir, k.Dir)
-	render := k.GetHooks().GetRender()
+	render := k.RenderHooks()
 	s.Require().Len(render, 1)
 	s.Equal("./hooks/inject-env.ts", render[0].GetPath())
 }
@@ -532,7 +532,7 @@ func (s *DiscoverSuite) TestAcceptsRenderHookObjectWithAccess() {
 	reg, err := Load(filepath.Join(root, "veil.json"))
 	s.Require().NoError(err)
 
-	render := reg.Kinds[0].GetHooks().GetRender()
+	render := reg.Kinds[0].RenderHooks()
 	s.Require().Len(render, 1)
 	s.Equal("./hooks/inject-env.ts", render[0].GetPath())
 	envs := render[0].GetAccess().GetEnv()

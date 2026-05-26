@@ -237,9 +237,158 @@ func (s *NewSuite) TestNewHookAppendsToKind() {
 	}, hooksField["render"])
 }
 
-func (s *NewSuite) TestNewHookRequiresKindFlag() {
-	_, err := s.run("new", "hook", "annotate")
+func (s *NewSuite) TestNewHookRequiresKindOrResourceFlagOrAutoDetect() {
+	// cwd is the empty temp dir — no kind file, no resource file → auto-detect
+	// has nothing to grab onto, so the command errors with a message asking
+	// the user to disambiguate.
+	out, err := s.run("new", "hook", "annotate")
+	s.Require().Error(err, out)
+	s.Contains(err.Error(), "--kind or --resource")
+}
+
+func (s *NewSuite) TestNewHookRejectsBothKindAndResourceFlags() {
+	_, err := s.run("new", "hook", "annotate", "--kind", "worker", "--resource", "./foo.yaml")
 	s.Require().Error(err)
+	s.Contains(err.Error(), "mutually exclusive")
+}
+
+func (s *NewSuite) TestNewHookAppendsToResource() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+	_, err = s.run("new", "resource", "my-worker", "--kind", "worker")
+	s.Require().NoError(err)
+
+	resourcePath := filepath.Join(s.root, "my-worker.json")
+
+	_, err = s.run("new", "hook", "annotate", "--resource", resourcePath)
+	s.Require().NoError(err)
+
+	hookPath := filepath.Join(s.root, "hooks", "annotate.ts")
+	s.FileExists(hookPath)
+	contents, err := os.ReadFile(hookPath)
+	s.Require().NoError(err)
+	s.Contains(string(contents), "const annotate: RenderHook")
+
+	// veil-types.ts must land next to the hook so the import resolves.
+	typesPath := filepath.Join(s.root, "hooks", "veil-types.ts")
+	s.FileExists(typesPath)
+	types, err := os.ReadFile(typesPath)
+	s.Require().NoError(err)
+	s.Contains(string(types), "export interface WorkerSpec")
+	s.Contains(string(types), "export interface RenderHook")
+	s.Contains(string(types), "export interface ValidateHook")
+
+	res := s.readJSON(resourcePath)
+	meta := res["metadata"].(map[string]any)
+	hooks := meta["hooks"].(map[string]any)
+	s.Equal([]any{map[string]any{"path": "./hooks/annotate.ts"}}, hooks["render"])
+}
+
+func (s *NewSuite) TestNewHookAppendsToResourceWithExistingHooks() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+	_, err = s.run("new", "resource", "my-worker", "--kind", "worker")
+	s.Require().NoError(err)
+
+	resourcePath := filepath.Join(s.root, "my-worker.json")
+
+	// Seed an existing resource hook so we can confirm append (not replace).
+	res := s.readJSON(resourcePath)
+	meta := res["metadata"].(map[string]any)
+	meta["hooks"] = map[string]any{
+		"render": []any{map[string]any{"path": "./hooks/first.ts"}},
+	}
+	s.writeJSON(resourcePath, res)
+
+	_, err = s.run("new", "hook", "second", "--resource", resourcePath)
+	s.Require().NoError(err)
+
+	res = s.readJSON(resourcePath)
+	meta = res["metadata"].(map[string]any)
+	hooks := meta["hooks"].(map[string]any)
+	s.Equal([]any{
+		map[string]any{"path": "./hooks/first.ts"},
+		map[string]any{"path": "./hooks/second.ts"},
+	}, hooks["render"])
+}
+
+func (s *NewSuite) TestNewHookAutoDetectsResourceFromCwd() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	// Drop the resource into a dedicated subdir so cwd has exactly one
+	// resource file — the auto-detect single-candidate path.
+	svcDir := filepath.Join(s.root, "svc")
+	s.Require().NoError(os.MkdirAll(svcDir, 0755))
+	_, err = s.run("new", "resource", "api", "--kind", "worker", "--out", filepath.Join(svcDir, "api.json"))
+	s.Require().NoError(err)
+
+	s.T().Chdir(svcDir)
+	_, err = s.run("new", "hook", "annotate")
+	s.Require().NoError(err)
+
+	hookPath := filepath.Join(svcDir, "hooks", "annotate.ts")
+	s.FileExists(hookPath)
+
+	res := s.readJSON(filepath.Join(svcDir, "api.json"))
+	hooks := res["metadata"].(map[string]any)["hooks"].(map[string]any)
+	s.Equal([]any{map[string]any{"path": "./hooks/annotate.ts"}}, hooks["render"])
+}
+
+func (s *NewSuite) TestNewHookAutoDetectsKindFromCwd() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+	kindDir := filepath.Join(s.root, ".veil", "kinds", "worker")
+	s.T().Chdir(kindDir)
+
+	_, err = s.run("new", "hook", "annotate")
+	s.Require().NoError(err)
+
+	hookPath := filepath.Join(kindDir, "hooks", "src", "annotate.ts")
+	s.FileExists(hookPath)
+}
+
+func (s *NewSuite) TestNewHookRegeneratesResourceVeilTypesOnSecondInvocation() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+	_, err = s.run("new", "resource", "my-worker", "--kind", "worker")
+	s.Require().NoError(err)
+
+	resourcePath := filepath.Join(s.root, "my-worker.json")
+
+	_, err = s.run("new", "hook", "first", "--resource", resourcePath)
+	s.Require().NoError(err)
+
+	// Overwrite the on-disk veil-types.ts with garbage; the second
+	// `new hook` invocation should regenerate it (and the rest of the
+	// pipeline should still leave the file in a valid state).
+	typesPath := filepath.Join(s.root, "hooks", "veil-types.ts")
+	s.Require().NoError(os.WriteFile(typesPath, []byte("// stale"), 0644))
+
+	_, err = s.run("new", "hook", "second", "--resource", resourcePath)
+	s.Require().NoError(err)
+
+	types, err := os.ReadFile(typesPath)
+	s.Require().NoError(err)
+	s.Contains(string(types), "export interface WorkerSpec")
+	s.NotContains(string(types), "// stale")
+}
+
+func (s *NewSuite) TestNewHookAutoDetectRefusesAmbiguousResources() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	svcDir := filepath.Join(s.root, "svc")
+	s.Require().NoError(os.MkdirAll(svcDir, 0755))
+	_, err = s.run("new", "resource", "alpha", "--kind", "worker", "--out", filepath.Join(svcDir, "alpha.json"))
+	s.Require().NoError(err)
+	_, err = s.run("new", "resource", "beta", "--kind", "worker", "--out", filepath.Join(svcDir, "beta.json"))
+	s.Require().NoError(err)
+
+	s.T().Chdir(svcDir)
+	_, err = s.run("new", "hook", "annotate")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "multiple resource files")
 }
 
 func (s *NewSuite) TestNewHookRejectsUnknownKind() {
@@ -362,6 +511,12 @@ func (s *NewSuite) readJSON(path string) map[string]any {
 	var out map[string]any
 	s.Require().NoError(json.Unmarshal(data, &out))
 	return out
+}
+
+func (s *NewSuite) writeJSON(path string, v any) {
+	data, err := json.MarshalIndent(v, "", "  ")
+	s.Require().NoError(err)
+	s.Require().NoError(os.WriteFile(path, data, 0644))
 }
 
 // TestNewHookPreservesYAMLKindFormat verifies that when the kind file

@@ -23,6 +23,87 @@
       "title": "Enum",
       "type": "string"
     },
+    "hooks": {
+      "additionalProperties": false,
+      "description": "Resource-local hooks declared inline on the resource yaml. Paths\n are resolved relative to the resource file's directory. Only\n `render` entries are honored on resources today; the runner\n rejects `dependents` and `validate` entries. Resource render\n hooks run after the kind's `render` + dependents, and before the\n kind's `validate` lifecycle. They let resource definers customize\n the rendered bundle without expanding the kind spec.",
+      "patternProperties": {
+        "^(postRender)$": {
+          "description": "Post-render hooks that run after resource-level render hooks but\n before validate. Same `RenderHook(ctx, fs)` contract as the\n `render` lifecycle — mutating, declaration-ordered — but their\n job is the kind's final word on normalization: consistent\n formatting, key ordering, banner stamping, etc. Splitting this\n from `render` lets a kind react to whatever resource hooks\n produced (which the kind couldn't see at the `render` stage)\n without giving up the deterministic last-mile pass.",
+          "items": {
+            "title": "Value"
+          },
+          "type": "array"
+        }
+      },
+      "properties": {
+        "dependents": {
+          "description": "Per-consumer dependent hooks. Each entry binds a consumer kind to\n hook(s) that run when a resource of that kind declares a\n dependency on this one, plus the params schema the consumer must\n supply. See SPEC.md \"Dependencies\" for the full design.",
+          "items": {
+            "additionalProperties": false,
+            "description": "DependentDefinition declares a consumer kind that may depend on this\n kind, the hook file path(s) that run when such a dependency is\n rendered, and the JSON Schema describing the `params` the consumer\n must supply.",
+            "patternProperties": {
+              "^(paramsPath)$": {
+                "description": "Path to the JSON Schema describing the `params` object that the\n consumer must supply when declaring this dependency. Resolved\n relative to the enclosing kind.json file.",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "properties": {
+              "kind": {
+                "description": "The consumer kind that may depend on this resource.",
+                "minLength": 1,
+                "pattern": "^[a-z][a-z0-9_-]*$",
+                "type": "string"
+              },
+              "params_path": {
+                "description": "Path to the JSON Schema describing the `params` object that the\n consumer must supply when declaring this dependency. Resolved\n relative to the enclosing kind.json file.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "paths": {
+                "description": "Paths to hook files that run when a resource of `kind` declares a\n dependency on this resource. At least one entry is required. Hooks\n run in declaration order. Paths are resolved relative to the\n enclosing kind.json file.",
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "kind",
+              "params_path"
+            ],
+            "title": "Dependent Definition",
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "post_render": {
+          "description": "Post-render hooks that run after resource-level render hooks but\n before validate. Same `RenderHook(ctx, fs)` contract as the\n `render` lifecycle — mutating, declaration-ordered — but their\n job is the kind's final word on normalization: consistent\n formatting, key ordering, banner stamping, etc. Splitting this\n from `render` lets a kind react to whatever resource hooks\n produced (which the kind couldn't see at the `render` stage)\n without giving up the deterministic last-mile pass.",
+          "items": {
+            "title": "Value"
+          },
+          "type": "array"
+        },
+        "render": {
+          "description": "Hooks run during `veil render` (each exports a Hook whose optional\n `renderHook(ctx, fs)` transforms the bundle). See RenderHookDefinition\n for the full per-entry shape; a bare string is shorthand for\n `{path: \u003cstring\u003e}` with no `access` grants.",
+          "items": {
+            "title": "Value"
+          },
+          "type": "array"
+        },
+        "validate": {
+          "description": "Validation hooks that run after every other lifecycle point\n (kind.render, dependents, resource-level render hooks, and\n post_render hooks) has completed. Each hook receives the same\n context + FS as render hooks but any mutations are discarded by\n the runner; the only observable output is the collection of\n `ValidationIssue` entries the hook returns (or throws). Every\n validate hook runs regardless of failures so the user sees every\n issue at once; the render fails at the end with an aggregated\n report if any issues are reported.",
+          "items": {
+            "title": "Value"
+          },
+          "type": "array"
+        }
+      },
+      "title": "HooksDefinition groups a kind's hook files by lifecycle point. Each\n field is an ordered list; the order determines invocation order at\n that lifecycle point. Additional lifecycle points will be added as\n fields on this message so the kind.json shape can extend without\n breaking changes.",
+      "type": "object"
+    },
     "kind": {
       "default": "",
       "description": "The name of the kind this resource instantiates. Required when\n `file_type` is `definition`; ignored when `file_type` is\n `overlay` — overlays cannot reassign their target's kind.",

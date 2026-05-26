@@ -77,6 +77,8 @@ func VeilTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph *Kin
 	}
 	fmt.Fprintf(&b, renderHookContextTemplate, specTypeName)
 	b.WriteString(hookInterface)
+	b.WriteString("\n")
+	b.WriteString(validateHookInterface)
 	if dependentTypes != "" {
 		b.WriteString("\n")
 		b.WriteString(dependentTypes)
@@ -473,7 +475,15 @@ func formatNumberLiteral(f float64) string {
 // so plain relative paths like "data.txt" or "config/env.yaml" are what
 // hooks should use. `ctx.root` is the absolute root path, exposed for
 // logging or display.
-const hostInterfaces = `export interface Std {
+const hostInterfaces = `export interface YamlCodec {
+  /** Parse a YAML string into a JS value. Throws on malformed YAML. */
+  parse(s: string): unknown;
+  /** Serialize a JS value to YAML. Output uses 2-space indent and
+   *  alphabetized keys (the gopkg.in/yaml.v3 default for maps). */
+  stringify(value: unknown): string;
+}
+
+export interface Std {
   /** Read the entire file as a string, or null on failure. The path is
    *  resolved relative to the veil project root — the first ancestor
    *  directory (walking up from where ` + "`veil`" + ` was invoked) that
@@ -481,6 +491,10 @@ const hostInterfaces = `export interface Std {
   loadFile(path: string): string | null;
   /** Read the value of an environment variable, or undefined if unset. */
   getenv(name: string): string | undefined;
+  /** YAML codec — parse and stringify without an npm dependency. Backed
+   *  by gopkg.in/yaml.v3 on the host side. JSON is available via the
+   *  native JSON global. */
+  yaml: YamlCodec;
 }
 
 /** File metadata returned by os.stat / os.lstat. All values are numbers. */
@@ -585,5 +599,41 @@ const hookInterface = `export interface RenderHook {
    * the returned Promise transparently before handing the result off.
    */
   render(ctx: RenderHookContext, fs: FS): FS | void | Promise<FS | void>;
+}
+`
+
+const validateHookInterface = `export interface ValidationIssue {
+  /** Required. Human-readable description of what failed. Surfaced
+   *  verbatim in the aggregated render report. */
+  message: string;
+  /** Optional FS path or JSON-pointer-style locator that pinpoints where
+   *  the issue lives (e.g. ` + "`sources/app.yaml`" + ` or ` + "`spec.replicas`" + `). */
+  path?: string;
+  /** Optional severity tag. ` + "`'error'`" + ` (the default) fails the render;
+   *  ` + "`'warning'`" + ` is reported but does not fail. */
+  severity?: 'error' | 'warning';
+}
+
+/** A validate hook may return an issue list, a single issue, a single
+ *  message string, or nothing. Throwing is treated as a single
+ *  error-severity issue. */
+export type ValidationResult =
+  | void
+  | string
+  | ValidationIssue
+  | Array<string | ValidationIssue>;
+
+export interface ValidateHook {
+  /**
+   * Called during ` + "`veil render`" + ` after every other lifecycle point has
+   * finished (kind render hooks, dependents, and any resource-level
+   * hooks). Receives the same RenderHookContext + FS as a render hook
+   * but is purely observational: any mutations the hook makes to the
+   * FS or ctx are discarded by the runner. Returning a list of
+   * issues — or throwing — fails the render with an aggregated
+   * report. Every validate hook on the kind runs regardless of
+   * failures so authors see every issue at once. May be ` + "`async`" + `.
+   */
+  validate(ctx: RenderHookContext, fs: FS): ValidationResult | Promise<ValidationResult>;
 }
 `

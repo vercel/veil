@@ -215,15 +215,41 @@ are passed through the hook pipeline and ultimately rendered to disk.
 An object grouping hook code files (TS/JS) by lifecycle point. Each lifecycle key holds an ordered
 list of hook files, and each file exports an interface specific to that lifecycle.
 
-Two lifecycles exist today:
+Four lifecycles exist today:
 
 - **`render`** — runs during the consumer's own `veil render`. Each entry is an object with a
   required `path` (TS/JS file that exports a `RenderHook`) plus optional `access` declaring host
   resources the hook needs (env vars today; filesystem / network later). The string short-form is
-  not supported: every entry is `{path, access?}`.
+  also accepted (`["./hooks/foo.ts"]`) and gets expanded to `{path: "./hooks/foo.ts"}` at load time.
 - **`dependents`** — per-consumer hooks that fire when *another* kind declares a dependency on this
   one. Each entry binds a consumer kind to one or more hook file paths and a JSON Schema for the
   params the consumer must supply. See [Dependencies](#dependencies) for the full design.
+- **`post_render`** — the kind's final normalization pass. Same `{path, access?}` shape and same
+  `RenderHook(ctx, fs)` contract as `render` (mutating, declaration-ordered). Runs after every
+  resource-level render hook so the kind can react to whatever resource customizations produced —
+  consistent formatting, deterministic key ordering, banner stamping, etc. Kind-scoped only;
+  resources cannot declare `metadata.hooks.post_render`.
+- **`validate`** — read-only checks that run *after* every other lifecycle point on a resource
+  (kind `render`, dependents, resource hooks, and `post_render`) has finished. Each entry has the
+  same `{path, access?}` shape as `render`. Mutations a validate hook makes to the FS or ctx are
+  discarded by the runner; the only observable output is the array of `ValidationIssue` entries
+  the hook returns. **Every validate hook runs regardless of failures** so the author sees every
+  issue at once; the render fails at the end with an aggregated report if any error-severity
+  issues come back. A throw from one hook is treated as a single error-severity issue and does
+  not abort the loop. See [Validation hooks](#validation-hooks) for the full design.
+
+#### Pipeline order
+
+For a single resource being rendered, the runner executes hooks in this order:
+
+1. The kind's `hooks.render` (in declaration order).
+2. For each declared dependency, the target kind's `hooks.dependents` matching this kind.
+3. The resource's own `metadata.hooks.render` (see [Resource](#resource) — paths relative to the
+   resource file). Resource hooks see the bundle after every kind-level write.
+4. The kind's `hooks.post_render`. Mutating; runs after resource hooks so the kind owns the final
+   normalization pass. Resources cannot inject themselves into this stage.
+5. The kind's `hooks.validate`. Every validate hook runs; mutations are dropped; reports
+   aggregate into a single failure (or pass) before any output is written.
 
 #### `access` — declared host resources
 
@@ -320,6 +346,44 @@ return a replacement FS, return nothing (implicit passthrough), or `throw` to ab
 At final write time, veil walks the bundle and writes each entry's contents to `<outDir>/<instance>/<file.path>`.
 If two entries resolve to the same destination path, that's a hard error.
 
+#### Validation hooks
+
+Files under `hooks.validate` export a `ValidateHook` and run after every other lifecycle point on
+the resource. The function signature is the same shape as `render` — `(ctx, fs)` — but the return
+type differs: a validate hook returns an array of `ValidationIssue` (or a single issue / message,
+or nothing) instead of a mutated FS.
+
+```ts
+export interface ValidationIssue {
+  message: string;
+  path?: string;                // optional locator (FS path or JSON pointer)
+  severity?: 'error' | 'warning'; // defaults to 'error'
+}
+
+export type ValidationResult =
+  | void
+  | string
+  | ValidationIssue
+  | Array<string | ValidationIssue>;
+
+export interface ValidateHook {
+  validate(ctx: RenderHookContext, fs: FS): ValidationResult | Promise<ValidationResult>;
+}
+```
+
+Semantics:
+
+- The runner snapshots the bundle / ctx by simply not reading mutations back. A validate hook
+  *may* call `fs.add`, `setContent`, etc., but those calls never reach the rendered output and
+  never persist for the next hook in the pipeline. Treat the FS as read-only.
+- Every validate hook on the kind runs, even if an earlier one returned issues or threw. A throw
+  is folded into the report as a single error-severity issue (`validate hook X threw: …`).
+- After the loop, the aggregated report is split by severity. `warning` issues print to the
+  interactive printer but do not fail the render. `error` issues (the default) fail the render
+  with a single aggregated message listing every error.
+- A bare string return is promoted to a single error-severity issue with that string as the
+  message — convenient one-liner.
+
 ### `schema`
 
 A JSON Schema file that defines the shape of the `spec` field for this resource. This is the **source** schema —
@@ -364,6 +428,25 @@ Common to all resources. Contains:
   resolved relative to the resource file's directory or used as-is when absolute), and optional
   `skip_hooks` (default `false`). `veil override` manages this list — see [Override](#override) for
   semantics and the [CLI section](#veil-override-resource-source) for usage.
+- **`hooks`**: Optional. Mirrors the kind-level `hooks` shape but only `render` is honored on a
+  resource — `dependents`, `post_render`, and `validate` are kind-scoped concepts and the loader
+  rejects them on a resource with a clear error. Resource-local render hooks let resource definers
+  tweak the rendered bundle without expanding the kind spec. Each entry is `{path, access?}`
+  (string shorthand also accepted); paths resolve relative to the resource file's directory. The
+  hooks are compiled on demand at render time (no kind.json entry) and run **after** the kind's
+  `render` + dependents but **before** the kind's `post_render` and `validate`. They share the
+  same `RenderHook(ctx, fs)` shape and capabilities as kind render hooks.
+
+  ```yaml
+  metadata:
+    kind: service
+    name: api-devbox
+    hooks:
+      render:
+        - ./hooks/inject-extra-env.ts
+  spec:
+    replicas: 3
+  ```
 
 ### `spec`
 

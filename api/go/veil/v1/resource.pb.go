@@ -237,7 +237,15 @@ type Metadata struct {
 	// `definition` when omitted (the historical / authoritative
 	// resource-file shape). Set to `overlay` on overlay fragments so
 	// the catalog walker can skip them without name/kind heuristics.
-	FileType      FileType_Enum `protobuf:"varint,5,opt,name=file_type,json=fileType,proto3,enum=veil.v1.FileType_Enum" json:"file_type,omitempty"`
+	FileType FileType_Enum `protobuf:"varint,5,opt,name=file_type,json=fileType,proto3,enum=veil.v1.FileType_Enum" json:"file_type,omitempty"`
+	// Resource-local hooks declared inline on the resource yaml. Paths
+	// are resolved relative to the resource file's directory. Only
+	// `render` entries are honored on resources today; the runner
+	// rejects `dependents` and `validate` entries. Resource render
+	// hooks run after the kind's `render` + dependents, and before the
+	// kind's `validate` lifecycle. They let resource definers customize
+	// the rendered bundle without expanding the kind spec.
+	Hooks         *HooksDefinition `protobuf:"bytes,6,opt,name=hooks,proto3" json:"hooks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -305,6 +313,13 @@ func (x *Metadata) GetFileType() FileType_Enum {
 		return x.FileType
 	}
 	return FileType_definition
+}
+
+func (x *Metadata) GetHooks() *HooksDefinition {
+	if x != nil {
+		return x.Hooks
+	}
+	return nil
 }
 
 // FileType is the wrapper message for the Metadata.file_type enum.
@@ -481,7 +496,7 @@ var File_veil_v1_resource_proto protoreflect.FileDescriptor
 
 const file_veil_v1_resource_proto_rawDesc = "" +
 	"\n" +
-	"\x16veil/v1/resource.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xa7\x01\n" +
+	"\x16veil/v1/resource.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x14veil/v1/config.proto\"\xa7\x01\n" +
 	"\bResource\x125\n" +
 	"\bmetadata\x18\x01 \x01(\v2\x11.veil.v1.MetadataB\x06\xbaH\x03\xc8\x01\x01R\bmetadata\x12+\n" +
 	"\x04spec\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x04spec\x127\n" +
@@ -492,13 +507,14 @@ const file_veil_v1_resource_proto_rawDesc = "" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04kind\x12\x1e\n" +
 	"\x04name\x18\x02 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x12/\n" +
-	"\x06params\x18\x03 \x01(\v2\x17.google.protobuf.StructR\x06params\"\xd0\x01\n" +
+	"\x06params\x18\x03 \x01(\v2\x17.google.protobuf.StructR\x06params\"\x80\x02\n" +
 	"\bMetadata\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12,\n" +
 	"\boverlays\x18\x02 \x03(\v2\x10.veil.v1.OverlayR\boverlays\x12/\n" +
 	"\toverrides\x18\x03 \x03(\v2\x11.veil.v1.OverrideR\toverrides\x12\x12\n" +
 	"\x04kind\x18\x04 \x01(\tR\x04kind\x12=\n" +
-	"\tfile_type\x18\x05 \x01(\x0e2\x16.veil.v1.FileType.EnumB\b\xbaH\x05\x82\x01\x02\x10\x01R\bfileType\"/\n" +
+	"\tfile_type\x18\x05 \x01(\x0e2\x16.veil.v1.FileType.EnumB\b\xbaH\x05\x82\x01\x02\x10\x01R\bfileType\x12.\n" +
+	"\x05hooks\x18\x06 \x01(\v2\x18.veil.v1.HooksDefinitionR\x05hooks\"/\n" +
 	"\bFileType\"#\n" +
 	"\x04Enum\x12\x0e\n" +
 	"\n" +
@@ -544,6 +560,7 @@ var file_veil_v1_resource_proto_goTypes = []any{
 	(*Override)(nil),        // 6: veil.v1.Override
 	nil,                     // 7: veil.v1.Overlay.IfEntry
 	(*structpb.Struct)(nil), // 8: google.protobuf.Struct
+	(*HooksDefinition)(nil), // 9: veil.v1.HooksDefinition
 }
 var file_veil_v1_resource_proto_depIdxs = []int32{
 	3, // 0: veil.v1.Resource.metadata:type_name -> veil.v1.Metadata
@@ -553,12 +570,13 @@ var file_veil_v1_resource_proto_depIdxs = []int32{
 	5, // 4: veil.v1.Metadata.overlays:type_name -> veil.v1.Overlay
 	6, // 5: veil.v1.Metadata.overrides:type_name -> veil.v1.Override
 	0, // 6: veil.v1.Metadata.file_type:type_name -> veil.v1.FileType.Enum
-	7, // 7: veil.v1.Overlay.if:type_name -> veil.v1.Overlay.IfEntry
-	8, // [8:8] is the sub-list for method output_type
-	8, // [8:8] is the sub-list for method input_type
-	8, // [8:8] is the sub-list for extension type_name
-	8, // [8:8] is the sub-list for extension extendee
-	0, // [0:8] is the sub-list for field type_name
+	9, // 7: veil.v1.Metadata.hooks:type_name -> veil.v1.HooksDefinition
+	7, // 8: veil.v1.Overlay.if:type_name -> veil.v1.Overlay.IfEntry
+	9, // [9:9] is the sub-list for method output_type
+	9, // [9:9] is the sub-list for method input_type
+	9, // [9:9] is the sub-list for extension type_name
+	9, // [9:9] is the sub-list for extension extendee
+	0, // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_veil_v1_resource_proto_init() }
@@ -566,6 +584,7 @@ func file_veil_v1_resource_proto_init() {
 	if File_veil_v1_resource_proto != nil {
 		return
 	}
+	file_veil_v1_config_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
