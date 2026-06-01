@@ -50,18 +50,15 @@ func NewApp() *cli.Command {
 
 			level := parseLogLevel(command.String("log-level"))
 			logPaths := command.StringSlice("log-paths")
-			quiet := command.Bool("quiet")
 
-			if quiet {
-				// --quiet drops all console logging, so the only thing a
-				// command writes to stdout is its final result line — the
-				// CommandResult envelope in JSON mode. Use it for clean,
-				// machine-readable output (e.g. the pre-commit render).
+			// Logs go to the rolling log file by default (~/.veil/logs),
+			// like devbox/bridge — the console stays clean so the only
+			// thing on stdout is the command's own output (the styled
+			// pretty lines, or the JSON CommandResult). Streaming logs to
+			// the console is opt-in via --log-paths stdout|stderr|<file>.
+			// --quiet forces console-silent, overriding any --log-paths.
+			if command.Bool("quiet") {
 				logPaths = nil
-			} else if len(logPaths) == 0 {
-				// Otherwise logs always stream to stdout, in every output
-				// format; --quiet is the only thing that silences them.
-				logPaths = []string{"stdout"}
 			}
 
 			cleanup, err := logging.Setup(level, logPaths, command.Root().Writer, command.Root().ErrWriter)
