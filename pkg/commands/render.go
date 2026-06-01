@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/urfave/cli/v3"
 
@@ -84,6 +86,11 @@ func Render() *cli.Command {
 				Name:  "debug",
 				Usage: "Dump all logs (including hook console.log output) to stdout at debug level",
 			},
+			&cli.IntFlag{
+				Name:  "jobs",
+				Usage: "Number of resources to render concurrently (default: number of CPUs)",
+				Value: runtime.NumCPU(),
+			},
 		},
 		Action: withResult(runRender),
 	}
@@ -148,18 +155,49 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 	// printer routes it through slog so it lands as a structured log entry.
 	p.Info("Rendering kubernetes files.")
 
-	// Render every path against the shared registry/catalog. Failures are
-	// accumulated rather than fatal so one bad file doesn't hide drift in
-	// the others; the response still carries whatever did render.
 	resp := &renderResponse{Rendered: []renderedResource{}}
 	var errs []error
-	for _, pathArg := range pathArgs {
-		rr, err := renderOne(reg, kindReg, catalog, projectFS, vars, outDir, pathArg)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", pathArg, err))
+
+	jobsN := c.Int("jobs")
+	if jobsN < 1 {
+		jobsN = 1
+	}
+
+	// Bounded worker pool. Each hook runtime mounts the project root as its
+	// own filesystem root, so no process-global state is shared and renders
+	// run concurrently. Results land in a fixed-index slice so the response
+	// order is deterministic regardless of completion order.
+	results := make([]renderedResource, len(pathArgs))
+	jobErrs := make([]error, len(pathArgs))
+	sem := make(chan struct{}, jobsN)
+	var wg sync.WaitGroup
+	for i, pathArg := range pathArgs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, pathArg string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			relFS, err := resolveProjectRel(reg.Root, pathArg)
+			if err != nil {
+				jobErrs[i] = fmt.Errorf("%s: %w", pathArg, err)
+				return
+			}
+			rr, err := renderEntry(reg, kindReg, catalog, projectFS, vars, outDir, relFS)
+			if err != nil {
+				jobErrs[i] = fmt.Errorf("%s: %w", pathArg, err)
+				return
+			}
+			results[i] = rr
+		}(i, pathArg)
+	}
+	wg.Wait()
+
+	for i := range pathArgs {
+		if jobErrs[i] != nil {
+			errs = append(errs, jobErrs[i])
 			continue
 		}
-		resp.Rendered = append(resp.Rendered, rr)
+		resp.Rendered = append(resp.Rendered, results[i])
 	}
 	if len(errs) > 0 {
 		return resp, errors.Join(errs...)
@@ -167,29 +205,36 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 	return resp, nil
 }
 
-// renderOne resolves a single resource path against the project root and
-// renders it through the shared registry + catalog. It returns the
-// rendered-resource descriptor for the JSON response.
-func renderOne(reg *config.Registry, kindReg registry.Registry, catalog resource.Catalog, projectFS fs.FS, vars map[string]any, outDir, pathArg string) (renderedResource, error) {
+// resolveProjectRel turns a user-supplied path (relative to the current
+// working directory) into a project-root-relative catalog key. Must run
+// before the render pool chdir's, since it depends on the original cwd.
+func resolveProjectRel(root, pathArg string) (string, error) {
 	absPath, err := filepath.Abs(pathArg)
 	if err != nil {
-		return renderedResource{}, fmt.Errorf("resolving path: %w", err)
+		return "", fmt.Errorf("resolving path: %w", err)
 	}
 	if _, err := os.Stat(absPath); err != nil {
 		if os.IsNotExist(err) {
-			return renderedResource{}, fmt.Errorf("no file at %s (resolved from %q against working directory)", absPath, pathArg)
+			return "", fmt.Errorf("no file at %s (resolved from %q against working directory)", absPath, pathArg)
 		}
-		return renderedResource{}, fmt.Errorf("checking %s: %w", absPath, err)
+		return "", fmt.Errorf("checking %s: %w", absPath, err)
 	}
-	rel, err := filepath.Rel(reg.Root, absPath)
+	rel, err := filepath.Rel(root, absPath)
 	if err != nil {
-		return renderedResource{}, fmt.Errorf("resolving against project root: %w", err)
+		return "", fmt.Errorf("resolving against project root: %w", err)
 	}
 	if strings.HasPrefix(rel, "..") {
-		return renderedResource{}, fmt.Errorf("is outside the project root %s", reg.Root)
+		return "", fmt.Errorf("is outside the project root %s", root)
 	}
-	relFS := filepath.ToSlash(rel)
+	return filepath.ToSlash(rel), nil
+}
 
+// renderEntry loads a resource by its project-relative key and renders it
+// through the shared registry + catalog. Safe to call concurrently: each
+// hook runtime mounts Root as its filesystem root, so no process-global
+// working directory is involved. Returns the rendered-resource descriptor
+// for the JSON response.
+func renderEntry(reg *config.Registry, kindReg registry.Registry, catalog resource.Catalog, projectFS fs.FS, vars map[string]any, outDir, relFS string) (renderedResource, error) {
 	entry, err := catalog.LoadByPath(relFS)
 	if err != nil {
 		return renderedResource{}, err
