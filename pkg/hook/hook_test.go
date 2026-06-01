@@ -721,9 +721,7 @@ export default h;
 
 	out := buf.String()
 	// JSON handler emits `"msg":"..."` with internal quotes escaped.
-	// console.log maps to DEBUG (not INFO) so a chatty hook stays quiet
-	// at the default level; warn/error/debug map to their own levels.
-	s.NotContains(out, `"level":"INFO"`)
+	s.Contains(out, `"level":"INFO"`)
 	s.Contains(out, `info from hook`)
 	s.Contains(out, `{\"foo\":\"bar\"} 42`)
 	s.Contains(out, `"level":"WARN"`)
@@ -736,8 +734,7 @@ export default h;
 
 func (s *HookSuite) TestLogsBufferDoesNotLeakAcrossCalls() {
 	var buf bytes.Buffer
-	// console.log maps to DEBUG, so capture at debug level.
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	code := s.compile(`
 let n = 0;
