@@ -59,9 +59,8 @@ func NewApp() *cli.Command {
 				// machine-readable output (e.g. the pre-commit render).
 				logPaths = nil
 			} else if len(logPaths) == 0 {
-				// Otherwise logs always stream to stdout, regardless of
-				// output format; --quiet is the only thing that silences
-				// them.
+				// Otherwise logs always stream to stdout, in every output
+				// format; --quiet is the only thing that silences them.
 				logPaths = []string{"stdout"}
 			}
 

@@ -144,9 +144,9 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 		return nil, fmt.Errorf("resolving --out: %w", err)
 	}
 
-	if !interact.IsJSON() {
-		p.Info("Rendering kubernetes files.")
-	}
+	// In pretty mode this styles a line to the terminal; in JSON mode the
+	// printer routes it through slog so it lands as a structured log entry.
+	p.Info("Rendering kubernetes files.")
 
 	// Render every path against the shared registry/catalog. Failures are
 	// accumulated rather than fatal so one bad file doesn't hide drift in
