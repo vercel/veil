@@ -52,9 +52,9 @@ func (s *ResultSuite) TestWriteResultErrorCarriesPartialResponse() {
 	s.Equal("api-devbox", got.Response.Name, "partial response survives an error")
 }
 
-func (s *ResultSuite) TestWriteErrorResultHasNoResponse() {
+func (s *ResultSuite) TestWriteResultErrorWithNilResponseOmitsResponse() {
 	var buf bytes.Buffer
-	s.Require().NoError(WriteErrorResult(&buf, assertErr("kaboom")))
+	s.Require().NoError(writeResult[*sampleResponse](&buf, nil, "kaboom"))
 
 	out := strings.TrimSpace(buf.String())
 	s.Contains(out, `"outcome":"error"`)
@@ -67,9 +67,3 @@ func (s *ResultSuite) TestWriteResultIsSingleLine() {
 	s.Require().NoError(writeResult(&buf, sampleResponse{Name: "x"}, ""))
 	s.Equal(1, strings.Count(buf.String(), "\n"), "envelope is exactly one line")
 }
-
-// assertErr is a tiny error helper so the test doesn't pull in errors.New
-// at each call site.
-type assertErr string
-
-func (e assertErr) Error() string { return string(e) }

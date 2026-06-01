@@ -15,26 +15,13 @@ func main() {
 
 	app := commands.NewApp()
 	if err := app.Run(context.Background(), os.Args); err != nil {
-		// Use the cli command's own streams (urfave defaults them to
-		// os.Stdout / os.Stderr during Run, and tests override them) so
-		// output routing stays consistent with every other command and
-		// never bypasses the command's configured writers.
-		//
-		// No slog.Error here: in JSON mode that line would land on stdout
-		// after the result envelope (breaking "stdout is exactly one
-		// CommandResult"); the error is already carried by the envelope,
-		// and in pretty mode the printer logs it to the rolling file.
-		if interact.IsJSON() {
-			// Every non-zero JSON exit must still print exactly one
-			// CommandResult. A command that adopted withResult already
-			// wrote one; only emit a top-level envelope when nothing did
-			// (arg parsing, the Before hook, or an unconverted command).
-			if !commands.ResultEmitted() {
-				_ = commands.WriteErrorResult(app.Writer, err)
-			}
-		} else {
-			interact.NewPrinter(app.ErrWriter).Errorf("%s", err)
-		}
+		// Surface the error through the printer using the cli command's
+		// own ErrWriter (urfave defaults it to os.Stderr; tests override
+		// it). In JSON mode the printer routes this through slog, so it
+		// lands as a structured error log line — the command's
+		// CommandResult envelope was already written by withResult. In
+		// pretty mode it's styled text.
+		interact.NewPrinter(app.ErrWriter).Errorf("%s", err)
 		os.Exit(1)
 	}
 }
