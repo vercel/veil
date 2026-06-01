@@ -46,11 +46,13 @@ type Options struct {
 	OutDir string
 
 	// Root is the veil project root — the directory housing veil.json.
-	// Threaded through to the hook context as `ctx.root` and used to
-	// chdir the process before running hooks so `ctx.std` / `ctx.os`
-	// paths resolve against the project root regardless of where the
-	// user invoked `veil render` from. If empty, falls back to the
-	// caller's CWD.
+	// Threaded through to the hook context as `ctx.root` and handed to
+	// each hook runtime as its filesystem root (QuickJS mounts it at "/"),
+	// so `ctx.std` / `ctx.os` paths resolve against the project root
+	// regardless of where the user invoked `veil render` from. Passed
+	// straight to the runtime — never via the host process's working
+	// directory — so renders are safe to run concurrently. If empty,
+	// falls back to the caller's CWD.
 	Root string
 
 	// Registry resolves compiled kinds on demand. The render pipeline asks
@@ -98,20 +100,12 @@ func Render(opts *Options) (*RenderedResource, error) {
 		return nil, err
 	}
 
-	// chdir into the veil project root so hook-side std/os paths resolve
-	// relative to the root (wazero captures os.Getwd() at qjs.New time).
-	// Restore on exit — this is process-global state.
+	// The project root is handed to each hook runtime as its filesystem
+	// root (see invokeHook → hook.WithCwd), so hook-side std/os paths
+	// resolve against it without the host process ever changing its own
+	// working directory — which is what lets renders run concurrently.
 	root := opts.Root
-	if root != "" {
-		prev, err := os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("getting cwd: %w", err)
-		}
-		if err := os.Chdir(root); err != nil {
-			return nil, fmt.Errorf("chdir to root %s: %w", root, err)
-		}
-		defer os.Chdir(prev)
-	} else {
+	if root == "" {
 		root, _ = os.Getwd()
 	}
 
@@ -569,6 +563,18 @@ func formatValidationReport(kindName, resourceName string, issues []hook.Validat
 // instead and returns the issue list. Any FS or ctx mutations the
 // hook makes inside the runtime are not read back out: the only
 // observable output is the issues slice.
+// cwdFromCtx pulls the project root out of a hook context map. Every
+// context built in this package carries "root" (the directory housing
+// veil.json), which the hook runtime mounts as its filesystem root.
+func cwdFromCtx(ctx any) string {
+	if m, ok := ctx.(map[string]any); ok {
+		if root, ok := m["root"].(string); ok {
+			return root
+		}
+	}
+	return ""
+}
+
 func invokeValidateHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceName string, ctx any, bdl hook.Bundle) ([]hook.ValidationIssue, error) {
 	hookName := h.GetName()
 	logger := parent.With("hook", hookName)
@@ -604,6 +610,7 @@ func invokeValidateHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceN
 		hook.WithLogger(logger),
 		hook.WithDisplay(display),
 		hook.WithEnv(env),
+		hook.WithCwd(cwdFromCtx(ctx)),
 	)
 	if err != nil {
 		logger.Error("validate hook failed", "stage", "init", "duration", time.Since(start).String(), "err", err.Error())
@@ -661,6 +668,7 @@ func invokeHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceName stri
 		hook.WithLogger(logger),
 		hook.WithDisplay(display),
 		hook.WithEnv(env),
+		hook.WithCwd(cwdFromCtx(ctx)),
 	)
 	if err != nil {
 		logger.Error("hook failed", "stage", "init", "duration", time.Since(start).String(), "err", err.Error())

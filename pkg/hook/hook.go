@@ -297,6 +297,7 @@ type options struct {
 	display     func(level, msg string)
 	http        HTTPConfig
 	env         map[string]string
+	cwd         string
 }
 
 // WithTimeout bounds a single RenderHook call. When the timeout fires the
@@ -337,6 +338,14 @@ func WithHTTP(cfg HTTPConfig) Option { return func(o *options) { o.http = cfg } 
 func WithEnv(env map[string]string) Option {
 	return func(o *options) { o.env = env }
 }
+
+// WithCwd sets the directory the hook's built-in `std`/`os` modules see
+// as the filesystem root (QuickJS mounts it at "/"), so a hook reading
+// `packages/foo` resolves it under dir. This is passed straight to the
+// QuickJS runtime, so it never touches the host process's working
+// directory — multiple hooks can run concurrently with different (or the
+// same) roots. Defaults to the process working directory when unset.
+func WithCwd(dir string) Option { return func(o *options) { o.cwd = dir } }
 
 // Hook is the Go-side abstraction for a veil hook. Every lifecycle method
 // is safe to call; methods whose underlying JS function is not defined
@@ -384,7 +393,7 @@ func New(code string, opts ...Option) (Hook, error) {
 		o(&cfg)
 	}
 
-	rt, err := qjs.New(qjs.Option{MemoryLimit: cfg.memoryLimit})
+	rt, err := qjs.New(qjs.Option{CWD: cfg.cwd, MemoryLimit: cfg.memoryLimit})
 	if err != nil {
 		return nil, fmt.Errorf("creating runtime: %w", err)
 	}
