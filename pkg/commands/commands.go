@@ -53,6 +53,10 @@ func NewApp() *cli.Command {
 			quiet := command.Bool("quiet")
 
 			if quiet {
+				// --quiet drops all console logging, so the only thing a
+				// command writes to stdout is its final result line — the
+				// CommandResult envelope in JSON mode. Use it for clean,
+				// machine-readable output (e.g. the pre-commit render).
 				logPaths = nil
 			} else if len(logPaths) == 0 && output == interact.OutputJSON {
 				logPaths = []string{"stdout"}
