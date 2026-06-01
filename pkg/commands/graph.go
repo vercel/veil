@@ -11,6 +11,7 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"github.com/vercel/veil/pkg/config"
+	"github.com/vercel/veil/pkg/interact"
 	"github.com/vercel/veil/pkg/registry"
 	"github.com/vercel/veil/pkg/resource"
 )
@@ -52,68 +53,127 @@ func Graph() *cli.Command {
 				Value: graphFormatTree,
 			},
 		},
-		Action: runGraph,
+		Action: withResult(runGraph),
 	}
 }
 
-func runGraph(ctx context.Context, c *cli.Command) error {
+// graphResponse is the JSON payload for `veil graph`: the resolved
+// dependency graph as structured nodes + edges (the tree/mermaid/dot
+// formats are the human renderings of the same data).
+type graphResponse struct {
+	Root  string          `json:"root"`
+	Nodes []graphNodeJSON `json:"nodes"`
+	Edges []graphEdgeJSON `json:"edges"`
+}
+
+type graphNodeJSON struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+type graphEdgeJSON struct {
+	From   string         `json:"from"`
+	To     string         `json:"to"`
+	Params map[string]any `json:"params,omitempty"`
+}
+
+func runGraph(ctx context.Context, c *cli.Command) (*graphResponse, error) {
 	pathArg := c.StringArg("path")
 	if pathArg == "" {
-		return fmt.Errorf("graph: path is required (pass a resource file)")
+		return nil, fmt.Errorf("graph: path is required (pass a resource file)")
 	}
 	format := c.String("format")
 	switch format {
 	case graphFormatTree, graphFormatMermaid, graphFormatDot:
 	default:
-		return fmt.Errorf("graph: unknown --format %q (want tree|mermaid|dot)", format)
+		return nil, fmt.Errorf("graph: unknown --format %q (want tree|mermaid|dot)", format)
 	}
 
 	reg, err := registry.LoadProject(c.String("config"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	projectFS := os.DirFS(reg.Root)
 	handles, err := resource.Discover(ctx, projectFS, reg.ResourceDiscovery.GetPaths())
 	if err != nil {
-		return fmt.Errorf("discovering resources: %w", err)
+		return nil, fmt.Errorf("discovering resources: %w", err)
 	}
 	catalog, err := resource.NewCatalog(projectFS, handles)
 	if err != nil {
-		return fmt.Errorf("building resource catalog: %w", err)
+		return nil, fmt.Errorf("building resource catalog: %w", err)
 	}
 
 	absPath, err := filepath.Abs(pathArg)
 	if err != nil {
-		return fmt.Errorf("resolving path: %w", err)
+		return nil, fmt.Errorf("resolving path: %w", err)
 	}
 	rel, err := filepath.Rel(reg.Root, absPath)
 	if err != nil {
-		return fmt.Errorf("resolving %s against project root: %w", pathArg, err)
+		return nil, fmt.Errorf("resolving %s against project root: %w", pathArg, err)
 	}
 	if strings.HasPrefix(rel, "..") {
-		return fmt.Errorf("%s is outside the project root %s", pathArg, reg.Root)
+		return nil, fmt.Errorf("%s is outside the project root %s", pathArg, reg.Root)
 	}
 	root, err := catalog.LoadByPath(filepath.ToSlash(rel))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	g, err := buildResourceGraph(catalog, root)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	w := c.Root().Writer
-	switch format {
-	case graphFormatTree:
-		return renderTree(w, g)
-	case graphFormatMermaid:
-		return renderMermaid(w, g)
-	case graphFormatDot:
-		return renderDot(w, g)
+	// The textual renderings are human output; in JSON mode only the
+	// structured envelope is emitted.
+	if !interact.IsJSON() {
+		w := c.Root().Writer
+		var rerr error
+		switch format {
+		case graphFormatTree:
+			rerr = renderTree(w, g)
+		case graphFormatMermaid:
+			rerr = renderMermaid(w, g)
+		case graphFormatDot:
+			rerr = renderDot(w, g)
+		}
+		if rerr != nil {
+			return nil, rerr
+		}
 	}
-	return nil
+
+	return graphToResponse(g), nil
+}
+
+// graphToResponse flattens the internal resourceGraph into the JSON
+// response shape, with deterministic node/edge ordering.
+func graphToResponse(g *resourceGraph) *graphResponse {
+	resp := &graphResponse{Root: g.rootID, Nodes: []graphNodeJSON{}, Edges: []graphEdgeJSON{}}
+
+	ids := make([]string, 0, len(g.nodes))
+	for id := range g.nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		n := g.nodes[id]
+		resp.Nodes = append(resp.Nodes, graphNodeJSON{ID: id, Kind: n.kind, Name: n.name, Path: n.path})
+	}
+
+	froms := make([]string, 0, len(g.edges))
+	for from := range g.edges {
+		froms = append(froms, from)
+	}
+	sort.Strings(froms)
+	for _, from := range froms {
+		for _, e := range g.edges[from] {
+			resp.Edges = append(resp.Edges, graphEdgeJSON{From: from, To: e.to, Params: e.params})
+		}
+	}
+	return resp
 }
 
 // resourceGraph is the resolved dependency graph rooted at one resource.

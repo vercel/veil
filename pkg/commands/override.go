@@ -53,48 +53,68 @@ func Override() *cli.Command {
 				UsageText: "Source filenames declared by the resource's kind (e.g. \"sources/app.yaml\"). Omit to list available sources.",
 			},
 		},
-		Action: runOverride,
+		Action: withResult(runOverride),
 	}
 }
 
-func runOverride(ctx context.Context, c *cli.Command) error {
+// overrideResponse is the JSON payload for `veil override`. In apply
+// mode `applied` lists the override files written; in discovery mode
+// (no source given) `sources` lists the kind's overridable sources.
+type overrideResponse struct {
+	Kind      string            `json:"kind"`
+	Applied   []appliedOverride `json:"applied,omitempty"`
+	Sources   []overridableSrc  `json:"sources,omitempty"`
+	SkipHooks bool              `json:"skipHooks,omitempty"`
+}
+
+type appliedOverride struct {
+	Source string `json:"source"`
+	Path   string `json:"path"`
+}
+
+type overridableSrc struct {
+	Name       string `json:"name"`
+	Overridden bool   `json:"overridden"`
+}
+
+func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error) {
 	p := interact.Default()
 
 	resourceArg := c.StringArg("resource")
 	sourceArgs := c.StringArgs("sources")
 	if resourceArg == "" {
-		return fmt.Errorf("override: <resource> is required")
+		return nil, fmt.Errorf("override: <resource> is required")
 	}
 	skipHooks := c.Bool("skip-hooks")
 	outDir := c.String("out")
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("getting working directory: %w", err)
+		return nil, fmt.Errorf("getting working directory: %w", err)
 	}
 
 	reg, err := config.Discover(cwd)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	resourceAbs, err := filepath.Abs(resourceArg)
 	if err != nil {
-		return fmt.Errorf("resolving resource path: %w", err)
+		return nil, fmt.Errorf("resolving resource path: %w", err)
 	}
 	relFromRoot, err := filepath.Rel(reg.Root, resourceAbs)
 	if err != nil || strings.HasPrefix(relFromRoot, "..") {
-		return fmt.Errorf("%s is outside the project root %s", resourceArg, reg.Root)
+		return nil, fmt.Errorf("%s is outside the project root %s", resourceArg, reg.Root)
 	}
 
 	res, err := resource.Load(os.DirFS(reg.Root), filepath.ToSlash(relFromRoot))
 	if err != nil {
-		return fmt.Errorf("loading resource %s: %w", resourceArg, err)
+		return nil, fmt.Errorf("loading resource %s: %w", resourceArg, err)
 	}
 
 	kindName := res.GetMetadata().GetKind()
 	if kindName == "" {
-		return fmt.Errorf("%s: metadata.kind is missing", resourceArg)
+		return nil, fmt.Errorf("%s: metadata.kind is missing", resourceArg)
 	}
 
 	// Resolve the kind via the same registry render uses, so we can
@@ -102,15 +122,15 @@ func runOverride(ctx context.Context, c *cli.Command) error {
 	// .veil/kinds/ on disk.
 	registries, err := resolveRegistries(nil, reg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	kindReg, err := registry.Load(registries)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	loadedKind, err := kindReg.LoadKind(kindName)
 	if err != nil {
-		return fmt.Errorf("loading kind %q: %w", kindName, err)
+		return nil, fmt.Errorf("loading kind %q: %w", kindName, err)
 	}
 
 	sources := loadedKind.Kind.GetSources()
@@ -118,14 +138,15 @@ func runOverride(ctx context.Context, c *cli.Command) error {
 	// Discovery mode: only the resource was given. List the kind's
 	// sources so the user can pick one for the next invocation.
 	if len(sourceArgs) == 0 {
-		return listOverridableSources(p, kindName, resourceArg, res.GetMetadata().GetOverrides(), sources)
+		listOverridableSources(p, kindName, resourceArg, res.GetMetadata().GetOverrides(), sources)
+		return discoveryResponse(kindName, res.GetMetadata().GetOverrides(), sources), nil
 	}
 
 	// Validate every requested source up front so we don't half-apply
 	// when one is misspelled.
 	for _, s := range sourceArgs {
 		if _, ok := sources[s]; !ok {
-			return fmt.Errorf(
+			return nil, fmt.Errorf(
 				"kind %q does not declare a source named %q (known sources: %s)",
 				kindName, s, strings.Join(sortedKeys(sources), ", "),
 			)
@@ -143,6 +164,7 @@ func runOverride(ctx context.Context, c *cli.Command) error {
 		}
 	}
 
+	resp := &overrideResponse{Kind: kindName, SkipHooks: skipHooks}
 	for _, sourceName := range sourceArgs {
 		sourceContent := sources[sourceName]
 
@@ -160,15 +182,15 @@ func runOverride(ctx context.Context, c *cli.Command) error {
 		}
 		if _, err := os.Stat(outAbs); err == nil {
 			rollback()
-			return fmt.Errorf("override file %s already exists", outAbs)
+			return nil, fmt.Errorf("override file %s already exists", outAbs)
 		}
 		if err := os.MkdirAll(filepath.Dir(outAbs), 0755); err != nil {
 			rollback()
-			return fmt.Errorf("creating override directory: %w", err)
+			return nil, fmt.Errorf("creating override directory: %w", err)
 		}
 		if err := os.WriteFile(outAbs, []byte(sourceContent), 0644); err != nil {
 			rollback()
-			return fmt.Errorf("writing override file %s: %w", outAbs, err)
+			return nil, fmt.Errorf("writing override file %s: %w", outAbs, err)
 		}
 		writtenFiles = append(writtenFiles, outAbs)
 
@@ -184,23 +206,37 @@ func runOverride(ctx context.Context, c *cli.Command) error {
 
 		if err := registerOverride(resourceAbs, sourceName, storedPath, skipHooks); err != nil {
 			rollback()
-			return err
+			return nil, err
 		}
 
+		resp.Applied = append(resp.Applied, appliedOverride{Source: sourceName, Path: storedPath})
 		p.Successf("Overrode %s with %s", sourceName, storedPath)
 	}
 
 	if skipHooks {
 		p.Mutedf("  skip_hooks: true (hook mutations discarded at render)")
 	}
-	return nil
+	return resp, nil
+}
+
+// discoveryResponse builds the JSON payload for override discovery mode.
+func discoveryResponse(kindName string, existing []*veilv1.Override, sources map[string]string) *overrideResponse {
+	taken := make(map[string]bool, len(existing))
+	for _, ov := range existing {
+		taken[ov.GetSource()] = true
+	}
+	resp := &overrideResponse{Kind: kindName, Sources: []overridableSrc{}}
+	for _, k := range sortedKeys(sources) {
+		resp.Sources = append(resp.Sources, overridableSrc{Name: k, Overridden: taken[k]})
+	}
+	return resp
 }
 
 // listOverridableSources prints the kind's source list for the user
 // when the override command is invoked without a source. Already-
 // overridden entries are flagged so the user knows what's already
 // taken without re-reading the resource JSON.
-func listOverridableSources(p interact.Printer, kindName, resourceArg string, existing []*veilv1.Override, sources map[string]string) error {
+func listOverridableSources(p interact.Printer, kindName, resourceArg string, existing []*veilv1.Override, sources map[string]string) {
 	taken := make(map[string]bool, len(existing))
 	for _, ov := range existing {
 		taken[ov.GetSource()] = true
@@ -209,7 +245,7 @@ func listOverridableSources(p interact.Printer, kindName, resourceArg string, ex
 	keys := sortedKeys(sources)
 	if len(keys) == 0 {
 		p.Infof("kind %q declares no sources", kindName)
-		return nil
+		return
 	}
 
 	p.Infof("Sources declared by kind %q:", kindName)
@@ -221,7 +257,6 @@ func listOverridableSources(p interact.Printer, kindName, resourceArg string, ex
 		}
 	}
 	p.Infof("Pick one and re-run: veil override %s <source> [--skip-hooks]", resourceArg)
-	return nil
 }
 
 // sortedKeys returns the map's keys in lexical order. Used so the

@@ -57,16 +57,30 @@ func Build() *cli.Command {
 				Usage: "Skip running tsc --noEmit on each kind's hooks",
 			},
 		},
-		Action: runBuild,
+		Action: withResult(runBuild),
 	}
 }
 
-func runBuild(ctx context.Context, c *cli.Command) error {
+// builtKind describes one compiled kind in a buildResponse.
+type builtKind struct {
+	Name     string `json:"name"`
+	Compiled string `json:"compiled"`
+	Schema   string `json:"schema"`
+	Types    string `json:"types"`
+}
+
+// buildResponse is the JSON payload for `veil build`.
+type buildResponse struct {
+	Kinds    []builtKind `json:"kinds"`
+	Registry string      `json:"registry"`
+}
+
+func runBuild(ctx context.Context, c *cli.Command) (*buildResponse, error) {
 	p := interact.Default()
 
 	reg, err := config.Load(c.String("config"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	slog.Debug("loaded registry", "root", reg.Root, "kinds", len(reg.Kinds))
 
@@ -87,14 +101,15 @@ func runBuild(ctx context.Context, c *cli.Command) error {
 // `veil new kind|hook` so scaffolding leaves a buildable state. When
 // typecheck is true, each kind's hooks are type-checked via `tsgo` or
 // `tsc` if either is on PATH.
-func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p interact.Printer) error {
+func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p interact.Printer) (*buildResponse, error) {
+	resp := &buildResponse{Kinds: []builtKind{}}
 	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return fmt.Errorf("creating output directory: %w", err)
+		return nil, fmt.Errorf("creating output directory: %w", err)
 	}
 
 	var metadataSchema map[string]any
 	if err := json.Unmarshal(embeds.MetadataSchema, &metadataSchema); err != nil {
-		return fmt.Errorf("parsing embedded metadata schema: %w", err)
+		return nil, fmt.Errorf("parsing embedded metadata schema: %w", err)
 	}
 	delete(metadataSchema, "$schema")
 	delete(metadataSchema, "title")
@@ -130,7 +145,7 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 
 	graph, err := build.BuildGraph(reg.Kinds)
 	if err != nil {
-		return fmt.Errorf("building kind graph: %w", err)
+		return nil, fmt.Errorf("building kind graph: %w", err)
 	}
 
 	var errs []error
@@ -187,6 +202,13 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 			Schema: "./" + filepath.ToSlash(filepath.Join(k.Name, "kind.schema.json")),
 		}
 
+		resp.Kinds = append(resp.Kinds, builtKind{
+			Name:     k.Name,
+			Compiled: displayPath(jsonPath),
+			Schema:   displayPath(schemaPath),
+			Types:    displayPath(typesPath),
+		})
+
 		if p != nil {
 			p.Successf("Built %s", k.Name)
 			p.KeyValue("compiled", displayPath(jsonPath))
@@ -196,18 +218,19 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 	}
 
 	if len(errs) > 0 {
-		return errors.Join(errs...)
+		return nil, errors.Join(errs...)
 	}
 
 	registryPath := filepath.Join(outDir, "registry.json")
 	if err := protoencode.WriteFile(registryPath, registry, embeds.RegistrySchemaURL); err != nil {
-		return fmt.Errorf("writing registry: %w", err)
+		return nil, fmt.Errorf("writing registry: %w", err)
 	}
+	resp.Registry = displayPath(registryPath)
 	if p != nil {
 		p.Successf("Built registry")
 		p.KeyValue("registry", displayPath(registryPath))
 	}
-	return nil
+	return resp, nil
 }
 
 // compileKind reads a kind's sources, bundles+minifies each render hook,

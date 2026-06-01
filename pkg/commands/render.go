@@ -2,7 +2,9 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -20,6 +22,23 @@ import (
 	"github.com/vercel/veil/pkg/variables"
 )
 
+// renderResponse is the JSON payload emitted by `veil render` in
+// `--output json` mode. It lists every resource that rendered, so an
+// agent batching many files through one invocation can map each result
+// back to its source path.
+type renderResponse struct {
+	Rendered []renderedResource `json:"rendered"`
+}
+
+// renderedResource describes one successfully rendered resource.
+type renderedResource struct {
+	Kind   string   `json:"kind"`
+	Name   string   `json:"name"`
+	Path   string   `json:"path"`
+	OutDir string   `json:"outDir"`
+	Files  []string `json:"files"`
+}
+
 // Render returns the "render" subcommand.
 func Render() *cli.Command {
 	configDefault := "veil.json"
@@ -31,12 +50,14 @@ func Render() *cli.Command {
 
 	return &cli.Command{
 		Name:      "render",
-		Usage:     "Render a single resource",
-		UsageText: "veil render <path> [flags]",
+		Usage:     "Render one or more resources",
+		UsageText: "veil render <path>... [flags]",
 		Arguments: []cli.Argument{
-			&cli.StringArg{
-				Name:      "path",
-				UsageText: "Path to the resource JSON file to render",
+			&cli.StringArgs{
+				Name:      "paths",
+				UsageText: "Paths to the resource files to render (one or more)",
+				Min:       1,
+				Max:       -1,
 			},
 		},
 		Flags: []cli.Flag{
@@ -64,16 +85,16 @@ func Render() *cli.Command {
 				Usage: "Dump all logs (including hook console.log output) to stdout at debug level",
 			},
 		},
-		Action: runRender,
+		Action: withResult(runRender),
 	}
 }
 
-func runRender(ctx context.Context, c *cli.Command) error {
+func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 	p := interact.Default()
 
-	pathArg := c.StringArg("path")
-	if pathArg == "" {
-		return fmt.Errorf("render: path is required (pass a resource file)")
+	pathArgs := c.StringArgs("paths")
+	if len(pathArgs) == 0 {
+		return nil, fmt.Errorf("render: at least one resource path is required")
 	}
 
 	// --debug is a convenience: reconfigure slog to dump everything (including
@@ -81,74 +102,97 @@ func runRender(ctx context.Context, c *cli.Command) error {
 	// the root Before handler set up.
 	if c.Bool("debug") {
 		if _, err := logging.Setup(slog.LevelDebug, []string{"stdout"}, c.Root().Writer, c.Root().ErrWriter); err != nil {
-			return fmt.Errorf("configuring --debug logging: %w", err)
+			return nil, fmt.Errorf("configuring --debug logging: %w", err)
 		}
 	}
 
+	// Load the project config, resolve variables, and compile the kind
+	// registry + resource catalog exactly once, then reuse them across
+	// every path. Rendering N files in one invocation pays the registry
+	// and catalog cost a single time instead of once per file.
 	reg, err := registry.LoadProject(c.String("config"))
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	configPath := reg.ConfigPath
-	if cwd, err := os.Getwd(); err == nil {
-		if rel, err := filepath.Rel(cwd, configPath); err == nil && !strings.HasPrefix(rel, "..") {
-			configPath = rel
-		}
-	}
-	p.Infof("Using %s", configPath)
 
 	vars, err := variables.Resolve(reg.Variables, c.StringMap("var"), os.LookupEnv)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	registries, err := resolveRegistries(c.StringSlice("registry"), reg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	kindReg, err := registry.Load(registries)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	projectFS := os.DirFS(reg.Root)
 	handles, err := resource.Discover(ctx, projectFS, reg.ResourceDiscovery.GetPaths())
 	if err != nil {
-		return fmt.Errorf("discovering resources: %w", err)
+		return nil, fmt.Errorf("discovering resources: %w", err)
 	}
 	catalog, err := resource.NewCatalog(projectFS, handles)
 	if err != nil {
-		return fmt.Errorf("building resource catalog: %w", err)
+		return nil, fmt.Errorf("building resource catalog: %w", err)
 	}
-
-	absPath, err := filepath.Abs(pathArg)
-	if err != nil {
-		return fmt.Errorf("resolving path: %w", err)
-	}
-	if _, err := os.Stat(absPath); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("no file at %s (resolved from %q against working directory)", absPath, pathArg)
-		}
-		return fmt.Errorf("checking %s: %w", absPath, err)
-	}
-	rel, err := filepath.Rel(reg.Root, absPath)
-	if err != nil {
-		return fmt.Errorf("resolving %s against project root: %w", pathArg, err)
-	}
-	if strings.HasPrefix(rel, "..") {
-		return fmt.Errorf("%s is outside the project root %s", pathArg, reg.Root)
-	}
-	relFS := filepath.ToSlash(rel)
 
 	outDir, err := filepath.Abs(c.String("out"))
 	if err != nil {
-		return fmt.Errorf("resolving --out: %w", err)
+		return nil, fmt.Errorf("resolving --out: %w", err)
 	}
+
+	// In pretty mode this styles a line to the terminal; in JSON mode the
+	// printer routes it through slog so it lands as a structured log entry.
+	p.Info("Rendering kubernetes files.")
+
+	// Render every path against the shared registry/catalog. Failures are
+	// accumulated rather than fatal so one bad file doesn't hide drift in
+	// the others; the response still carries whatever did render.
+	resp := &renderResponse{Rendered: []renderedResource{}}
+	var errs []error
+	for _, pathArg := range pathArgs {
+		rr, err := renderOne(reg, kindReg, catalog, projectFS, vars, outDir, pathArg)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", pathArg, err))
+			continue
+		}
+		resp.Rendered = append(resp.Rendered, rr)
+	}
+	if len(errs) > 0 {
+		return resp, errors.Join(errs...)
+	}
+	return resp, nil
+}
+
+// renderOne resolves a single resource path against the project root and
+// renders it through the shared registry + catalog. It returns the
+// rendered-resource descriptor for the JSON response.
+func renderOne(reg *config.Registry, kindReg registry.Registry, catalog resource.Catalog, projectFS fs.FS, vars map[string]any, outDir, pathArg string) (renderedResource, error) {
+	absPath, err := filepath.Abs(pathArg)
+	if err != nil {
+		return renderedResource{}, fmt.Errorf("resolving path: %w", err)
+	}
+	if _, err := os.Stat(absPath); err != nil {
+		if os.IsNotExist(err) {
+			return renderedResource{}, fmt.Errorf("no file at %s (resolved from %q against working directory)", absPath, pathArg)
+		}
+		return renderedResource{}, fmt.Errorf("checking %s: %w", absPath, err)
+	}
+	rel, err := filepath.Rel(reg.Root, absPath)
+	if err != nil {
+		return renderedResource{}, fmt.Errorf("resolving against project root: %w", err)
+	}
+	if strings.HasPrefix(rel, "..") {
+		return renderedResource{}, fmt.Errorf("is outside the project root %s", reg.Root)
+	}
+	relFS := filepath.ToSlash(rel)
 
 	entry, err := catalog.LoadByPath(relFS)
 	if err != nil {
-		return err
+		return renderedResource{}, err
 	}
 
 	rendered, err := render.Render(&render.Options{
@@ -162,26 +206,16 @@ func runRender(ctx context.Context, c *cli.Command) error {
 		Variables: vars,
 	})
 	if err != nil {
-		return err
+		return renderedResource{}, err
 	}
 
-	cwd, _ := os.Getwd()
-	displayPath := func(path string) string {
-		if cwd == "" {
-			return path
-		}
-		if rel, err := filepath.Rel(cwd, path); err == nil && !strings.HasPrefix(rel, "..") {
-			return rel
-		}
-		return path
-	}
-
-	p.Successf("Rendered %s", rendered.Name)
-	p.KeyValue("out", displayPath(rendered.OutDir))
-	for _, f := range rendered.Files {
-		p.Mutedf("  %s", f)
-	}
-	return nil
+	return renderedResource{
+		Kind:   entry.GetMetadata().GetKind(),
+		Name:   rendered.Name,
+		Path:   relFS,
+		OutDir: rendered.OutDir,
+		Files:  rendered.Files,
+	}, nil
 }
 
 // resolveRegistries returns the alias→path sources to load, honoring

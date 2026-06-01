@@ -27,23 +27,31 @@ func Update() *cli.Command {
 		Name:      "update",
 		Usage:     "Download the latest veil edge build and replace this binary",
 		UsageText: "veil update",
-		Action:    runUpdate,
+		Action:    withResult(runUpdate),
 	}
 }
 
-func runUpdate(ctx context.Context, _ *cli.Command) error {
+// updateResponse is the JSON payload for `veil update`.
+type updateResponse struct {
+	Path string `json:"path"`
+	OS   string `json:"os"`
+	Arch string `json:"arch"`
+	URL  string `json:"url"`
+}
+
+func runUpdate(ctx context.Context, _ *cli.Command) (*updateResponse, error) {
 	p := interact.Default()
 
 	osName, arch, err := updateTarget()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// os.Executable returns the path used to invoke the process; resolve
 	// symlinks so we overwrite the actual binary, not a shim.
 	target, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("locating current binary: %w", err)
+		return nil, fmt.Errorf("locating current binary: %w", err)
 	}
 	if resolved, err := filepath.EvalSymlinks(target); err == nil {
 		target = resolved
@@ -54,14 +62,14 @@ func runUpdate(ctx context.Context, _ *cli.Command) error {
 
 	tmpPath, err := downloadToTemp(ctx, url, filepath.Dir(target))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// downloadToTemp returns a closed file; we own the cleanup until the
 	// rename succeeds.
 	defer os.Remove(tmpPath)
 
 	if err := os.Chmod(tmpPath, 0755); err != nil {
-		return fmt.Errorf("chmod %s: %w", tmpPath, err)
+		return nil, fmt.Errorf("chmod %s: %w", tmpPath, err)
 	}
 
 	if osName == "darwin" {
@@ -71,11 +79,11 @@ func runUpdate(ctx context.Context, _ *cli.Command) error {
 	}
 
 	if err := os.Rename(tmpPath, target); err != nil {
-		return fmt.Errorf("replacing %s: %w", target, err)
+		return nil, fmt.Errorf("replacing %s: %w", target, err)
 	}
 
 	p.Successf("veil updated at %s", target)
-	return nil
+	return &updateResponse{Path: target, OS: osName, Arch: arch, URL: url}, nil
 }
 
 // updateTarget maps GOOS/GOARCH to the release asset's `${os}-${arch}`

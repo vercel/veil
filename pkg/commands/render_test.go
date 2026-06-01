@@ -198,3 +198,26 @@ func (s *RenderSuite) TestRenderRejectsResourceWithUnknownAlias() {
 	s.Require().Error(err)
 	s.Contains(err.Error(), `registry alias "unknown" is not configured`)
 }
+
+func (s *RenderSuite) TestRenderRequiresAtLeastOnePath() {
+	s.writeConfig(`{ "kinds": [], "registries": { "": "./registry.json" } }`)
+	s.writeStockRegistry()
+
+	_, err := s.run("render")
+	s.Require().Error(err)
+}
+
+func (s *RenderSuite) TestRenderAcceptsMultiplePathsAndAggregatesErrors() {
+	s.writeConfig(`{ "kinds": [], "registries": { "": "./registry.json" } }`)
+	s.writeStockRegistry()
+
+	// Two non-existent paths in one invocation: the registry/catalog load
+	// once, then each path is rendered and its failure accumulated. Both
+	// paths must surface in the aggregated error, and the JSON envelope
+	// must report outcome "error".
+	out, err := s.run("render", "alpha.yaml", "beta.yaml")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "alpha.yaml")
+	s.Contains(err.Error(), "beta.yaml")
+	s.Contains(out, `"outcome":"error"`)
+}

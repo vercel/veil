@@ -22,6 +22,14 @@ import (
 
 var nameRegexp = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 
+// newResponse is the JSON payload for the `veil new` scaffolding
+// commands: what was created and where.
+type newResponse struct {
+	Kind string `json:"kind,omitempty"`
+	Name string `json:"name,omitempty"`
+	Path string `json:"path"`
+}
+
 // New returns the "new" command group for scaffolding kinds, hooks, and
 // resources.
 func New() *cli.Command {
@@ -47,7 +55,7 @@ func newKind() *cli.Command {
 				UsageText: "Name of the kind (lowercase, hyphens allowed)",
 			},
 		},
-		Action: runNewKind,
+		Action: withResult(runNewKind),
 	}
 }
 
@@ -74,7 +82,7 @@ func newHook() *cli.Command {
 				UsageText: "Name of the hook (lowercase, hyphens allowed)",
 			},
 		},
-		Action: runNewHook,
+		Action: withResult(runNewHook),
 	}
 }
 
@@ -100,21 +108,21 @@ func newResource() *cli.Command {
 				UsageText: "Name of the resource (lowercase, hyphens allowed)",
 			},
 		},
-		Action: runNewResource,
+		Action: withResult(runNewResource),
 	}
 }
 
-func runNewKind(ctx context.Context, c *cli.Command) error {
+func runNewKind(ctx context.Context, c *cli.Command) (*newResponse, error) {
 	p := interact.Default()
 
 	name := c.StringArg("name")
 	if err := validateName("kind name", name); err != nil {
-		return err
+		return nil, err
 	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("getting working directory: %w", err)
+		return nil, fmt.Errorf("getting working directory: %w", err)
 	}
 
 	var rb rollback
@@ -122,7 +130,7 @@ func runNewKind(ctx context.Context, c *cli.Command) error {
 
 	initialized, err := ensureVeilJSON(cwd)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if initialized {
 		rb.removeFile(filepath.Join(cwd, "veil.json"))
@@ -131,27 +139,27 @@ func runNewKind(ctx context.Context, c *cli.Command) error {
 
 	reg, err := config.Discover(cwd)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	for _, k := range reg.Kinds {
 		if k.Name == name {
-			return fmt.Errorf("kind %q already exists", name)
+			return nil, fmt.Errorf("kind %q already exists", name)
 		}
 	}
 
 	kindDir := filepath.Join(reg.KindsDir(), name)
 	if _, err := os.Stat(kindDir); err == nil {
-		return fmt.Errorf("directory %s already exists", kindDir)
+		return nil, fmt.Errorf("directory %s already exists", kindDir)
 	}
 
 	sourcesDir := filepath.Join(kindDir, "sources")
 	hookSrcDir := filepath.Join(kindDir, "hooks", "src")
 	if err := os.MkdirAll(sourcesDir, 0755); err != nil {
-		return fmt.Errorf("creating kind directory: %w", err)
+		return nil, fmt.Errorf("creating kind directory: %w", err)
 	}
 	if err := os.MkdirAll(hookSrcDir, 0755); err != nil {
-		return fmt.Errorf("creating hooks directory: %w", err)
+		return nil, fmt.Errorf("creating hooks directory: %w", err)
 	}
 	rb.removeTree(kindDir)
 
@@ -163,17 +171,17 @@ func runNewKind(ctx context.Context, c *cli.Command) error {
 		"required":    []string{},
 	}
 	if err := writeJSON(filepath.Join(kindDir, "schema.json"), schema); err != nil {
-		return err
+		return nil, err
 	}
 
 	sourceBlurb := fmt.Sprintf("This is a source file for %s.\n", name)
 	if err := os.WriteFile(filepath.Join(sourcesDir, "source.txt"), []byte(sourceBlurb), 0644); err != nil {
-		return fmt.Errorf("writing source.txt: %w", err)
+		return nil, fmt.Errorf("writing source.txt: %w", err)
 	}
 
 	helloTS := build.HookTemplate("hello-world")
 	if err := os.WriteFile(filepath.Join(hookSrcDir, "hello-world.ts"), []byte(helloTS), 0644); err != nil {
-		return fmt.Errorf("writing hello-world.ts: %w", err)
+		return nil, fmt.Errorf("writing hello-world.ts: %w", err)
 	}
 
 	kindJSON := map[string]any{
@@ -188,21 +196,21 @@ func runNewKind(ctx context.Context, c *cli.Command) error {
 		"schema": "./schema.json",
 	}
 	if err := writeJSON(filepath.Join(kindDir, "kind.json"), kindJSON); err != nil {
-		return err
+		return nil, err
 	}
 
 	configPath := reg.ConfigPath
 	prevVeil, err := os.ReadFile(configPath)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", configPath, err)
+		return nil, fmt.Errorf("reading %s: %w", configPath, err)
 	}
 	rel, err := filepath.Rel(reg.Root, filepath.Join(kindDir, "kind.json"))
 	if err != nil {
-		return fmt.Errorf("computing relative kind path: %w", err)
+		return nil, fmt.Errorf("computing relative kind path: %w", err)
 	}
 	relKind := "./" + filepath.ToSlash(rel)
 	if err := registerKindInVeilJSON(configPath, relKind); err != nil {
-		return err
+		return nil, err
 	}
 	rb.restoreFile(configPath, prevVeil)
 
@@ -210,32 +218,32 @@ func runNewKind(ctx context.Context, c *cli.Command) error {
 
 	reg, err = config.Discover(cwd)
 	if err != nil {
-		return fmt.Errorf("re-discovering registry after scaffold: %w", err)
+		return nil, fmt.Errorf("re-discovering registry after scaffold: %w", err)
 	}
-	if err := runBuildPipeline(reg, filepath.Join(reg.Root, config.PublicDir, "r"), true, p); err != nil {
-		return err
+	if _, err := runBuildPipeline(reg, filepath.Join(reg.Root, config.PublicDir, "r"), true, p); err != nil {
+		return nil, err
 	}
 	rb.commit()
-	return nil
+	return &newResponse{Kind: name, Path: kindDir}, nil
 }
 
-func runNewHook(ctx context.Context, c *cli.Command) error {
+func runNewHook(ctx context.Context, c *cli.Command) (*newResponse, error) {
 	p := interact.Default()
 
 	name := c.StringArg("name")
 	if err := validateName("hook name", name); err != nil {
-		return err
+		return nil, err
 	}
 
 	kindName := c.String("kind")
 	resourcePath := c.String("resource")
 	if kindName != "" && resourcePath != "" {
-		return fmt.Errorf("--kind and --resource are mutually exclusive")
+		return nil, fmt.Errorf("--kind and --resource are mutually exclusive")
 	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("getting working directory: %w", err)
+		return nil, fmt.Errorf("getting working directory: %w", err)
 	}
 
 	// Auto-detect when the user passed neither flag. Look for an
@@ -245,7 +253,7 @@ func runNewHook(ctx context.Context, c *cli.Command) error {
 	if kindName == "" && resourcePath == "" {
 		detectedKind, detectedResource, err := detectHookParent(cwd)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		kindName = detectedKind
 		resourcePath = detectedResource
@@ -260,10 +268,10 @@ func runNewHook(ctx context.Context, c *cli.Command) error {
 // runNewHookOnKind is the original `veil new hook --kind X` path: write
 // the hook .ts under <kindDir>/hooks/src/, append it to the kind file's
 // hooks.render, and re-run the build pipeline.
-func runNewHookOnKind(ctx context.Context, cwd, name, kindName string, p interact.Printer) error {
+func runNewHookOnKind(ctx context.Context, cwd, name, kindName string, p interact.Printer) (*newResponse, error) {
 	reg, err := config.Discover(cwd)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var k *config.Kind
@@ -274,35 +282,35 @@ func runNewHookOnKind(ctx context.Context, cwd, name, kindName string, p interac
 		}
 	}
 	if k == nil {
-		return fmt.Errorf("kind %q not found in registry", kindName)
+		return nil, fmt.Errorf("kind %q not found in registry", kindName)
 	}
 
 	outPath := filepath.Join(k.Dir, "hooks", "src", name+".ts")
 	if _, err := os.Stat(outPath); err == nil {
-		return fmt.Errorf("hook %s already exists", outPath)
+		return nil, fmt.Errorf("hook %s already exists", outPath)
 	}
 
 	var rb rollback
 	defer rb.run()
 
 	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
-		return fmt.Errorf("creating hooks directory: %w", err)
+		return nil, fmt.Errorf("creating hooks directory: %w", err)
 	}
 
 	ts := build.HookTemplate(name)
 	if err := os.WriteFile(outPath, []byte(ts), 0644); err != nil {
-		return fmt.Errorf("writing hook: %w", err)
+		return nil, fmt.Errorf("writing hook: %w", err)
 	}
 	rb.removeFile(outPath)
 
 	kindPath := k.Path
 	prevKind, err := os.ReadFile(kindPath)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", kindPath, err)
+		return nil, fmt.Errorf("reading %s: %w", kindPath, err)
 	}
 	relHook := "./" + filepath.ToSlash(filepath.Join("hooks", "src", name+".ts"))
 	if err := appendHookToKind(kindPath, "render", relHook); err != nil {
-		return err
+		return nil, err
 	}
 	rb.restoreFile(kindPath, prevKind)
 
@@ -310,13 +318,13 @@ func runNewHookOnKind(ctx context.Context, cwd, name, kindName string, p interac
 
 	reg, err = config.Discover(cwd)
 	if err != nil {
-		return fmt.Errorf("re-discovering registry after scaffold: %w", err)
+		return nil, fmt.Errorf("re-discovering registry after scaffold: %w", err)
 	}
-	if err := runBuildPipeline(reg, filepath.Join(reg.Root, config.PublicDir, "r"), true, p); err != nil {
-		return err
+	if _, err := runBuildPipeline(reg, filepath.Join(reg.Root, config.PublicDir, "r"), true, p); err != nil {
+		return nil, err
 	}
 	rb.commit()
-	return nil
+	return &newResponse{Kind: kindName, Name: name, Path: outPath}, nil
 }
 
 // runNewHookOnResource scaffolds a resource-local hook. The .ts lands
@@ -331,26 +339,26 @@ func runNewHookOnKind(ctx context.Context, cwd, name, kindName string, p interac
 // generator the kind compiler uses. The generator output is keyed to
 // the resource's kind, so authors get the same IDE completion they'd
 // get inside the kind's own hooks/src/.
-func runNewHookOnResource(cwd, name, resourcePath string, p interact.Printer) error {
+func runNewHookOnResource(cwd, name, resourcePath string, p interact.Printer) (*newResponse, error) {
 	abs := resourcePath
 	if !filepath.IsAbs(abs) {
 		abs = filepath.Join(cwd, resourcePath)
 	}
 	if _, err := os.Stat(abs); err != nil {
-		return fmt.Errorf("resource %s: %w", resourcePath, err)
+		return nil, fmt.Errorf("resource %s: %w", resourcePath, err)
 	}
 	if !looksLikeResourceFile(abs) {
-		return fmt.Errorf("%s does not look like a resource file (no metadata.kind)", resourcePath)
+		return nil, fmt.Errorf("%s does not look like a resource file (no metadata.kind)", resourcePath)
 	}
 
 	kindName, err := resourceKindName(abs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	reg, err := config.Discover(cwd)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var k *config.Kind
 	for _, candidate := range reg.Kinds {
@@ -360,15 +368,15 @@ func runNewHookOnResource(cwd, name, resourcePath string, p interact.Printer) er
 		}
 	}
 	if k == nil {
-		return fmt.Errorf("resource references kind %q but no such kind is registered in veil.json", kindName)
+		return nil, fmt.Errorf("resource references kind %q but no such kind is registered in veil.json", kindName)
 	}
 	graph, err := build.BuildGraph(reg.Kinds)
 	if err != nil {
-		return fmt.Errorf("building kind graph: %w", err)
+		return nil, fmt.Errorf("building kind graph: %w", err)
 	}
 	types, err := build.VeilTypes(k, reg.Variables, graph)
 	if err != nil {
-		return fmt.Errorf("generating veil-types.ts for resource hook: %w", err)
+		return nil, fmt.Errorf("generating veil-types.ts for resource hook: %w", err)
 	}
 
 	resourceDir := filepath.Dir(abs)
@@ -376,14 +384,14 @@ func runNewHookOnResource(cwd, name, resourcePath string, p interact.Printer) er
 	outPath := filepath.Join(hooksDir, name+".ts")
 	typesPath := filepath.Join(hooksDir, "veil-types.ts")
 	if _, err := os.Stat(outPath); err == nil {
-		return fmt.Errorf("hook %s already exists", outPath)
+		return nil, fmt.Errorf("hook %s already exists", outPath)
 	}
 
 	var rb rollback
 	defer rb.run()
 
 	if err := os.MkdirAll(hooksDir, 0755); err != nil {
-		return fmt.Errorf("creating hooks directory: %w", err)
+		return nil, fmt.Errorf("creating hooks directory: %w", err)
 	}
 
 	// veil-types.ts may already exist (from a prior `veil new hook
@@ -397,7 +405,7 @@ func runNewHookOnResource(cwd, name, resourcePath string, p interact.Printer) er
 		prevTypes = data
 	}
 	if err := os.WriteFile(typesPath, []byte(types), 0644); err != nil {
-		return fmt.Errorf("writing veil-types.ts: %w", err)
+		return nil, fmt.Errorf("writing veil-types.ts: %w", err)
 	}
 	if typesExists {
 		rb.restoreFile(typesPath, prevTypes)
@@ -407,23 +415,23 @@ func runNewHookOnResource(cwd, name, resourcePath string, p interact.Printer) er
 
 	ts := build.HookTemplate(name)
 	if err := os.WriteFile(outPath, []byte(ts), 0644); err != nil {
-		return fmt.Errorf("writing hook: %w", err)
+		return nil, fmt.Errorf("writing hook: %w", err)
 	}
 	rb.removeFile(outPath)
 
 	prev, err := os.ReadFile(abs)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", abs, err)
+		return nil, fmt.Errorf("reading %s: %w", abs, err)
 	}
 	relHook := "./" + filepath.ToSlash(filepath.Join("hooks", name+".ts"))
 	if err := appendHookToResource(abs, "render", relHook); err != nil {
-		return err
+		return nil, err
 	}
 	rb.restoreFile(abs, prev)
 
 	p.Successf("Scaffolded hook %s (registered on %s)", outPath, abs)
 	rb.commit()
-	return nil
+	return &newResponse{Name: name, Path: outPath}, nil
 }
 
 // resourceKindName reads metadata.kind out of a resource file. Used by
@@ -539,26 +547,26 @@ func looksLikeResourceFile(path string) bool {
 	return kind != ""
 }
 
-func runNewResource(ctx context.Context, c *cli.Command) error {
+func runNewResource(ctx context.Context, c *cli.Command) (*newResponse, error) {
 	p := interact.Default()
 
 	name := c.StringArg("name")
 	if err := validateName("resource name", name); err != nil {
-		return err
+		return nil, err
 	}
 	kindRef := c.String("kind")
 	if kindRef == "" {
-		return fmt.Errorf("--kind is required")
+		return nil, fmt.Errorf("--kind is required")
 	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("getting working directory: %w", err)
+		return nil, fmt.Errorf("getting working directory: %w", err)
 	}
 
 	reg, err := config.Discover(cwd)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Load registries to validate the kind exists and to find its
@@ -568,15 +576,15 @@ func runNewResource(ctx context.Context, c *cli.Command) error {
 	// registry.json on disk wherever veil.json points to.
 	registries, err := resolveRegistries(nil, reg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	kindReg, err := registry.Load(registries)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	loaded, err := kindReg.LoadKind(kindRef)
 	if err != nil {
-		return fmt.Errorf("kind %q: %w", kindRef, err)
+		return nil, fmt.Errorf("kind %q: %w", kindRef, err)
 	}
 
 	outPath := c.String("out")
@@ -586,16 +594,16 @@ func runNewResource(ctx context.Context, c *cli.Command) error {
 		outPath = filepath.Join(cwd, outPath)
 	}
 	if _, err := os.Stat(outPath); err == nil {
-		return fmt.Errorf("resource file %s already exists", outPath)
+		return nil, fmt.Errorf("resource file %s already exists", outPath)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
-		return fmt.Errorf("creating directory: %w", err)
+		return nil, fmt.Errorf("creating directory: %w", err)
 	}
 
 	schemaRel, err := filepath.Rel(filepath.Dir(outPath), loaded.SchemaPath)
 	if err != nil {
-		return fmt.Errorf("resolving schema path: %w", err)
+		return nil, fmt.Errorf("resolving schema path: %w", err)
 	}
 
 	resourceJSON := map[string]any{
@@ -607,11 +615,11 @@ func runNewResource(ctx context.Context, c *cli.Command) error {
 		"spec": map[string]any{},
 	}
 	if err := writeJSON(outPath, resourceJSON); err != nil {
-		return err
+		return nil, err
 	}
 
 	p.Successf("Scaffolded resource %q at %s", name, outPath)
-	return nil
+	return &newResponse{Kind: kindRef, Name: name, Path: outPath}, nil
 }
 
 // rollback collects undo actions in order. If commit() is not called
