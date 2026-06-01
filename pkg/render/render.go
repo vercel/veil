@@ -194,7 +194,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		"root":     root,
 	}
 	renderHooks := kind.GetHooks().GetRender()
-	logger.Info("running render hooks", "count", len(renderHooks))
+	logger.Debug("running render hooks", "count", len(renderHooks))
 	for _, h := range renderHooks {
 		newBundle, err := invokeHook(logger, h, kindName, resourceName, ctx, bundle)
 		if err != nil {
@@ -205,7 +205,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 
 	deps := resolved.GetDependencies()
 	if len(deps) > 0 {
-		logger.Info("applying dependencies", "count", len(deps))
+		logger.Debug("applying dependencies", "count", len(deps))
 	}
 	for _, dep := range deps {
 		newBundle, err := applyDependency(logger, bundle, dep, kindName, resourceName, r.Path, resourceMap, root, opts)
@@ -222,7 +222,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	// kind-rendered bundle.
 	resourceHooks := r.RenderHooks
 	if len(resourceHooks) > 0 {
-		logger.Info("running resource hooks", "count", len(resourceHooks))
+		logger.Debug("running resource hooks", "count", len(resourceHooks))
 		resourceDir := path.Dir(r.Path)
 		for _, def := range resourceHooks {
 			compiled, err := compileResourceHook(opts.FS, resourceDir, def.GetPath(), def.GetAccess())
@@ -245,7 +245,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	// output.
 	postRenderHooks := kind.GetHooks().GetPostRender()
 	if len(postRenderHooks) > 0 {
-		logger.Info("running post_render hooks", "count", len(postRenderHooks))
+		logger.Debug("running post_render hooks", "count", len(postRenderHooks))
 		for _, h := range postRenderHooks {
 			newBundle, err := invokeHook(logger, h, kindName, resourceName, ctx, bundle)
 			if err != nil {
@@ -503,7 +503,7 @@ func compileResourceHook(fsys fs.FS, resourceDir, hookPath string, access *veilv
 // error-severity issue and keeps going so the user sees every problem
 // at once.
 func runValidateHooks(parent *slog.Logger, hooks []*veilv1.Hook, kindName, resourceName string, ctx any, bdl hook.Bundle) ([]hook.ValidationIssue, error) {
-	parent.Info("running validate hooks", "count", len(hooks))
+	parent.Debug("running validate hooks", "count", len(hooks))
 	var issues []hook.ValidationIssue
 	for _, h := range hooks {
 		hookIssues, err := invokeValidateHook(parent, h, kindName, resourceName, ctx, bdl)
@@ -583,10 +583,10 @@ func invokeValidateHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceN
 			names = append(names, k)
 		}
 		sort.Strings(names)
-		logger.Info("granting env access", "vars", names)
+		logger.Debug("granting env access", "vars", names)
 	}
 
-	logger.Info("running validate hook")
+	logger.Debug("running validate hook")
 	start := time.Now()
 
 	display := func(level, msg string) {
@@ -616,7 +616,7 @@ func invokeValidateHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceN
 		logger.Error("validate hook failed", "stage", "validate", "duration", time.Since(start).String(), "err", err.Error())
 		return nil, err
 	}
-	logger.Info("validate hook completed", "duration", time.Since(start).String(), "issues", len(issues))
+	logger.Debug("validate hook completed", "duration", time.Since(start).String(), "issues", len(issues))
 	return issues, nil
 }
 
@@ -640,10 +640,10 @@ func invokeHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceName stri
 			names = append(names, k)
 		}
 		sort.Strings(names)
-		logger.Info("granting env access", "vars", names)
+		logger.Debug("granting env access", "vars", names)
 	}
 
-	logger.Info("running hook")
+	logger.Debug("running hook")
 	start := time.Now()
 
 	display := func(level, msg string) {
@@ -673,7 +673,7 @@ func invokeHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceName stri
 		logger.Error("hook failed", "stage", "render", "duration", time.Since(start).String(), "err", err.Error())
 		return nil, err
 	}
-	logger.Info("hook completed", "duration", time.Since(start).String())
+	logger.Debug("hook completed", "duration", time.Since(start).String())
 	return out, nil
 }
 

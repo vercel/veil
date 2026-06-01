@@ -614,7 +614,7 @@ func newFetchFunc(rt *qjs.Runtime, cfg options) (*qjs.Value, error) {
 			headers[k] = resp.Header.Get(k)
 		}
 
-		logger.Info("fetch",
+		logger.Debug("fetch",
 			"method", method, "url", opts.URL,
 			"status", resp.StatusCode,
 			"duration", time.Since(start).String(),
@@ -959,7 +959,9 @@ func (h *jsHook) emitLogs(logs []logEntry) {
 			case "error":
 				h.cfg.logger.Error(l.Message)
 			default:
-				h.cfg.logger.Info(l.Message)
+				// console.log → debug so a chatty hook doesn't flood the
+				// default output; `veil render --debug` surfaces it.
+				h.cfg.logger.Debug(l.Message)
 			}
 		}
 		if h.cfg.display != nil {
