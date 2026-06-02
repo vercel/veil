@@ -22,6 +22,7 @@ import (
 	"github.com/vercel/veil/pkg/render"
 	"github.com/vercel/veil/pkg/resource"
 	"github.com/vercel/veil/pkg/variables"
+	"github.com/vercel/veil/pkg/vfs"
 )
 
 // renderResponse is the JSON payload emitted by `veil render` in
@@ -138,14 +139,18 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 	// veil.json.
 	var kindReg registry.Registry
 	if c.Bool("build") {
-		// build populates an in-memory registry.MemRegistry with the
-		// compiled kinds directly; render reads them straight back through
-		// the Registry interface — no registry.json round trip.
-		sink := newMemSink()
-		if _, err := runBuildPipeline(reg, sink, buildPipelineOpts{}, nil); err != nil {
+		// Compile the project's kinds into an in-memory FS, then read them
+		// back through an FSStore — the same load + compile + cache path a
+		// disk or HTTP registry takes, so no prebuilt registry need live on
+		// disk.
+		mem := vfs.NewMem()
+		if _, err := runBuildPipeline(reg, mem, buildPipelineOpts{}, nil); err != nil {
 			return nil, fmt.Errorf("building registry: %w", err)
 		}
-		kindReg = sink.reg
+		kindReg, err = registry.FromStore(registry.FSStore{FS: mem})
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		registries, err := resolveRegistries(c.StringSlice("registry"), reg)
 		if err != nil {

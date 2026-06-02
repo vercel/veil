@@ -21,7 +21,6 @@ import (
 	"github.com/vercel/veil/pkg/embeds"
 	"github.com/vercel/veil/pkg/interact"
 	"github.com/vercel/veil/pkg/protoencode"
-	"github.com/vercel/veil/pkg/registry"
 	"github.com/vercel/veil/pkg/tsc"
 	"github.com/vercel/veil/pkg/vfs"
 )
@@ -95,7 +94,7 @@ func runBuild(ctx context.Context, c *cli.Command) (*buildResponse, error) {
 	}
 	p.Infof("Using %s", configPath)
 
-	return runBuildPipeline(reg, newDirSink(vfs.NewDir(c.String("out"))), buildPipelineOpts{
+	return runBuildPipeline(reg, vfs.NewDir(c.String("out")), buildPipelineOpts{
 		typecheck:  !c.Bool("no-typecheck"),
 		writeTypes: true,
 	}, p)
@@ -112,14 +111,13 @@ type buildPipelineOpts struct {
 	writeTypes bool
 }
 
-// runBuildPipeline compiles every kind (sources + minified hooks +
-// composite schema) and hands each one to sink. The disk sink serializes
-// them to <name>/kind.json, <name>/kind.schema.json, and an index
-// registry.json; the in-memory sink populates a registry.MemRegistry that
-// the caller reads straight back. Called by `veil build`, `veil new
+// runBuildPipeline compiles every kind into <name>/kind.json, writes its
+// composite JSON schema to <name>/kind.schema.json, and an index at
+// registry.json — all written through dst (an on-disk dir or an in-memory
+// FS) at registry-relative paths. Called by `veil build`, `veil new
 // kind|hook` (so scaffolding leaves a buildable state), and `veil render
-// --build` (into memory).
-func runBuildPipeline(reg *config.Registry, sink buildSink, opts buildPipelineOpts, p interact.Printer) (*buildResponse, error) {
+// --build` (into an in-memory FS the registry then reads via FSStore).
+func runBuildPipeline(reg *config.Registry, dst vfs.FS, opts buildPipelineOpts, p interact.Printer) (*buildResponse, error) {
 	resp := &buildResponse{Kinds: []builtKind{}}
 
 	var metadataSchema map[string]any
@@ -137,6 +135,14 @@ func runBuildPipeline(reg *config.Registry, sink buildSink, opts buildPipelineOp
 	// Bundle entrypoints are relative to the project root (= reg.Root).
 	fsys := os.DirFS(reg.Root)
 
+	// display turns a registry-relative output path into the string shown
+	// to the user. On disk that's the real (cwd-relative) location; for an
+	// in-memory build it's just the registry-relative path.
+	display := func(rel string) string { return rel }
+	if dir, ok := dst.(*vfs.Dir); ok {
+		display = func(rel string) string { return cwdRel(filepath.Join(dir.Root(), filepath.FromSlash(rel))) }
+	}
+
 	var checker tsc.Checker
 	if opts.typecheck {
 		checker = tsc.Find()
@@ -144,6 +150,8 @@ func runBuildPipeline(reg *config.Registry, sink buildSink, opts buildPipelineOp
 			p.Warn("no TypeScript compiler on PATH — skipping type check. Install `tsgo` or `tsc` to enable it.")
 		}
 	}
+
+	index := &veilv1.Registry{Kinds: make(map[string]*veilv1.RegistryEntry, len(reg.Kinds))}
 
 	graph, err := build.BuildGraph(reg.Kinds)
 	if err != nil {
@@ -157,9 +165,14 @@ func runBuildPipeline(reg *config.Registry, sink buildSink, opts buildPipelineOp
 			continue
 		}
 
+		schemaRel := path.Join(k.Name, "kind.schema.json")
 		schemaBytes, err := build.ResourceSchemaBytes(k, metadataSchema, graph)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: generating schema: %w", k.Name, err))
+			continue
+		}
+		if err := dst.WriteFile(schemaRel, schemaBytes); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", k.Name, err))
 			continue
 		}
 
@@ -188,27 +201,34 @@ func runBuildPipeline(reg *config.Registry, sink buildSink, opts buildPipelineOp
 			continue
 		}
 
-		compiledPath, schemaPath, err := sink.emit(k.Name, ck, schemaBytes)
+		jsonRel := path.Join(k.Name, "kind.json")
+		kindBytes, err := protoencode.MarshalFile(ck, embeds.KindSchemaURL)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", k.Name, err))
 			continue
 		}
+		if err := dst.WriteFile(jsonRel, kindBytes); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", k.Name, err))
+			continue
+		}
+
+		index.Kinds[k.Name] = &veilv1.RegistryEntry{
+			Name:   k.Name,
+			Path:   "./" + jsonRel,
+			Schema: "./" + schemaRel,
+		}
 
 		resp.Kinds = append(resp.Kinds, builtKind{
 			Name:     k.Name,
-			Compiled: compiledPath,
-			Schema:   schemaPath,
+			Compiled: display(jsonRel),
+			Schema:   display(schemaRel),
 			Types:    typesPath,
 		})
 
 		if p != nil {
 			p.Successf("Built %s", k.Name)
-			if compiledPath != "" {
-				p.KeyValue("compiled", compiledPath)
-			}
-			if schemaPath != "" {
-				p.KeyValue("schema", schemaPath)
-			}
+			p.KeyValue("compiled", display(jsonRel))
+			p.KeyValue("schema", display(schemaRel))
 			if typesPath != "" {
 				p.KeyValue("types", typesPath)
 			}
@@ -219,99 +239,20 @@ func runBuildPipeline(reg *config.Registry, sink buildSink, opts buildPipelineOp
 		return nil, errors.Join(errs...)
 	}
 
-	registryPath, err := sink.finish()
+	regBytes, err := protoencode.MarshalFile(index, embeds.RegistrySchemaURL)
 	if err != nil {
 		return nil, fmt.Errorf("writing registry: %w", err)
 	}
-	resp.Registry = registryPath
+	if err := dst.WriteFile("registry.json", regBytes); err != nil {
+		return nil, fmt.Errorf("writing registry: %w", err)
+	}
+	resp.Registry = display("registry.json")
 	if p != nil {
 		p.Successf("Built registry")
-		if registryPath != "" {
-			p.KeyValue("registry", registryPath)
-		}
+		p.KeyValue("registry", display("registry.json"))
 	}
 	return resp, nil
 }
-
-// buildSink consumes the build pipeline's compiled output: emit is called
-// once per compiled kind, finish once after all kinds succeed. It's the
-// one seam where on-disk and in-memory builds diverge — everything before
-// it (compile, typecheck, schema generation) is shared.
-type buildSink interface {
-	// emit records one compiled kind, returning the display strings for
-	// the kind body and schema (empty for an in-memory sink) used in the
-	// build response and printer output.
-	emit(name string, kind *veilv1.Kind, schema []byte) (compiledPath, schemaPath string, err error)
-	// finish finalizes the registry index, returning its display string.
-	finish() (registryPath string, err error)
-}
-
-// dirSink is the on-disk buildSink: it serializes each compiled kind to
-// <name>/kind.json + <name>/kind.schema.json under dst and accumulates an
-// index that finish writes as registry.json. Used by `veil build` and
-// `veil new kind|hook`.
-type dirSink struct {
-	dst   *vfs.Dir
-	index *veilv1.Registry
-}
-
-func newDirSink(dst *vfs.Dir) *dirSink {
-	return &dirSink{dst: dst, index: &veilv1.Registry{Kinds: map[string]*veilv1.RegistryEntry{}}}
-}
-
-// display renders a registry-relative output path as the cwd-relative
-// on-disk location shown to the user.
-func (d *dirSink) display(rel string) string {
-	return cwdRel(filepath.Join(d.dst.Root(), filepath.FromSlash(rel)))
-}
-
-func (d *dirSink) emit(name string, kind *veilv1.Kind, schema []byte) (string, string, error) {
-	schemaRel := path.Join(name, "kind.schema.json")
-	if err := d.dst.WriteFile(schemaRel, schema); err != nil {
-		return "", "", err
-	}
-	kindBytes, err := protoencode.MarshalFile(kind, embeds.KindSchemaURL)
-	if err != nil {
-		return "", "", err
-	}
-	jsonRel := path.Join(name, "kind.json")
-	if err := d.dst.WriteFile(jsonRel, kindBytes); err != nil {
-		return "", "", err
-	}
-	d.index.Kinds[name] = &veilv1.RegistryEntry{
-		Name:   name,
-		Path:   "./" + jsonRel,
-		Schema: "./" + schemaRel,
-	}
-	return d.display(jsonRel), d.display(schemaRel), nil
-}
-
-func (d *dirSink) finish() (string, error) {
-	regBytes, err := protoencode.MarshalFile(d.index, embeds.RegistrySchemaURL)
-	if err != nil {
-		return "", err
-	}
-	if err := d.dst.WriteFile("registry.json", regBytes); err != nil {
-		return "", err
-	}
-	return d.display("registry.json"), nil
-}
-
-// memSink is the in-memory buildSink: emit hands each compiled kind
-// straight to a registry.MemRegistry (no marshaling, no files), which
-// `veil render --build` then reads through the Registry interface.
-type memSink struct {
-	reg *registry.MemRegistry
-}
-
-func newMemSink() *memSink { return &memSink{reg: registry.NewMemRegistry()} }
-
-func (m *memSink) emit(name string, kind *veilv1.Kind, schema []byte) (string, string, error) {
-	m.reg.Add(name, &registry.LoadedKind{Kind: kind, Schema: schema})
-	return "", "", nil
-}
-
-func (m *memSink) finish() (string, error) { return "", nil }
 
 // cwdRel renders an absolute path relative to the working directory when
 // that's a clean subpath, else returns it unchanged.

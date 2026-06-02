@@ -1,6 +1,9 @@
 package registry
 
 import (
+	"bytes"
+	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,8 +12,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/suite"
-
-	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 )
 
 type RegistrySuite struct {
@@ -53,8 +54,8 @@ func (s *RegistrySuite) writeRegistry(subdir string, kinds ...string) string {
 
 // TestLoadKindReadsYAMLRegistry exercises the YAML ingestion path: a
 // registry.yaml pointing at a kind.yaml round-trips through
-// protoencode.ToJSON inside ReadResource without any explicit
-// conversion at the call sites.
+// protoencode's YAML→JSON decode when the registry reads it off the
+// store, without any explicit conversion at the call sites.
 func (s *RegistrySuite) TestLoadKindReadsYAMLRegistry() {
 	dir := filepath.Join(s.root, "yaml")
 	kindDir := filepath.Join(dir, "service")
@@ -306,28 +307,60 @@ func (s *RegistrySuite) TestLoadKindFailsWhenRemoteKindMissing() {
 	s.Contains(err.Error(), "HTTP 410")
 }
 
-func (s *RegistrySuite) TestMemRegistry() {
-	m := NewMemRegistry()
-	m.Add("svc", &LoadedKind{Kind: &veilv1.Kind{Name: "svc"}, Schema: []byte(`{"type":"object"}`)})
+// mapStore is an in-memory Store for tests: a flat map of store location
+// to bytes, mirroring what an FSStore over an in-memory FS serves.
+type mapStore map[string][]byte
 
-	loaded, err := m.LoadKind("svc")
+func (m mapStore) Open(name string) (io.ReadCloser, error) {
+	data, ok := m[name]
+	if !ok {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (s *RegistrySuite) TestFromStore() {
+	store := mapStore{
+		"registry.json":        []byte(`{"kinds":{"svc":{"name":"svc","path":"./svc/kind.json","schema":"./svc/kind.schema.json"}}}`),
+		"svc/kind.json":        []byte(`{"name":"svc"}`),
+		"svc/kind.schema.json": []byte(`{"type":"object","properties":{"spec":{"type":"object","required":["port"]}}}`),
+	}
+	reg, err := FromStore(store)
+	s.Require().NoError(err)
+
+	loaded, err := reg.LoadKind("svc")
 	s.Require().NoError(err)
 	s.Equal("svc", loaded.GetName())
-	s.Equal(`{"type":"object"}`, string(loaded.Schema), "build's kind + schema bytes are stored and returned as-is")
+	s.NotNil(loaded.SpecSchema, "spec subschema is parsed at load")
+
+	// The validator is compiled once at load and reused: a spec missing
+	// the required `port` fails; one with it passes.
+	s.Require().Error(loaded.Validate(map[string]any{"spec": map[string]any{}}))
+	s.Require().NoError(loaded.Validate(map[string]any{"spec": map[string]any{"port": 80}}))
 }
 
-func (s *RegistrySuite) TestMemRegistryMissing() {
-	m := NewMemRegistry()
-	_, err := m.LoadKind("svc")
+func (s *RegistrySuite) TestFromStoreMissingKindBody() {
+	store := mapStore{
+		"registry.json": []byte(`{"kinds":{"svc":{"name":"svc","path":"./svc/kind.json","schema":"./svc/kind.schema.json"}}}`),
+		// kind.json + schema deliberately absent.
+	}
+	reg, err := FromStore(store)
+	s.Require().NoError(err) // index loads fine; the body is lazy
+	_, err = reg.LoadKind("svc")
 	s.Require().Error(err)
 }
 
-func (s *RegistrySuite) TestMemRegistryRejectsAlias() {
-	m := NewMemRegistry()
-	m.Add("svc", &LoadedKind{Kind: &veilv1.Kind{Name: "svc"}})
-	// An in-memory registry only ever holds the default project's kinds,
-	// so an aliased reference can't resolve.
-	_, err := m.LoadKind("acme/svc")
+func (s *RegistrySuite) TestFromStoreRejectsAlias() {
+	store := mapStore{
+		"registry.json":        []byte(`{"kinds":{"svc":{"name":"svc","path":"./svc/kind.json","schema":"./svc/kind.schema.json"}}}`),
+		"svc/kind.json":        []byte(`{"name":"svc"}`),
+		"svc/kind.schema.json": []byte(`{"type":"object"}`),
+	}
+	reg, err := FromStore(store)
+	s.Require().NoError(err)
+	// FromStore registers only the default alias, so an aliased ref can't
+	// resolve.
+	_, err = reg.LoadKind("acme/svc")
 	s.Require().Error(err)
-	s.Contains(err.Error(), "default registry")
+	s.Contains(err.Error(), "not configured")
 }

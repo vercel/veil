@@ -1,151 +1,129 @@
 // Package registry resolves compiled kind documents lazily on demand. The
 // Registry interface is what the render pipeline talks to: it asks for a
-// kind by name and gets back the compiled kind.json (plus the path to its
-// schema) only when that kind is actually about to be rendered. Loading
-// is cached so the heavy kind.json bodies — sources + bundled hook code —
-// are read at most once per render even if many resources share a kind.
+// kind by name and gets back the compiled kind.json plus its already
+// parsed spec subschema and compiled validator, only when that kind is
+// about to be rendered. Loading and schema compilation are cached so the
+// heavy kind.json bodies and the JSON-Schema compilation happen at most
+// once per kind per registry, even when many resources share a kind.
+//
+// A Registry reads its bytes from a Store — a filesystem (on disk or in
+// memory) or an HTTP remote (see store.go) — and layers caching and
+// schema compilation on top. The in-memory case used by `veil render
+// --build` is just an FSStore over an in-memory fs.FS, so disk, memory,
+// and HTTP all flow through one code path.
 package registry
 
 import (
 	"bytes"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"os"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 	"sync"
-	"time"
-
-	"google.golang.org/protobuf/proto"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/protoencode"
 )
 
-// Registry resolves compiled kind documents by name. Implementations are
-// expected to load each kind at most once per registry instance.
+// Registry resolves compiled kind documents by name. Implementations load
+// and compile each kind at most once per registry instance.
 type Registry interface {
-	// LoadKind returns the compiled kind document with the given
-	// reference, plus the absolute path to its kind.schema.json. The
-	// reference may be a bare kind name (resolved against the default
-	// registry) or `<alias>/<kind>` (resolved against the named alias).
-	// Errors when the alias is unknown, the kind isn't registered there,
-	// or its kind.json fails to read or parse.
+	// LoadKind returns the compiled kind document for ref, with its spec
+	// subschema and compiled validator ready for render. ref may be a bare
+	// kind name (the default registry) or `<alias>/<kind>` (a named alias).
+	// Errors when the alias is unknown, the kind isn't registered, or the
+	// kind.json / schema fail to read, parse, or compile.
 	LoadKind(ref string) (*LoadedKind, error)
 }
 
-// Reference pairs an alias with one registry path. The empty alias
-// names the default registry; resources reference its kinds without a
-// prefix. Named aliases are referenced via `<alias>/<kind>` lookups.
+// Reference pairs an alias with one registry path — a local filesystem
+// path or an HTTP(S) URL to a registry.json. The empty alias names the
+// default registry; resources reference its kinds without a prefix.
 type Reference struct {
 	Alias string
 	Path  string
 }
 
-// LoadedKind pairs a compiled kind's wire-shape body with the raw bytes
-// of its companion kind.schema.json, which the render pipeline needs for
-// spec validation and default-application. Carrying the schema as bytes
-// (read by the registry when the kind loads) keeps the render pipeline
-// free of any filesystem knowledge — the registry is the only thing that
-// touches disk or an HTTP endpoint (or, for MemRegistry, nothing at all).
-type LoadedKind struct {
-	*veilv1.Kind
-	// SchemaPath is the location the schema was read from — an absolute
-	// disk path / URL for an on-disk registry, empty for an in-memory one
-	// (MemRegistry), which is populated with the bytes directly.
-	// Scaffolding (`veil new resource`) uses it to write a relative
-	// `$schema` pointer; render uses Schema instead.
-	SchemaPath string
-	// Schema is the raw kind.schema.json bytes, read when the kind loads.
-	Schema []byte
-}
-
-// Load builds a Registry by reading every (alias, path) pair as a
-// compiled registry.json. Index files are tiny, so they're loaded
-// eagerly; the kind.json bodies stay on disk (or behind an HTTP URL)
-// until LoadKind is called for a particular name. Within one alias,
-// duplicate kind names across indices are a hard error; across aliases
-// the same kind name is fine and is disambiguated by the `<alias>/`
-// prefix at lookup time.
-//
-// Each registry path is a local filesystem path or an HTTP(S) URL, and
-// entry paths resolve against the registry.json they came from. The
-// in-memory counterpart used by `veil render --build` is MemRegistry,
-// which build populates directly — no paths, no reparse.
+// Load builds a Registry over one or more on-disk / HTTP registries. Each
+// reference's registry.json index is read eagerly (it's tiny); the
+// kind.json bodies and their schemas stay unread until LoadKind is called
+// for a given kind. Within one alias, duplicate kind names across indices
+// are a hard error; the same name across aliases is fine, disambiguated
+// by the `<alias>/` prefix at lookup.
 func Load(refs []Reference) (Registry, error) {
-	loaders := make(map[string]map[string]func() (*LoadedKind, error))
-	seen := make(map[string]map[string]string)
-	for _, src := range refs {
-		loc, err := absLocation(src.Path)
+	r := newCachedRegistry()
+	for _, ref := range refs {
+		store, indexName, err := storeForReference(ref.Path)
 		if err != nil {
-			return nil, fmt.Errorf("registry %s: %w", src.Path, err)
+			return nil, fmt.Errorf("registry %s: %w", ref.Path, err)
 		}
-		data, err := readResource(loc)
-		if err != nil {
-			return nil, fmt.Errorf("loading registry %s: %w", src.Path, err)
-		}
-		var r veilv1.Registry
-		if err := protoencode.UnmarshalProto(bytes.NewReader(data), &r); err != nil {
-			return nil, fmt.Errorf("loading registry %s: %w", src.Path, err)
-		}
-		if loaders[src.Alias] == nil {
-			loaders[src.Alias] = make(map[string]func() (*LoadedKind, error))
-			seen[src.Alias] = make(map[string]string)
-		}
-		for name, entry := range r.Kinds {
-			if entry.GetPath() == "" {
-				return nil, fmt.Errorf("registry %s: kind %q is missing \"path\"", src.Path, name)
-			}
-			kindPath := resolveAgainst(loc, entry.GetPath())
-			schemaPath := resolveAgainst(loc, entry.GetSchema())
-			if entry.GetSchema() == "" {
-				schemaPath = resolveAgainst(kindPath, "kind.schema.json")
-			}
-			if existing, ok := seen[src.Alias][name]; ok {
-				return nil, fmt.Errorf("kind %q provided by multiple registries: %s and %s", aliasedName(src.Alias, name), existing, kindPath)
-			}
-			seen[src.Alias][name] = kindPath
-			loaders[src.Alias][name] = sync.OnceValues(loadKindFn(name, kindPath, schemaPath))
+		if err := r.addSource(ref.Alias, store, indexName); err != nil {
+			return nil, fmt.Errorf("registry %s: %w", ref.Path, err)
 		}
 	}
-	return &cachedRegistry{loaders: loaders}, nil
+	return r, nil
 }
 
-// readResource reads all bytes at loc — a local filesystem path or an
-// HTTP(S) URL — using the same scheme dispatch as the rest of the package.
-func readResource(loc string) ([]byte, error) {
-	rc, err := openResource(loc)
-	if err != nil {
+// FromStore builds a Registry from a single Store under the default
+// alias, reading its index from registry.json. `veil render --build` uses
+// this with an FSStore over the in-memory fs.FS the build pipeline just
+// wrote, so the in-memory path reuses the same load + compile + cache
+// machinery as a disk or HTTP registry.
+func FromStore(store Store) (Registry, error) {
+	r := newCachedRegistry()
+	if err := r.addSource("", store, "registry.json"); err != nil {
 		return nil, err
 	}
-	defer rc.Close()
-	return io.ReadAll(rc)
+	return r, nil
 }
 
-// absLocation normalizes a registry location: HTTP(S) URLs are returned
-// verbatim; everything else is treated as a filesystem path and made
-// absolute against cwd.
-func absLocation(loc string) (string, error) {
-	if isHTTPURL(loc) {
-		return loc, nil
-	}
-	abs, err := filepath.Abs(loc)
-	if err != nil {
-		return "", err
-	}
-	return abs, nil
-}
-
-// cachedRegistry implements Registry against a fully resolved index
-// keyed by (alias, kind name). Each kind has its own sync.OnceValues-
-// backed loader so the kind.json is read at most once per registry —
-// concurrent LoadKind calls for the same reference see the same cached
-// result without any external sync.
+// cachedRegistry implements Registry against a per-(alias, kind) index of
+// sync.OnceValues loaders. Each loader reads + parses its kind.json and
+// reads + compiles its schema at most once; concurrent LoadKind calls for
+// the same kind share the cached result without external sync.
 type cachedRegistry struct {
 	loaders map[string]map[string]func() (*LoadedKind, error)
+	seen    map[string]map[string]string // alias → name → index location (for dup errors)
+}
+
+func newCachedRegistry() *cachedRegistry {
+	return &cachedRegistry{
+		loaders: map[string]map[string]func() (*LoadedKind, error){},
+		seen:    map[string]map[string]string{},
+	}
+}
+
+// addSource reads one registry.json index from store and registers a
+// cached loader for each kind it lists, under alias.
+func (r *cachedRegistry) addSource(alias string, store Store, indexName string) error {
+	data, err := readAll(store, indexName)
+	if err != nil {
+		return fmt.Errorf("loading registry index: %w", err)
+	}
+	var index veilv1.Registry
+	if err := protoencode.UnmarshalProto(bytes.NewReader(data), &index); err != nil {
+		return fmt.Errorf("loading registry index: %w", err)
+	}
+	if r.loaders[alias] == nil {
+		r.loaders[alias] = map[string]func() (*LoadedKind, error){}
+		r.seen[alias] = map[string]string{}
+	}
+	for name, entry := range index.Kinds {
+		if entry.GetPath() == "" {
+			return fmt.Errorf("kind %q is missing \"path\"", name)
+		}
+		kindPath := cleanLocation(entry.GetPath())
+		schemaPath := cleanLocation(entry.GetSchema())
+		if entry.GetSchema() == "" {
+			schemaPath = path.Join(path.Dir(kindPath), "kind.schema.json")
+		}
+		if existing, ok := r.seen[alias][name]; ok {
+			return fmt.Errorf("kind %q provided by multiple registries: %s and %s", aliasedName(alias, name), existing, kindPath)
+		}
+		r.seen[alias][name] = kindPath
+		r.loaders[alias][name] = sync.OnceValues(loadKindFn(store, name, kindPath, schemaPath))
+	}
+	return nil
 }
 
 func (r *cachedRegistry) LoadKind(ref string) (*LoadedKind, error) {
@@ -174,6 +152,40 @@ func (r *cachedRegistry) knownAliases() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// loadKindFn returns the closure handed to sync.OnceValues for one kind:
+// it reads + parses the compiled kind.json, reads its schema, extracts
+// the spec subschema, and compiles the validator — all once. Pulled out
+// so the loop variables are captured by parameter, not by reference.
+func loadKindFn(store Store, name, kindPath, schemaPath string) func() (*LoadedKind, error) {
+	return func() (*LoadedKind, error) {
+		kindData, err := readAll(store, kindPath)
+		if err != nil {
+			return nil, fmt.Errorf("loading kind %s: %w", name, err)
+		}
+		var ck veilv1.Kind
+		if err := protoencode.UnmarshalProto(bytes.NewReader(kindData), &ck); err != nil {
+			return nil, fmt.Errorf("loading kind %s: %w", name, err)
+		}
+		schemaData, err := readAll(store, schemaPath)
+		if err != nil {
+			return nil, fmt.Errorf("loading kind %s schema: %w", name, err)
+		}
+		spec, err := extractSpecSubschema(schemaData)
+		if err != nil {
+			return nil, fmt.Errorf("loading kind %s schema: %w", name, err)
+		}
+		validator, err := compileSchema(schemaData)
+		if err != nil {
+			return nil, fmt.Errorf("loading kind %s schema: %w", name, err)
+		}
+		schemaLoc := ""
+		if l, ok := store.(Locator); ok {
+			schemaLoc = l.Location(schemaPath)
+		}
+		return &LoadedKind{Kind: &ck, SpecSchema: spec, SchemaPath: schemaLoc, validator: validator}, nil
+	}
 }
 
 // ParseRef splits a kind reference into its alias and bare kind name.
@@ -206,127 +218,4 @@ func aliasedName(alias, name string) string {
 		return name
 	}
 	return alias + "/" + name
-}
-
-// loadKindFn returns the closure handed to sync.OnceValues for one
-// (kindPath, schemaPath) pair. It reads and parses the compiled kind and
-// reads the raw schema bytes. Pulled out of Load so the loop variables
-// are captured by parameter, not by reference.
-func loadKindFn(name, kindPath, schemaPath string) func() (*LoadedKind, error) {
-	return func() (*LoadedKind, error) {
-		kindData, err := readResource(kindPath)
-		if err != nil {
-			return nil, fmt.Errorf("loading kind %s: %w", name, err)
-		}
-		var ck veilv1.Kind
-		if err := protoencode.UnmarshalProto(bytes.NewReader(kindData), &ck); err != nil {
-			return nil, fmt.Errorf("loading kind %s: %w", name, err)
-		}
-		schema, err := readResource(schemaPath)
-		if err != nil {
-			return nil, fmt.Errorf("loading kind %s schema: %w", name, err)
-		}
-		return &LoadedKind{Kind: &ck, SchemaPath: schemaPath, Schema: schema}, nil
-	}
-}
-
-// httpClient is the package-level fetcher for registry resources served
-// over HTTP(S). The 30-second timeout is a sane default for a small
-// JSON file; callers needing different policies can fork this.
-var httpClient = &http.Client{Timeout: 30 * time.Second}
-
-// ReadResource opens a registry resource (HTTP URL or local file)
-// and decodes one document into v using the decoder implied by loc's
-// extension. Exposed so other packages (notably pkg/render) can read
-// schema files using the same dispatch — a kind.schema.json
-// published alongside a remote registry needs to be fetched, not
-// statted on disk.
-//
-// For proto messages use ReadProtoResource — that path routes
-// through protojson which understands snake_case field names.
-func ReadResource(loc string, v any) error {
-	rc, err := openResource(loc)
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
-	if err := protoencode.Decode(rc, v); err != nil {
-		return fmt.Errorf("decoding %s: %w", loc, err)
-	}
-	return nil
-}
-
-// ReadProtoResource is the proto-typed companion to ReadResource:
-// opens loc and unmarshals one document into m via protojson, going
-// through the yaml.v3 + JSON re-encode hop for YAML sources.
-func ReadProtoResource(loc string, m proto.Message) error {
-	rc, err := openResource(loc)
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
-	if err := protoencode.UnmarshalProto(rc, m); err != nil {
-		return fmt.Errorf("decoding %s: %w", loc, err)
-	}
-	return nil
-}
-
-// openResource returns a ReadCloser for loc, dispatching on the URL
-// scheme. The caller is responsible for Close.
-func openResource(loc string) (io.ReadCloser, error) {
-	if isHTTPURL(loc) {
-		return fetchURLBody(loc)
-	}
-	return os.Open(loc)
-}
-
-// fetchURLBody returns the HTTP response body as a ReadCloser the
-// caller streams from and Closes. Non-200 responses are mapped to
-// an error and the body is drained on the way out so the connection
-// can be reused.
-func fetchURLBody(u string) (io.ReadCloser, error) {
-	resp, err := httpClient.Get(u)
-	if err != nil {
-		return nil, fmt.Errorf("fetching %s: %w", u, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return nil, fmt.Errorf("fetching %s: HTTP %d %s", u, resp.StatusCode, http.StatusText(resp.StatusCode))
-	}
-	return resp.Body, nil
-}
-
-func isHTTPURL(s string) bool {
-	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
-}
-
-// resolveAgainst returns p as an absolute filesystem path or URL,
-// resolved relative to base. When base is an HTTP(S) URL, RFC 3986
-// reference resolution is used (so `./foo` against
-// `https://h/x/registry.json` becomes `https://h/x/foo`). Otherwise
-// base is treated as a filesystem path and p is joined against base's
-// containing directory. An absolute p (filesystem or URL) is returned
-// as-is. Empty p returns empty.
-func resolveAgainst(base, p string) string {
-	if p == "" {
-		return ""
-	}
-	if isHTTPURL(p) {
-		return p
-	}
-	if isHTTPURL(base) {
-		baseURL, err := url.Parse(base)
-		if err != nil {
-			return p
-		}
-		ref, err := url.Parse(p)
-		if err != nil {
-			return p
-		}
-		return baseURL.ResolveReference(ref).String()
-	}
-	if filepath.IsAbs(p) {
-		return filepath.Clean(p)
-	}
-	return filepath.Clean(filepath.Join(filepath.Dir(base), p))
 }

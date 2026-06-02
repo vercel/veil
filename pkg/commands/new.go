@@ -221,7 +221,7 @@ func runNewKind(ctx context.Context, c *cli.Command) (*newResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("re-discovering registry after scaffold: %w", err)
 	}
-	if _, err := runBuildPipeline(reg, newDirSink(vfs.NewDir(filepath.Join(reg.Root, config.PublicDir, "r"))), buildPipelineOpts{typecheck: true, writeTypes: true}, p); err != nil {
+	if _, err := runBuildPipeline(reg, vfs.NewDir(filepath.Join(reg.Root, config.PublicDir, "r")), buildPipelineOpts{typecheck: true, writeTypes: true}, p); err != nil {
 		return nil, err
 	}
 	rb.commit()
@@ -321,7 +321,7 @@ func runNewHookOnKind(ctx context.Context, cwd, name, kindName string, p interac
 	if err != nil {
 		return nil, fmt.Errorf("re-discovering registry after scaffold: %w", err)
 	}
-	if _, err := runBuildPipeline(reg, newDirSink(vfs.NewDir(filepath.Join(reg.Root, config.PublicDir, "r"))), buildPipelineOpts{typecheck: true, writeTypes: true}, p); err != nil {
+	if _, err := runBuildPipeline(reg, vfs.NewDir(filepath.Join(reg.Root, config.PublicDir, "r")), buildPipelineOpts{typecheck: true, writeTypes: true}, p); err != nil {
 		return nil, err
 	}
 	rb.commit()

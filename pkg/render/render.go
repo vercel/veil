@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
-	"github.com/santhosh-tekuri/jsonschema/v6"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -130,7 +129,6 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		return nil, err
 	}
 	kind := loaded.Kind
-	schemaJSON := loaded.Schema
 
 	logger.Debug("applying overlays", "count", len(r.GetMetadata().GetOverlays()))
 	mergedSpec, err := applyOverlays(opts.FS, r, opts.Variables)
@@ -138,11 +136,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		return nil, fmt.Errorf("overlays: %w", err)
 	}
 
-	specSchema, err := loadSpecSubschema(schemaJSON)
-	if err != nil {
-		return nil, fmt.Errorf("loading spec schema: %w", err)
-	}
-	applySchemaDefaults(mergedSpec, specSchema)
+	applySchemaDefaults(mergedSpec, loaded.SpecSchema)
 
 	// Build the post-overlay resource that downstream code (validator +
 	// hook ctx) operates on: clone the original, replace its spec with the
@@ -153,8 +147,15 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		return nil, fmt.Errorf("building resolved resource: %w", err)
 	}
 
+	// The map form of the resolved resource feeds both schema validation
+	// and the hook ctx — encode it once.
+	resourceMap, err := resourceToMap(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("encoding resource: %w", err)
+	}
+
 	logger.Debug("validating spec against schema")
-	if err := validateResource(schemaJSON, resolved); err != nil {
+	if err := loaded.Validate(resourceMap); err != nil {
 		return nil, fmt.Errorf("schema validation: %w", err)
 	}
 
@@ -174,11 +175,6 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	frozen, err := applyOverrides(opts.FS, r, bundle)
 	if err != nil {
 		return nil, fmt.Errorf("applying overrides: %w", err)
-	}
-
-	resourceMap, err := resourceToMap(resolved)
-	if err != nil {
-		return nil, fmt.Errorf("encoding resource for hook ctx: %w", err)
 	}
 
 	ctx := map[string]any{
@@ -458,11 +454,7 @@ func resolveTargetResource(r *resource.Resource, opts *Options) (*veilv1.Resourc
 	if err != nil {
 		return nil, fmt.Errorf("loading kind: %w", err)
 	}
-	specSchema, err := loadSpecSubschema(loaded.Schema)
-	if err != nil {
-		return nil, fmt.Errorf("loading spec schema: %w", err)
-	}
-	applySchemaDefaults(mergedSpec, specSchema)
+	applySchemaDefaults(mergedSpec, loaded.SpecSchema)
 	return resolveResource(r.Resource, mergedSpec)
 }
 
@@ -795,23 +787,6 @@ func stringifyVar(v any) string {
 	}
 }
 
-// loadSpecSubschema parses the composite kind.schema.json bytes and
-// returns its `properties.spec` subschema — the author-facing schema that
-// declares each spec field, including its `default` values. Returns an
-// empty map if the composite schema has no spec subschema.
-func loadSpecSubschema(schemaJSON []byte) (map[string]any, error) {
-	var root map[string]any
-	if err := json.Unmarshal(schemaJSON, &root); err != nil {
-		return nil, fmt.Errorf("parsing kind schema: %w", err)
-	}
-	props, _ := root["properties"].(map[string]any)
-	spec, _ := props["spec"].(map[string]any)
-	if spec == nil {
-		return map[string]any{}, nil
-	}
-	return spec, nil
-}
-
 // applySchemaDefaults walks an object-typed JSON Schema and fills in any
 // missing fields in data with the corresponding `default` value from the
 // schema. Recurses into nested object properties. Arrays and scalar
@@ -832,44 +807,6 @@ func applySchemaDefaults(data map[string]any, schema map[string]any) {
 			applySchemaDefaults(child, prop)
 		}
 	}
-}
-
-// validateResource validates the resource against the composite
-// kind.schema.json bytes. The resource passed in must already have its
-// spec merged via resolveResource — i.e. overlays are applied, so what's
-// validated is exactly what hooks (and the final renderer) will see.
-func validateResource(schemaJSON []byte, r *veilv1.Resource) error {
-	var schemaDoc any
-	if err := json.Unmarshal(schemaJSON, &schemaDoc); err != nil {
-		return fmt.Errorf("parsing kind schema: %w", err)
-	}
-	compiler := jsonschema.NewCompiler()
-	if err := compiler.AddResource("mem://schema", schemaDoc); err != nil {
-		return fmt.Errorf("registering schema: %w", err)
-	}
-	schema, err := compiler.Compile("mem://schema")
-	if err != nil {
-		return fmt.Errorf("compiling schema: %w", err)
-	}
-
-	doc, err := resourceToMap(r)
-	if err != nil {
-		return fmt.Errorf("encoding resource for validation: %w", err)
-	}
-	if err := schema.Validate(doc); err != nil {
-		// santhosh-tekuri/jsonschema embeds the in-memory schema URL
-		// (`mem://schema#…`) in every message — strip it so users see
-		// just the JSON-pointer location and the failure text.
-		return errors.New(stripSchemaURL(err.Error()))
-	}
-	return nil
-}
-
-var schemaURLRE = regexp.MustCompile(`'mem://schema#?[^']*'`)
-
-func stripSchemaURL(msg string) string {
-	msg = schemaURLRE.ReplaceAllString(msg, "kind schema")
-	return strings.TrimPrefix(msg, "jsonschema validation failed with kind schema\n")
 }
 
 // writeBundle materializes a hook.Bundle to disk under outDir, using each
