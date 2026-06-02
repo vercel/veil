@@ -44,12 +44,12 @@ func NewApp() *cli.Command {
 			},
 		},
 		Before: func(ctx context.Context, command *cli.Command) (context.Context, error) {
-			// Output format + quiet must be set before constructing the
-			// printer: NewPrinter reads both to decide whether it styles
-			// output or runs log-only.
+			// Set the output format first so IsJSON reflects it, then build
+			// the printer: it styles output only when not JSON and not
+			// --quiet; otherwise it just logs.
 			interact.SetOutputFormat(command.String("output"))
-			interact.SetQuiet(command.Bool("quiet"))
-			interact.SetDefault(interact.NewPrinter(command.Root().Writer))
+			pretty := !interact.IsJSON() && !command.Bool("quiet")
+			interact.SetDefault(interact.NewPrinter(command.Root().Writer, pretty))
 
 			level := parseLogLevel(command.String("log-level"))
 			logPaths := command.StringSlice("log-paths")

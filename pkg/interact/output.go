@@ -17,19 +17,6 @@ const (
 // outputFormat holds the global output format set by --output.
 var outputFormat atomic.Pointer[string]
 
-// quietMode holds the global --quiet state. When set, the printer
-// suppresses its informational console output (everything but errors),
-// so the only thing a command writes is its final result — the JSON
-// CommandResult, or nothing in pretty mode on success.
-var quietMode atomic.Bool
-
-// SetQuiet sets the global quiet state. Typically called from the root
-// Before hook after parsing --quiet.
-func SetQuiet(q bool) { quietMode.Store(q) }
-
-// IsQuiet reports whether quiet mode is active.
-func IsQuiet() bool { return quietMode.Load() }
-
 // SetOutputFormat sets the global output format. Typically called from the
 // root Before hook after parsing --output.
 func SetOutputFormat(format string) {
