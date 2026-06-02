@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	"github.com/vercel/veil/pkg/vfs"
+	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 )
 
 type RegistrySuite struct {
@@ -306,29 +306,28 @@ func (s *RegistrySuite) TestLoadKindFailsWhenRemoteKindMissing() {
 	s.Contains(err.Error(), "HTTP 410")
 }
 
-func (s *RegistrySuite) TestLoadFS() {
-	m := vfs.NewMem()
-	s.Require().NoError(m.WriteFile("registry.json", []byte(
-		`{"kinds":{"svc":{"name":"svc","path":"./svc/kind.json","schema":"./svc/kind.schema.json"}}}`)))
-	s.Require().NoError(m.WriteFile("svc/kind.json", []byte(`{"name":"svc"}`)))
-	s.Require().NoError(m.WriteFile("svc/kind.schema.json", []byte(`{"type":"object"}`)))
+func (s *RegistrySuite) TestMemRegistry() {
+	m := NewMemRegistry()
+	m.Add("svc", &LoadedKind{Kind: &veilv1.Kind{Name: "svc"}, Schema: []byte(`{"type":"object"}`)})
 
-	reg, err := LoadFS(m, []Reference{{Alias: "", Path: "registry.json"}})
-	s.Require().NoError(err)
-
-	loaded, err := reg.LoadKind("svc")
+	loaded, err := m.LoadKind("svc")
 	s.Require().NoError(err)
 	s.Equal("svc", loaded.GetName())
-	s.Equal(`{"type":"object"}`, string(loaded.Schema), "schema bytes come from the in-memory FS")
+	s.Equal(`{"type":"object"}`, string(loaded.Schema), "build's kind + schema bytes are stored and returned as-is")
 }
 
-func (s *RegistrySuite) TestLoadFSMissingKindBody() {
-	m := vfs.NewMem()
-	s.Require().NoError(m.WriteFile("registry.json", []byte(
-		`{"kinds":{"svc":{"name":"svc","path":"./svc/kind.json","schema":"./svc/kind.schema.json"}}}`)))
-	// kind.json + schema deliberately absent.
-	reg, err := LoadFS(m, []Reference{{Alias: "", Path: "registry.json"}})
-	s.Require().NoError(err) // index loads fine; the body is lazy
-	_, err = reg.LoadKind("svc")
+func (s *RegistrySuite) TestMemRegistryMissing() {
+	m := NewMemRegistry()
+	_, err := m.LoadKind("svc")
 	s.Require().Error(err)
+}
+
+func (s *RegistrySuite) TestMemRegistryRejectsAlias() {
+	m := NewMemRegistry()
+	m.Add("svc", &LoadedKind{Kind: &veilv1.Kind{Name: "svc"}})
+	// An in-memory registry only ever holds the default project's kinds,
+	// so an aliased reference can't resolve.
+	_, err := m.LoadKind("acme/svc")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "default registry")
 }
