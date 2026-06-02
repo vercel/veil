@@ -86,7 +86,7 @@ type memFile struct {
 }
 
 func (f *memFile) Stat() (fs.FileInfo, error) {
-	return memFileInfo{name: f.name, size: int64(len(f.data))}, nil
+	return &memFileInfo{name: f.name, size: int64(len(f.data))}, nil
 }
 func (f *memFile) Read(p []byte) (int, error) {
 	if f.off >= len(f.data) {
@@ -103,12 +103,12 @@ type memFileInfo struct {
 	size int64
 }
 
-func (fi memFileInfo) Name() string       { return fi.name }
-func (fi memFileInfo) Size() int64        { return fi.size }
-func (fi memFileInfo) Mode() fs.FileMode  { return 0o444 }
-func (fi memFileInfo) ModTime() time.Time { return time.Time{} }
-func (fi memFileInfo) IsDir() bool        { return false }
-func (fi memFileInfo) Sys() any           { return nil }
+func (fi *memFileInfo) Name() string       { return fi.name }
+func (fi *memFileInfo) Size() int64        { return fi.size }
+func (fi *memFileInfo) Mode() fs.FileMode  { return 0o444 }
+func (fi *memFileInfo) ModTime() time.Time { return time.Time{} }
+func (fi *memFileInfo) IsDir() bool        { return false }
+func (fi *memFileInfo) Sys() any           { return nil }
 
 // --- on-disk ------------------------------------------------------------
 

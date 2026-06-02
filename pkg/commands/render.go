@@ -147,7 +147,7 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 		if _, err := runBuildPipeline(reg, mem, buildPipelineOpts{}, nil); err != nil {
 			return nil, fmt.Errorf("building registry: %w", err)
 		}
-		kindReg, err = registry.FromStore(registry.FSStore{FS: mem})
+		kindReg, err = registry.FromStore(&registry.FSStore{FS: mem})
 		if err != nil {
 			return nil, err
 		}

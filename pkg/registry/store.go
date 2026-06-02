@@ -14,20 +14,17 @@ import (
 )
 
 // Store is the raw byte source behind a registry: a filesystem (on disk
-// or in memory) or an HTTP remote. Open resolves a slash-separated,
-// store-relative location to a ReadCloser the caller streams and closes.
-// A Store knows nothing about kinds, schemas, or caching — the Registry
-// layers those on top.
+// or in memory) or an HTTP remote. A Store knows nothing about kinds,
+// schemas, or caching — the Registry layers those on top.
 type Store interface {
+	// Open resolves a slash-separated, store-relative location to a
+	// ReadCloser the caller streams and closes.
 	Open(name string) (io.ReadCloser, error)
-}
-
-// Locator is an optional Store capability: it maps a store-relative name
-// to an external, tooling-facing location (an absolute disk path or a
-// URL). `veil new resource` uses it to write a relative `$schema` pointer
-// from a new resource file to its kind's schema. Stores with no
-// meaningful external location (an in-memory FS) return "".
-type Locator interface {
+	// Location maps a store-relative name to an external, tooling-facing
+	// location — an absolute disk path or a URL — or "" when the store has
+	// none (e.g. an in-memory FS). `veil new resource` uses it to write a
+	// relative `$schema` pointer from a new resource file to its kind's
+	// schema.
 	Location(name string) string
 }
 
@@ -40,13 +37,13 @@ type FSStore struct {
 	Root string
 }
 
-func (s FSStore) Open(name string) (io.ReadCloser, error) {
+func (s *FSStore) Open(name string) (io.ReadCloser, error) {
 	return s.FS.Open(cleanLocation(name))
 }
 
 // Location returns the absolute on-disk path of name, or "" when this
 // store isn't on disk (Root unset).
-func (s FSStore) Location(name string) string {
+func (s *FSStore) Location(name string) string {
 	if s.Root == "" {
 		return ""
 	}
@@ -60,7 +57,7 @@ type HTTPStore struct {
 	Client *http.Client
 }
 
-func (s HTTPStore) Open(name string) (io.ReadCloser, error) {
+func (s *HTTPStore) Open(name string) (io.ReadCloser, error) {
 	loc := s.Location(name)
 	client := s.Client
 	if client == nil {
@@ -78,7 +75,7 @@ func (s HTTPStore) Open(name string) (io.ReadCloser, error) {
 }
 
 // Location resolves name against the base URL.
-func (s HTTPStore) Location(name string) string {
+func (s *HTTPStore) Location(name string) string {
 	if u, err := url.JoinPath(s.Base, cleanLocation(name)); err == nil {
 		return u
 	}
@@ -96,15 +93,20 @@ func storeForReference(loc string) (store Store, indexName string, err error) {
 		}
 		base := *u
 		base.Path = path.Dir(u.Path)
-		return HTTPStore{Base: base.String()}, path.Base(u.Path), nil
+		return &HTTPStore{Base: base.String()}, path.Base(u.Path), nil
 	}
 	abs, err := filepath.Abs(loc)
 	if err != nil {
 		return nil, "", err
 	}
 	dir := filepath.Dir(abs)
-	return FSStore{FS: os.DirFS(dir), Root: dir}, filepath.Base(abs), nil
+	return &FSStore{FS: os.DirFS(dir), Root: dir}, filepath.Base(abs), nil
 }
+
+var (
+	_ Store = (*FSStore)(nil)
+	_ Store = (*HTTPStore)(nil)
+)
 
 // readAll opens name on store and returns its full contents.
 func readAll(store Store, name string) ([]byte, error) {
