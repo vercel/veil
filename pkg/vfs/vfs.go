@@ -2,12 +2,13 @@
 // so build output can land either on disk or in memory.
 //
 // WritableFS is the write surface `veil build` targets. Mem is a
-// concurrency-safe in-memory implementation backed by a flat map of
-// cleaned slash paths to file contents; it implements the major read
-// interfaces (fs.FS, fs.ReadFileFS, fs.ReadDirFS, fs.StatFS, fs.GlobFS,
-// fs.SubFS), synthesizing directories from the path segments of the
-// files it holds, so fs.WalkDir / fs.Glob / fs.Sub all work over it.
-// Dir is a thin os-backed WritableFS for the on-disk path.
+// concurrency-safe in-memory implementation backed by a flat, lock-free
+// concurrent map (xsync.Map) of cleaned slash paths to file contents; it
+// implements the major read interfaces (fs.FS, fs.ReadFileFS,
+// fs.ReadDirFS, fs.StatFS, fs.GlobFS, fs.SubFS), synthesizing directories
+// from the path segments of the files it holds, so fs.WalkDir / fs.Glob /
+// fs.Sub all work over it. Dir is a thin os-backed WritableFS for the
+// on-disk path.
 package vfs
 
 import (
@@ -18,8 +19,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/puzpuzpuz/xsync/v4"
 )
 
 // WritableFS is an fs.FS that also accepts writes addressed by an
@@ -48,12 +50,11 @@ func normalize(name string) string {
 // Mem is a concurrency-safe in-memory filesystem. The zero value is not
 // usable; call NewMem.
 type Mem struct {
-	mu    sync.RWMutex
-	files map[string][]byte
+	files *xsync.Map[string, []byte]
 }
 
 // NewMem returns an empty in-memory filesystem.
-func NewMem() *Mem { return &Mem{files: make(map[string][]byte)} }
+func NewMem() *Mem { return &Mem{files: xsync.NewMap[string, []byte]()} }
 
 var _ WritableFS = (*Mem)(nil)
 var _ fs.ReadFileFS = (*Mem)(nil)
@@ -70,9 +71,7 @@ func (m *Mem) WriteFile(name string, data []byte) error {
 	}
 	cp := make([]byte, len(data))
 	copy(cp, data)
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.files[name] = cp
+	m.files.Store(name, cp)
 	return nil
 }
 
@@ -82,11 +81,9 @@ func (m *Mem) ReadFile(name string) ([]byte, error) {
 	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	data, ok := m.files[name]
+	data, ok := m.files.Load(name)
 	if !ok {
-		if m.isDirLocked(name) {
+		if m.isDir(name) {
 			return nil, &fs.PathError{Op: "read", Path: name, Err: fs.ErrInvalid} // is a directory
 		}
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
@@ -104,13 +101,11 @@ func (m *Mem) Open(name string) (fs.File, error) {
 	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if data, ok := m.files[name]; ok {
+	if data, ok := m.files.Load(name); ok {
 		return &memFile{name: path.Base(name), data: data}, nil
 	}
-	if name == "." || m.isDirLocked(name) {
-		return &memDir{fsys: m, name: name, entries: m.readDirLocked(name)}, nil
+	if name == "." || m.isDir(name) {
+		return &memDir{fsys: m, name: name, entries: m.readDir(name)}, nil
 	}
 	return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 }
@@ -121,12 +116,10 @@ func (m *Mem) Stat(name string) (fs.FileInfo, error) {
 	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrInvalid}
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if data, ok := m.files[name]; ok {
+	if data, ok := m.files.Load(name); ok {
 		return fileInfo{name: path.Base(name), size: int64(len(data))}, nil
 	}
-	if name == "." || m.isDirLocked(name) {
+	if name == "." || m.isDir(name) {
 		return fileInfo{name: path.Base(name), dir: true}, nil
 	}
 	return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
@@ -138,12 +131,10 @@ func (m *Mem) ReadDir(dir string) ([]fs.DirEntry, error) {
 	if !fs.ValidPath(dir) {
 		return nil, &fs.PathError{Op: "readdir", Path: dir, Err: fs.ErrInvalid}
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if dir != "." && !m.isDirLocked(dir) {
+	if dir != "." && !m.isDir(dir) {
 		return nil, &fs.PathError{Op: "readdir", Path: dir, Err: fs.ErrNotExist}
 	}
-	return m.readDirLocked(dir), nil
+	return m.readDir(dir), nil
 }
 
 // Glob implements fs.GlobFS by matching pattern against every stored
@@ -152,8 +143,6 @@ func (m *Mem) Glob(pattern string) ([]string, error) {
 	if _, err := path.Match(pattern, ""); err != nil {
 		return nil, err
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
 	seen := make(map[string]struct{})
 	var out []string
 	consider := func(p string) {
@@ -165,12 +154,13 @@ func (m *Mem) Glob(pattern string) ([]string, error) {
 			out = append(out, p)
 		}
 	}
-	for f := range m.files {
+	m.files.Range(func(f string, _ []byte) bool {
 		consider(f)
 		for d := path.Dir(f); d != "."; d = path.Dir(d) {
 			consider(d)
 		}
-	}
+		return true
+	})
 	sort.Strings(out)
 	return out, nil
 }
@@ -184,50 +174,51 @@ func (m *Mem) Sub(dir string) (fs.FS, error) {
 	if dir == "." {
 		return m, nil
 	}
-	m.mu.RLock()
-	isDir := m.isDirLocked(dir)
-	m.mu.RUnlock()
-	if !isDir {
+	if !m.isDir(dir) {
 		return nil, &fs.PathError{Op: "sub", Path: dir, Err: fs.ErrNotExist}
 	}
 	return &subFS{parent: m, prefix: dir}, nil
 }
 
-// isDirLocked reports whether name names a directory: some stored file
-// sits beneath it. Caller holds the lock.
-func (m *Mem) isDirLocked(name string) bool {
+// isDir reports whether name names a directory: some stored file sits
+// beneath it.
+func (m *Mem) isDir(name string) bool {
 	prefix := name + "/"
-	for f := range m.files {
+	found := false
+	m.files.Range(func(f string, _ []byte) bool {
 		if strings.HasPrefix(f, prefix) {
-			return true
+			found = true
+			return false // stop early
 		}
-	}
-	return false
+		return true
+	})
+	return found
 }
 
-// readDirLocked returns the immediate children of dir as DirEntries,
-// sorted by name. Caller holds the lock.
-func (m *Mem) readDirLocked(dir string) []fs.DirEntry {
+// readDir returns the immediate children of dir as DirEntries, sorted by
+// name.
+func (m *Mem) readDir(dir string) []fs.DirEntry {
 	prefix := ""
 	if dir != "." {
 		prefix = dir + "/"
 	}
 	files := make(map[string]int64) // child name -> size
 	dirs := make(map[string]struct{})
-	for f, data := range m.files {
+	m.files.Range(func(f string, data []byte) bool {
 		if !strings.HasPrefix(f, prefix) {
-			continue
+			return true
 		}
 		rest := f[len(prefix):]
 		if rest == "" {
-			continue
+			return true
 		}
 		if i := strings.IndexByte(rest, '/'); i >= 0 {
 			dirs[rest[:i]] = struct{}{}
 		} else {
 			files[rest] = int64(len(data))
 		}
-	}
+		return true
+	})
 	out := make([]fs.DirEntry, 0, len(files)+len(dirs))
 	for name := range dirs {
 		out = append(out, fs.FileInfoToDirEntry(fileInfo{name: name, dir: true}))

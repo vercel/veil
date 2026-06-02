@@ -18,6 +18,7 @@ require (
 require (
 	buf.build/go/protovalidate v1.2.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
+	github.com/puzpuzpuz/xsync/v4 v4.5.0
 )
 
 require (
