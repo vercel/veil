@@ -74,13 +74,28 @@ func Validate(m proto.Message) error {
 // `$schema` sorts ahead of every proto field name (the leading `$` is
 // ASCII 0x24, before any letter), so it lands first in the output.
 func WriteFile(path string, m proto.Message, schemaURL string) error {
+	data, err := MarshalFile(m, schemaURL)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	return nil
+}
+
+// MarshalFile is the byte-producing core of WriteFile: it marshals m to
+// the same canonically-formatted JSON (indented, keys sorted, optional
+// `$schema` injected) but returns the bytes instead of writing them, so
+// callers can persist the document anywhere — disk, an in-memory FS, etc.
+func MarshalFile(m proto.Message, schemaURL string) ([]byte, error) {
 	raw, err := Marshal.Marshal(m)
 	if err != nil {
-		return fmt.Errorf("marshalling %s: %w", path, err)
+		return nil, fmt.Errorf("marshalling: %w", err)
 	}
 	var generic any
 	if err := stdjson.Unmarshal(raw, &generic); err != nil {
-		return fmt.Errorf("re-parsing %s: %w", path, err)
+		return nil, fmt.Errorf("re-parsing: %w", err)
 	}
 	if schemaURL != "" {
 		if obj, ok := generic.(map[string]any); ok {
@@ -92,10 +107,7 @@ func WriteFile(path string, m proto.Message, schemaURL string) error {
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(generic); err != nil {
-		return fmt.Errorf("encoding %s: %w", path, err)
+		return nil, fmt.Errorf("encoding: %w", err)
 	}
-	if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-	return nil
+	return buf.Bytes(), nil
 }

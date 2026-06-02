@@ -130,7 +130,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		return nil, err
 	}
 	kind := loaded.Kind
-	schemaPath := loaded.SchemaPath
+	schemaJSON := loaded.Schema
 
 	logger.Debug("applying overlays", "count", len(r.GetMetadata().GetOverlays()))
 	mergedSpec, err := applyOverlays(opts.FS, r, opts.Variables)
@@ -138,7 +138,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		return nil, fmt.Errorf("overlays: %w", err)
 	}
 
-	specSchema, err := loadSpecSubschema(schemaPath)
+	specSchema, err := loadSpecSubschema(schemaJSON)
 	if err != nil {
 		return nil, fmt.Errorf("loading spec schema: %w", err)
 	}
@@ -154,7 +154,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	}
 
 	logger.Debug("validating spec against schema")
-	if err := validateResource(schemaPath, resolved); err != nil {
+	if err := validateResource(schemaJSON, resolved); err != nil {
 		return nil, fmt.Errorf("schema validation: %w", err)
 	}
 
@@ -458,7 +458,7 @@ func resolveTargetResource(r *resource.Resource, opts *Options) (*veilv1.Resourc
 	if err != nil {
 		return nil, fmt.Errorf("loading kind: %w", err)
 	}
-	specSchema, err := loadSpecSubschema(loaded.SchemaPath)
+	specSchema, err := loadSpecSubschema(loaded.Schema)
 	if err != nil {
 		return nil, fmt.Errorf("loading spec schema: %w", err)
 	}
@@ -795,14 +795,14 @@ func stringifyVar(v any) string {
 	}
 }
 
-// loadSpecSubschema reads the composite kind.schema.json and returns its
-// `properties.spec` subschema — the author-facing schema that declares
-// each spec field, including its `default` values. Returns an empty map
-// if the composite schema has no spec subschema.
-func loadSpecSubschema(schemaPath string) (map[string]any, error) {
+// loadSpecSubschema parses the composite kind.schema.json bytes and
+// returns its `properties.spec` subschema — the author-facing schema that
+// declares each spec field, including its `default` values. Returns an
+// empty map if the composite schema has no spec subschema.
+func loadSpecSubschema(schemaJSON []byte) (map[string]any, error) {
 	var root map[string]any
-	if err := registry.ReadResource(schemaPath, &root); err != nil {
-		return nil, err
+	if err := json.Unmarshal(schemaJSON, &root); err != nil {
+		return nil, fmt.Errorf("parsing kind schema: %w", err)
 	}
 	props, _ := root["properties"].(map[string]any)
 	spec, _ := props["spec"].(map[string]any)
@@ -835,13 +835,13 @@ func applySchemaDefaults(data map[string]any, schema map[string]any) {
 }
 
 // validateResource validates the resource against the composite
-// kind.schema.json. The resource passed in must already have its spec
-// merged via resolveResource — i.e. overlays are applied, so what's
+// kind.schema.json bytes. The resource passed in must already have its
+// spec merged via resolveResource — i.e. overlays are applied, so what's
 // validated is exactly what hooks (and the final renderer) will see.
-func validateResource(schemaPath string, r *veilv1.Resource) error {
+func validateResource(schemaJSON []byte, r *veilv1.Resource) error {
 	var schemaDoc any
-	if err := registry.ReadResource(schemaPath, &schemaDoc); err != nil {
-		return fmt.Errorf("reading schema %s: %w", schemaPath, err)
+	if err := json.Unmarshal(schemaJSON, &schemaDoc); err != nil {
+		return fmt.Errorf("parsing kind schema: %w", err)
 	}
 	compiler := jsonschema.NewCompiler()
 	if err := compiler.AddResource("mem://schema", schemaDoc); err != nil {

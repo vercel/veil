@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/suite"
+
+	"github.com/vercel/veil/pkg/vfs"
 )
 
 type RegistrySuite struct {
@@ -302,4 +304,31 @@ func (s *RegistrySuite) TestLoadKindFailsWhenRemoteKindMissing() {
 	_, err = r.LoadKind("svc")
 	s.Require().Error(err)
 	s.Contains(err.Error(), "HTTP 410")
+}
+
+func (s *RegistrySuite) TestLoadFS() {
+	m := vfs.NewMem()
+	s.Require().NoError(m.WriteFile("registry.json", []byte(
+		`{"kinds":{"svc":{"name":"svc","path":"./svc/kind.json","schema":"./svc/kind.schema.json"}}}`)))
+	s.Require().NoError(m.WriteFile("svc/kind.json", []byte(`{"name":"svc"}`)))
+	s.Require().NoError(m.WriteFile("svc/kind.schema.json", []byte(`{"type":"object"}`)))
+
+	reg, err := LoadFS(m, []Reference{{Alias: "", Path: "registry.json"}})
+	s.Require().NoError(err)
+
+	loaded, err := reg.LoadKind("svc")
+	s.Require().NoError(err)
+	s.Equal("svc", loaded.GetName())
+	s.Equal(`{"type":"object"}`, string(loaded.Schema), "schema bytes come from the in-memory FS")
+}
+
+func (s *RegistrySuite) TestLoadFSMissingKindBody() {
+	m := vfs.NewMem()
+	s.Require().NoError(m.WriteFile("registry.json", []byte(
+		`{"kinds":{"svc":{"name":"svc","path":"./svc/kind.json","schema":"./svc/kind.schema.json"}}}`)))
+	// kind.json + schema deliberately absent.
+	reg, err := LoadFS(m, []Reference{{Alias: "", Path: "registry.json"}})
+	s.Require().NoError(err) // index loads fine; the body is lazy
+	_, err = reg.LoadKind("svc")
+	s.Require().Error(err)
 }

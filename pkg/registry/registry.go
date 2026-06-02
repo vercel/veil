@@ -7,11 +7,14 @@
 package registry
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -44,12 +47,21 @@ type Reference struct {
 	Path  string
 }
 
-// LoadedKind pairs a compiled kind's wire-shape body with the on-disk
-// path to its companion kind.schema.json, which the render pipeline
-// needs for spec validation and default-application.
+// LoadedKind pairs a compiled kind's wire-shape body with the raw bytes
+// of its companion kind.schema.json, which the render pipeline needs for
+// spec validation and default-application. Carrying the schema as bytes
+// (read by the registry when the kind loads) keeps the render pipeline
+// free of any filesystem knowledge — the registry is the only thing that
+// touches disk, an HTTP endpoint, or an in-memory FS.
 type LoadedKind struct {
 	*veilv1.Kind
+	// SchemaPath is the location the schema was read from (an absolute
+	// disk path / URL for an on-disk registry, an fs.FS path for an
+	// in-memory one). Scaffolding (`veil new resource`) uses it to write a
+	// relative `$schema` pointer; render uses Schema instead.
 	SchemaPath string
+	// Schema is the raw kind.schema.json bytes, read when the kind loads.
+	Schema []byte
 }
 
 // Load builds a Registry by reading every (alias, path) pair as a
@@ -59,15 +71,61 @@ type LoadedKind struct {
 // indices are a hard error; across aliases the same kind name is fine
 // and is disambiguated by the `<alias>/` prefix at lookup time.
 func Load(refs []Reference) (Registry, error) {
+	read := func(loc string) ([]byte, error) {
+		rc, err := openResource(loc)
+		if err != nil {
+			return nil, err
+		}
+		defer rc.Close()
+		return io.ReadAll(rc)
+	}
+	return loadWith(refs, read, absLocation, resolveAgainst)
+}
+
+// LoadFS builds a Registry that reads every registry.json plus the
+// kind.json and kind.schema.json bodies it points at from fsys, with all
+// paths interpreted as fs.FS paths (slash-separated, rooted at fsys).
+// Used by `veil render --build`, which compiles the project into an
+// in-memory FS and renders straight out of it — no on-disk registry.
+func LoadFS(fsys fs.FS, refs []Reference) (Registry, error) {
+	read := func(loc string) ([]byte, error) { return fs.ReadFile(fsys, loc) }
+	locate := func(p string) (string, error) { return fsClean(p), nil }
+	resolve := func(base, rel string) string {
+		if rel == "" {
+			return ""
+		}
+		return fsClean(path.Join(path.Dir(base), rel))
+	}
+	return loadWith(refs, read, locate, resolve)
+}
+
+// fsClean turns a possibly-"./"-prefixed path into a clean fs.FS path.
+func fsClean(p string) string {
+	p = strings.TrimPrefix(p, "./")
+	if p == "" {
+		return "."
+	}
+	return path.Clean(p)
+}
+
+// loadWith is the shared core of Load and LoadFS. read fetches the bytes
+// at a location; locate normalizes a registry reference's path into a
+// location; resolve resolves an entry's relative path against the
+// registry.json location it came from.
+func loadWith(refs []Reference, read func(string) ([]byte, error), locate func(string) (string, error), resolve func(base, rel string) string) (Registry, error) {
 	loaders := make(map[string]map[string]func() (*LoadedKind, error))
 	seen := make(map[string]map[string]string)
 	for _, src := range refs {
-		abs, err := absLocation(src.Path)
+		loc, err := locate(src.Path)
 		if err != nil {
 			return nil, fmt.Errorf("registry %s: %w", src.Path, err)
 		}
+		data, err := read(loc)
+		if err != nil {
+			return nil, fmt.Errorf("loading registry %s: %w", src.Path, err)
+		}
 		var r veilv1.Registry
-		if err := ReadProtoResource(abs, &r); err != nil {
+		if err := protoencode.UnmarshalProto(bytes.NewReader(data), &r); err != nil {
 			return nil, fmt.Errorf("loading registry %s: %w", src.Path, err)
 		}
 		if loaders[src.Alias] == nil {
@@ -78,16 +136,16 @@ func Load(refs []Reference) (Registry, error) {
 			if entry.GetPath() == "" {
 				return nil, fmt.Errorf("registry %s: kind %q is missing \"path\"", src.Path, name)
 			}
-			kindPath := resolveAgainst(abs, entry.GetPath())
-			schemaPath := resolveAgainst(abs, entry.GetSchema())
+			kindPath := resolve(loc, entry.GetPath())
+			schemaPath := resolve(loc, entry.GetSchema())
 			if entry.GetSchema() == "" {
-				schemaPath = resolveAgainst(kindPath, "kind.schema.json")
+				schemaPath = resolve(kindPath, "kind.schema.json")
 			}
 			if existing, ok := seen[src.Alias][name]; ok {
 				return nil, fmt.Errorf("kind %q provided by multiple registries: %s and %s", aliasedName(src.Alias, name), existing, kindPath)
 			}
 			seen[src.Alias][name] = kindPath
-			loaders[src.Alias][name] = sync.OnceValues(loadKindFn(name, kindPath, schemaPath))
+			loaders[src.Alias][name] = sync.OnceValues(loadKindFn(name, kindPath, schemaPath, read))
 		}
 	}
 	return &cachedRegistry{loaders: loaders}, nil
@@ -177,15 +235,25 @@ func aliasedName(alias, name string) string {
 }
 
 // loadKindFn returns the closure handed to sync.OnceValues for one
-// (kindPath, schemaPath) pair. Pulled out of Load so the loop
-// variables are captured by parameter, not by reference.
-func loadKindFn(name, kindPath, schemaPath string) func() (*LoadedKind, error) {
+// (kindPath, schemaPath) pair. It reads and parses the compiled kind and
+// reads the raw schema bytes, using read for both so the same closure
+// works against disk, HTTP, or an in-memory FS. Pulled out of loadWith so
+// the loop variables are captured by parameter, not by reference.
+func loadKindFn(name, kindPath, schemaPath string, read func(string) ([]byte, error)) func() (*LoadedKind, error) {
 	return func() (*LoadedKind, error) {
-		var ck veilv1.Kind
-		if err := ReadProtoResource(kindPath, &ck); err != nil {
+		kindData, err := read(kindPath)
+		if err != nil {
 			return nil, fmt.Errorf("loading kind %s: %w", name, err)
 		}
-		return &LoadedKind{Kind: &ck, SchemaPath: schemaPath}, nil
+		var ck veilv1.Kind
+		if err := protoencode.UnmarshalProto(bytes.NewReader(kindData), &ck); err != nil {
+			return nil, fmt.Errorf("loading kind %s: %w", name, err)
+		}
+		schema, err := read(schemaPath)
+		if err != nil {
+			return nil, fmt.Errorf("loading kind %s schema: %w", name, err)
+		}
+		return &LoadedKind{Kind: &ck, SchemaPath: schemaPath, Schema: schema}, nil
 	}
 }
 
