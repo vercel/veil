@@ -124,9 +124,12 @@ func (p *printer) Println(msg string) {
 func (p *printer) Printlnf(format string, a ...any) { p.Println(fmt.Sprintf(format, a...)) }
 
 // NewPrinter returns a printer that always logs via slog. In pretty mode
-// it also writes styled output to w.
+// it *also* writes styled output to w. Pretty mode is off in JSON output
+// and under --quiet — in both, the printer just logs (the message flows
+// through the logger to wherever --log-paths points, the rolling file by
+// default) instead of writing styled console output.
 func NewPrinter(w io.Writer) Printer {
-	return &printer{w: w, theme: NewTheme(), pretty: !IsJSON()}
+	return &printer{w: w, theme: NewTheme(), pretty: !IsJSON() && !IsQuiet()}
 }
 
 // defaultPrinter is the package-level Printer used by code that doesn't

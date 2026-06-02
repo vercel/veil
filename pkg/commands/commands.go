@@ -44,8 +44,11 @@ func NewApp() *cli.Command {
 			},
 		},
 		Before: func(ctx context.Context, command *cli.Command) (context.Context, error) {
-			output := command.String("output")
-			interact.SetOutputFormat(output)
+			// Output format + quiet must be set before constructing the
+			// printer: NewPrinter reads both to decide whether it styles
+			// output or runs log-only.
+			interact.SetOutputFormat(command.String("output"))
+			interact.SetQuiet(command.Bool("quiet"))
 			interact.SetDefault(interact.NewPrinter(command.Root().Writer))
 
 			level := parseLogLevel(command.String("log-level"))
@@ -56,11 +59,10 @@ func NewApp() *cli.Command {
 			// thing on stdout is the command's own output (the styled
 			// pretty lines, or the JSON CommandResult). Streaming logs to
 			// the console is opt-in via --log-paths stdout|stderr|<file>.
-			// --quiet forces console-silent, overriding any --log-paths.
-			if command.Bool("quiet") {
-				logPaths = nil
-			}
-
+			//
+			// --quiet doesn't change where logs go; it makes the printer
+			// log its output (via slog) instead of styling it, so the
+			// message flows to the same destinations.
 			cleanup, err := logging.Setup(level, logPaths, command.Root().Writer, command.Root().ErrWriter)
 			if err != nil {
 				slog.Warn("Failed to set up log file", "error", err)
