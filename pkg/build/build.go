@@ -168,13 +168,25 @@ func HookTemplate(hookName string) string {
 	return b.String()
 }
 
-// ResourceSchema builds the composite JSON Schema for a kind (metadata +
-// spec envelope, plus a discriminated `dependencies` array when the
-// kind has outgoing edges in the graph) and writes it to outPath.
+// ResourceSchema builds the composite JSON Schema for a kind and writes
+// it to outPath. See ResourceSchemaBytes for the schema's shape.
 func ResourceSchema(k *config.Kind, metadataSchema map[string]any, graph *KindGraph, outPath string) error {
-	specSchema, err := LoadSpecSchema(k)
+	data, err := ResourceSchemaBytes(k, metadataSchema, graph)
 	if err != nil {
 		return err
+	}
+	return os.WriteFile(outPath, data, 0644)
+}
+
+// ResourceSchemaBytes is the byte-producing core of ResourceSchema: it
+// builds the composite JSON Schema for a kind (metadata + spec envelope,
+// plus a discriminated `dependencies` array when the kind has outgoing
+// edges in the graph) and returns the marshalled bytes, so callers can
+// persist it anywhere (disk, an in-memory FS, …).
+func ResourceSchemaBytes(k *config.Kind, metadataSchema map[string]any, graph *KindGraph) ([]byte, error) {
+	specSchema, err := LoadSpecSchema(k)
+	if err != nil {
+		return nil, err
 	}
 
 	delete(specSchema, "$schema")
@@ -200,10 +212,9 @@ func ResourceSchema(k *config.Kind, metadataSchema map[string]any, graph *KindGr
 
 	data, err := json.MarshalIndent(schema, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshalling schema: %w", err)
+		return nil, fmt.Errorf("marshalling schema: %w", err)
 	}
-
-	return os.WriteFile(outPath, data, 0644)
+	return data, nil
 }
 
 // LoadSpecSchema reads and parses the kind's schema file. Schema files

@@ -22,6 +22,7 @@ import (
 	"github.com/vercel/veil/pkg/render"
 	"github.com/vercel/veil/pkg/resource"
 	"github.com/vercel/veil/pkg/variables"
+	"github.com/vercel/veil/pkg/vfs"
 )
 
 // renderResponse is the JSON payload emitted by `veil render` in
@@ -86,6 +87,11 @@ func Render() *cli.Command {
 				Name:  "debug",
 				Usage: "Dump all logs (including hook console.log output) to stdout at debug level",
 			},
+			&cli.BoolFlag{
+				Name:    "build",
+				Aliases: []string{"b"},
+				Usage:   "Compile the project's kinds into an in-memory registry before rendering, instead of reading a prebuilt one from disk",
+			},
 			&cli.IntFlag{
 				Name:  "jobs",
 				Usage: "Number of resources to render concurrently (default: number of CPUs)",
@@ -127,13 +133,33 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 		return nil, err
 	}
 
-	registries, err := resolveRegistries(c.StringSlice("registry"), reg)
-	if err != nil {
-		return nil, err
-	}
-	kindReg, err := registry.Load(registries)
-	if err != nil {
-		return nil, err
+	// The kind registry is either compiled fresh into an in-memory
+	// registry (--build, so no prebuilt registry needs to live on disk)
+	// or read from a prebuilt registry.json resolved from --registry /
+	// veil.json.
+	var kindReg registry.Registry
+	if c.Bool("build") {
+		// Compile the project's kinds into an in-memory FS, then read them
+		// back through an FSStore — the same load + compile + cache path a
+		// disk or HTTP registry takes, so no prebuilt registry need live on
+		// disk.
+		mem := vfs.NewMem()
+		if _, err := runBuildPipeline(reg, mem, buildPipelineOpts{}, nil); err != nil {
+			return nil, fmt.Errorf("building registry: %w", err)
+		}
+		kindReg, err = registry.FromStore(&registry.FSStore{FS: mem})
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		registries, err := resolveRegistries(c.StringSlice("registry"), reg)
+		if err != nil {
+			return nil, err
+		}
+		kindReg, err = registry.Load(registries)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	projectFS := os.DirFS(reg.Root)

@@ -18,6 +18,7 @@ import (
 	"github.com/vercel/veil/pkg/interact"
 	"github.com/vercel/veil/pkg/protoencode"
 	"github.com/vercel/veil/pkg/registry"
+	"github.com/vercel/veil/pkg/vfs"
 )
 
 var nameRegexp = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
@@ -220,7 +221,7 @@ func runNewKind(ctx context.Context, c *cli.Command) (*newResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("re-discovering registry after scaffold: %w", err)
 	}
-	if _, err := runBuildPipeline(reg, filepath.Join(reg.Root, config.PublicDir, "r"), true, p); err != nil {
+	if _, err := runBuildPipeline(reg, vfs.NewDir(filepath.Join(reg.Root, config.PublicDir, "r")), buildPipelineOpts{typecheck: true, writeTypes: true}, p); err != nil {
 		return nil, err
 	}
 	rb.commit()
@@ -320,7 +321,7 @@ func runNewHookOnKind(ctx context.Context, cwd, name, kindName string, p interac
 	if err != nil {
 		return nil, fmt.Errorf("re-discovering registry after scaffold: %w", err)
 	}
-	if _, err := runBuildPipeline(reg, filepath.Join(reg.Root, config.PublicDir, "r"), true, p); err != nil {
+	if _, err := runBuildPipeline(reg, vfs.NewDir(filepath.Join(reg.Root, config.PublicDir, "r")), buildPipelineOpts{typecheck: true, writeTypes: true}, p); err != nil {
 		return nil, err
 	}
 	rb.commit()

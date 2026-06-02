@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/suite"
+
+	"github.com/vercel/veil/pkg/vfs"
 )
 
 type RegistrySuite struct {
@@ -51,8 +53,8 @@ func (s *RegistrySuite) writeRegistry(subdir string, kinds ...string) string {
 
 // TestLoadKindReadsYAMLRegistry exercises the YAML ingestion path: a
 // registry.yaml pointing at a kind.yaml round-trips through
-// protoencode.ToJSON inside ReadResource without any explicit
-// conversion at the call sites.
+// protoencode's YAML→JSON decode when the registry reads it off the
+// store, without any explicit conversion at the call sites.
 func (s *RegistrySuite) TestLoadKindReadsYAMLRegistry() {
 	dir := filepath.Join(s.root, "yaml")
 	kindDir := filepath.Join(dir, "service")
@@ -302,4 +304,61 @@ func (s *RegistrySuite) TestLoadKindFailsWhenRemoteKindMissing() {
 	_, err = r.LoadKind("svc")
 	s.Require().Error(err)
 	s.Contains(err.Error(), "HTTP 410")
+}
+
+// memStore builds an FSStore over an in-memory vfs.Mem holding the given
+// files — the exact path `veil render --build` takes.
+func (s *RegistrySuite) memStore(files map[string]string) *FSStore {
+	mem := vfs.NewMem()
+	for name, data := range files {
+		s.Require().NoError(mem.WriteFile(name, []byte(data)))
+	}
+	return &FSStore{FS: mem}
+}
+
+func (s *RegistrySuite) TestFromStore() {
+	store := s.memStore(map[string]string{
+		"registry.json":        `{"kinds":{"svc":{"name":"svc","path":"./svc/kind.json","schema":"./svc/kind.schema.json"}}}`,
+		"svc/kind.json":        `{"name":"svc"}`,
+		"svc/kind.schema.json": `{"type":"object","properties":{"spec":{"type":"object","required":["port"]}}}`,
+	})
+	reg, err := FromStore(store)
+	s.Require().NoError(err)
+
+	loaded, err := reg.LoadKind("svc")
+	s.Require().NoError(err)
+	s.Equal("svc", loaded.GetName())
+	s.NotNil(loaded.SpecSchema, "spec subschema is parsed at load")
+	s.Empty(loaded.SchemaPath, "in-memory store has no external schema location")
+
+	// The validator is compiled once at load and reused: a spec missing
+	// the required `port` fails; one with it passes.
+	s.Require().Error(loaded.Validate(map[string]any{"spec": map[string]any{}}))
+	s.Require().NoError(loaded.Validate(map[string]any{"spec": map[string]any{"port": 80}}))
+}
+
+func (s *RegistrySuite) TestFromStoreMissingKindBody() {
+	store := s.memStore(map[string]string{
+		"registry.json": `{"kinds":{"svc":{"name":"svc","path":"./svc/kind.json","schema":"./svc/kind.schema.json"}}}`,
+		// kind.json + schema deliberately absent.
+	})
+	reg, err := FromStore(store)
+	s.Require().NoError(err) // index loads fine; the body is lazy
+	_, err = reg.LoadKind("svc")
+	s.Require().Error(err)
+}
+
+func (s *RegistrySuite) TestFromStoreRejectsAlias() {
+	store := s.memStore(map[string]string{
+		"registry.json":        `{"kinds":{"svc":{"name":"svc","path":"./svc/kind.json","schema":"./svc/kind.schema.json"}}}`,
+		"svc/kind.json":        `{"name":"svc"}`,
+		"svc/kind.schema.json": `{"type":"object"}`,
+	})
+	reg, err := FromStore(store)
+	s.Require().NoError(err)
+	// FromStore registers only the default alias, so an aliased ref can't
+	// resolve.
+	_, err = reg.LoadKind("acme/svc")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "not configured")
 }

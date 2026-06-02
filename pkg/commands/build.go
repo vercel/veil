@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/vercel/veil/pkg/interact"
 	"github.com/vercel/veil/pkg/protoencode"
 	"github.com/vercel/veil/pkg/tsc"
+	"github.com/vercel/veil/pkg/vfs"
 )
 
 // Build returns the "build" command — compiles every kind into
@@ -92,20 +94,31 @@ func runBuild(ctx context.Context, c *cli.Command) (*buildResponse, error) {
 	}
 	p.Infof("Using %s", configPath)
 
-	return runBuildPipeline(reg, c.String("out"), !c.Bool("no-typecheck"), p)
+	return runBuildPipeline(reg, vfs.NewDir(c.String("out")), buildPipelineOpts{
+		typecheck:  !c.Bool("no-typecheck"),
+		writeTypes: true,
+	}, p)
 }
 
-// runBuildPipeline compiles every kind into <outDir>/<name>/kind.json and
-// writes its composite JSON schema to <outDir>/<name>/kind.schema.json,
-// plus an index at <outDir>/registry.json. Called by `veil build` and by
-// `veil new kind|hook` so scaffolding leaves a buildable state. When
-// typecheck is true, each kind's hooks are type-checked via `tsgo` or
-// `tsc` if either is on PATH.
-func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p interact.Printer) (*buildResponse, error) {
+// buildPipelineOpts tunes runBuildPipeline.
+type buildPipelineOpts struct {
+	// typecheck runs tsc/tsgo over each kind's hooks when a compiler is
+	// on PATH.
+	typecheck bool
+	// writeTypes regenerates veil-types.ts in each kind's hooks/src (a
+	// source-tree artifact). Off for in-memory builds (e.g. render
+	// --build), which must not touch the working tree.
+	writeTypes bool
+}
+
+// runBuildPipeline compiles every kind into <name>/kind.json, writes its
+// composite JSON schema to <name>/kind.schema.json, and an index at
+// registry.json — all written through dst (an on-disk dir or an in-memory
+// FS) at registry-relative paths. Called by `veil build`, `veil new
+// kind|hook` (so scaffolding leaves a buildable state), and `veil render
+// --build` (into an in-memory FS the registry then reads via FSStore).
+func runBuildPipeline(reg *config.Registry, dst vfs.FS, opts buildPipelineOpts, p interact.Printer) (*buildResponse, error) {
 	resp := &buildResponse{Kinds: []builtKind{}}
-	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return nil, fmt.Errorf("creating output directory: %w", err)
-	}
 
 	var metadataSchema map[string]any
 	if err := json.Unmarshal(embeds.MetadataSchema, &metadataSchema); err != nil {
@@ -122,26 +135,23 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 	// Bundle entrypoints are relative to the project root (= reg.Root).
 	fsys := os.DirFS(reg.Root)
 
-	cwd, _ := os.Getwd()
-	displayPath := func(path string) string {
-		if cwd == "" {
-			return path
-		}
-		if rel, err := filepath.Rel(cwd, path); err == nil && !strings.HasPrefix(rel, "..") {
-			return rel
-		}
-		return path
+	// display turns a registry-relative output path into the string shown
+	// to the user. On disk that's the real (cwd-relative) location; for an
+	// in-memory build it's just the registry-relative path.
+	display := func(rel string) string { return rel }
+	if dir, ok := dst.(*vfs.Dir); ok {
+		display = func(rel string) string { return cwdRel(filepath.Join(dir.Root(), filepath.FromSlash(rel))) }
 	}
 
 	var checker tsc.Checker
-	if typecheck {
+	if opts.typecheck {
 		checker = tsc.Find()
 		if checker == nil && p != nil {
 			p.Warn("no TypeScript compiler on PATH — skipping type check. Install `tsgo` or `tsc` to enable it.")
 		}
 	}
 
-	registry := &veilv1.Registry{Kinds: make(map[string]*veilv1.RegistryEntry, len(reg.Kinds))}
+	index := &veilv1.Registry{Kinds: make(map[string]*veilv1.RegistryEntry, len(reg.Kinds))}
 
 	graph, err := build.BuildGraph(reg.Kinds)
 	if err != nil {
@@ -155,26 +165,27 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 			continue
 		}
 
-		kindDir := filepath.Join(outDir, k.Name)
-		if err := os.MkdirAll(kindDir, 0755); err != nil {
-			errs = append(errs, fmt.Errorf("%s: creating output dir: %w", k.Name, err))
+		schemaRel := path.Join(k.Name, "kind.schema.json")
+		schemaBytes, err := build.ResourceSchemaBytes(k, metadataSchema, graph)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: generating schema: %w", k.Name, err))
 			continue
 		}
-
-		schemaPath := filepath.Join(kindDir, "kind.schema.json")
-		if err := build.ResourceSchema(k, metadataSchema, graph, schemaPath); err != nil {
-			errs = append(errs, fmt.Errorf("%s: generating schema: %w", k.Name, err))
+		if err := dst.WriteFile(schemaRel, schemaBytes); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", k.Name, err))
 			continue
 		}
 
 		// Regenerate types before bundling so hook imports resolve against
-		// the freshest schema — stale references surface as bundle errors
-		// in the step below.
-		hookSrcDir := filepath.Join(k.Dir, "hooks", "src")
-		typesPath := filepath.Join(hookSrcDir, "veil-types.ts")
-		if err := writeKindTypes(k, reg.Variables, graph); err != nil {
-			errs = append(errs, fmt.Errorf("%s: writing types: %w", k.Name, err))
-			continue
+		// the freshest schema. Skipped for in-memory builds, which must
+		// not write into the source tree.
+		typesPath := ""
+		if opts.writeTypes {
+			if err := writeKindTypes(k, reg.Variables, graph); err != nil {
+				errs = append(errs, fmt.Errorf("%s: writing types: %w", k.Name, err))
+				continue
+			}
+			typesPath = cwdRel(filepath.Join(k.Dir, "hooks", "src", "veil-types.ts"))
 		}
 
 		if checker != nil {
@@ -190,30 +201,37 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 			continue
 		}
 
-		jsonPath := filepath.Join(kindDir, "kind.json")
-		if err := protoencode.WriteFile(jsonPath, ck, embeds.KindSchemaURL); err != nil {
+		jsonRel := path.Join(k.Name, "kind.json")
+		kindBytes, err := protoencode.MarshalFile(ck, embeds.KindSchemaURL)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", k.Name, err))
+			continue
+		}
+		if err := dst.WriteFile(jsonRel, kindBytes); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", k.Name, err))
 			continue
 		}
 
-		registry.Kinds[k.Name] = &veilv1.RegistryEntry{
+		index.Kinds[k.Name] = &veilv1.RegistryEntry{
 			Name:   k.Name,
-			Path:   "./" + filepath.ToSlash(filepath.Join(k.Name, "kind.json")),
-			Schema: "./" + filepath.ToSlash(filepath.Join(k.Name, "kind.schema.json")),
+			Path:   "./" + jsonRel,
+			Schema: "./" + schemaRel,
 		}
 
 		resp.Kinds = append(resp.Kinds, builtKind{
 			Name:     k.Name,
-			Compiled: displayPath(jsonPath),
-			Schema:   displayPath(schemaPath),
-			Types:    displayPath(typesPath),
+			Compiled: display(jsonRel),
+			Schema:   display(schemaRel),
+			Types:    typesPath,
 		})
 
 		if p != nil {
 			p.Successf("Built %s", k.Name)
-			p.KeyValue("compiled", displayPath(jsonPath))
-			p.KeyValue("schema", displayPath(schemaPath))
-			p.KeyValue("types", displayPath(typesPath))
+			p.KeyValue("compiled", display(jsonRel))
+			p.KeyValue("schema", display(schemaRel))
+			if typesPath != "" {
+				p.KeyValue("types", typesPath)
+			}
 		}
 	}
 
@@ -221,16 +239,32 @@ func runBuildPipeline(reg *config.Registry, outDir string, typecheck bool, p int
 		return nil, errors.Join(errs...)
 	}
 
-	registryPath := filepath.Join(outDir, "registry.json")
-	if err := protoencode.WriteFile(registryPath, registry, embeds.RegistrySchemaURL); err != nil {
+	regBytes, err := protoencode.MarshalFile(index, embeds.RegistrySchemaURL)
+	if err != nil {
 		return nil, fmt.Errorf("writing registry: %w", err)
 	}
-	resp.Registry = displayPath(registryPath)
+	if err := dst.WriteFile("registry.json", regBytes); err != nil {
+		return nil, fmt.Errorf("writing registry: %w", err)
+	}
+	resp.Registry = display("registry.json")
 	if p != nil {
 		p.Successf("Built registry")
-		p.KeyValue("registry", displayPath(registryPath))
+		p.KeyValue("registry", display("registry.json"))
 	}
 	return resp, nil
+}
+
+// cwdRel renders an absolute path relative to the working directory when
+// that's a clean subpath, else returns it unchanged.
+func cwdRel(abs string) string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return abs
+	}
+	if rel, err := filepath.Rel(cwd, abs); err == nil && !strings.HasPrefix(rel, "..") {
+		return rel
+	}
+	return abs
 }
 
 // compileKind reads a kind's sources, bundles+minifies each render hook,
