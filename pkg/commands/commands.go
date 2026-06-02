@@ -44,26 +44,25 @@ func NewApp() *cli.Command {
 			},
 		},
 		Before: func(ctx context.Context, command *cli.Command) (context.Context, error) {
-			output := command.String("output")
-			interact.SetOutputFormat(output)
-			interact.SetDefault(interact.NewPrinter(command.Root().Writer))
+			// Set the output format first so IsJSON reflects it, then build
+			// the printer: it styles output only when not JSON and not
+			// --quiet; otherwise it just logs.
+			interact.SetOutputFormat(command.String("output"))
+			pretty := !interact.IsJSON() && !command.Bool("quiet")
+			interact.SetDefault(interact.NewPrinter(command.Root().Writer, pretty))
 
 			level := parseLogLevel(command.String("log-level"))
 			logPaths := command.StringSlice("log-paths")
-			quiet := command.Bool("quiet")
 
-			if quiet {
-				// --quiet drops all console logging, so the only thing a
-				// command writes to stdout is its final result line — the
-				// CommandResult envelope in JSON mode. Use it for clean,
-				// machine-readable output (e.g. the pre-commit render).
-				logPaths = nil
-			} else if len(logPaths) == 0 {
-				// Otherwise logs always stream to stdout, in every output
-				// format; --quiet is the only thing that silences them.
-				logPaths = []string{"stdout"}
-			}
-
+			// Logs go to the rolling log file by default (~/.veil/logs),
+			// like devbox/bridge — the console stays clean so the only
+			// thing on stdout is the command's own output (the styled
+			// pretty lines, or the JSON CommandResult). Streaming logs to
+			// the console is opt-in via --log-paths stdout|stderr|<file>.
+			//
+			// --quiet doesn't change where logs go; it makes the printer
+			// log its output (via slog) instead of styling it, so the
+			// message flows to the same destinations.
 			cleanup, err := logging.Setup(level, logPaths, command.Root().Writer, command.Root().ErrWriter)
 			if err != nil {
 				slog.Warn("Failed to set up log file", "error", err)
