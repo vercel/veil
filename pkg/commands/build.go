@@ -58,6 +58,10 @@ func Build() *cli.Command {
 				Name:  "no-typecheck",
 				Usage: "Skip running tsc --noEmit on each kind's hooks",
 			},
+			&cli.BoolFlag{
+				Name:  "schemas-only",
+				Usage: "Write only each kind's kind.schema.json — skip the compiled kind.json bodies and the registry.json index. The schemas are safe to commit (for $schema editor validation); the compiled registry stays in-memory (veil render --build).",
+			},
 		},
 		Action: withResult(runBuild),
 	}
@@ -94,9 +98,11 @@ func runBuild(ctx context.Context, c *cli.Command) (*buildResponse, error) {
 	}
 	p.Infof("Using %s", configPath)
 
+	schemasOnly := c.Bool("schemas-only")
 	return runBuildPipeline(reg, vfs.NewDir(c.String("out")), buildPipelineOpts{
-		typecheck:  !c.Bool("no-typecheck"),
-		writeTypes: true,
+		typecheck:   !schemasOnly && !c.Bool("no-typecheck"),
+		writeTypes:  !schemasOnly,
+		schemasOnly: schemasOnly,
 	}, p)
 }
 
@@ -109,6 +115,11 @@ type buildPipelineOpts struct {
 	// source-tree artifact). Off for in-memory builds (e.g. render
 	// --build), which must not touch the working tree.
 	writeTypes bool
+	// schemasOnly writes only each kind's kind.schema.json — no compiled
+	// kind.json bodies and no registry.json. `veil build --schemas-only`
+	// uses it to refresh the committed schema files without emitting the
+	// heavy registry, which render builds in memory.
+	schemasOnly bool
 }
 
 // runBuildPipeline compiles every kind into <name>/kind.json, writes its
@@ -176,6 +187,17 @@ func runBuildPipeline(reg *config.Registry, dst vfs.FS, opts buildPipelineOpts, 
 			continue
 		}
 
+		// --schemas-only stops at the schema: no hook compile, no
+		// kind.json, no registry index entry.
+		if opts.schemasOnly {
+			resp.Kinds = append(resp.Kinds, builtKind{Name: k.Name, Schema: display(schemaRel)})
+			if p != nil {
+				p.Successf("Built schema %s", k.Name)
+				p.KeyValue("schema", display(schemaRel))
+			}
+			continue
+		}
+
 		// Regenerate types before bundling so hook imports resolve against
 		// the freshest schema. Skipped for in-memory builds, which must
 		// not write into the source tree.
@@ -237,6 +259,11 @@ func runBuildPipeline(reg *config.Registry, dst vfs.FS, opts buildPipelineOpts, 
 
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
+	}
+
+	// --schemas-only emits no registry index — render builds it in memory.
+	if opts.schemasOnly {
+		return resp, nil
 	}
 
 	regBytes, err := protoencode.MarshalFile(index, embeds.RegistrySchemaURL)
