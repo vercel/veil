@@ -97,6 +97,22 @@ func (s *BuildSuite) TestBuildEmitsCompiledKindAndSchema() {
 	s.NotContains(content, "// TODO") // comment stripped
 }
 
+func (s *BuildSuite) TestBuildSchemasOnlyEmitsSchemaWithoutRegistry() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	outDir := filepath.Join(s.root, "public", "r")
+	s.Require().NoError(os.RemoveAll(outDir))
+
+	_, err = s.run("build", "--schemas-only")
+	s.Require().NoError(err)
+
+	// Only the schema lands — no compiled kind.json body, no registry index.
+	s.FileExists(filepath.Join(outDir, "worker", "kind.schema.json"))
+	s.NoFileExists(filepath.Join(outDir, "worker", "kind.json"))
+	s.NoFileExists(filepath.Join(outDir, "registry.json"))
+}
+
 func (s *BuildSuite) TestBuildRegeneratesTypesBeforeBundling() {
 	_, err := s.run("new", "kind", "worker")
 	s.Require().NoError(err)
