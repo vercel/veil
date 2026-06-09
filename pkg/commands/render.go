@@ -133,7 +133,7 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 	// auto-updates to that version and re-execs, so it never returns on
 	// success. No-op when cli_version is unset, already satisfied, or this
 	// is a dev/edge build.
-	if err := enforceMinVersion(ctx, reg.CliVersion, p); err != nil {
+	if err := enforceMinVersion(ctx, reg.CliVersion); err != nil {
 		return nil, err
 	}
 
@@ -153,7 +153,7 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 		// disk or HTTP registry takes, so no prebuilt registry need live on
 		// disk.
 		mem := vfs.NewMem()
-		if _, err := runBuildPipeline(ctx, reg, mem, buildPipelineOpts{}, nil); err != nil {
+		if _, err := runBuildPipeline(ctx, reg, mem, buildPipelineOpts{}); err != nil {
 			return nil, fmt.Errorf("building registry: %w", err)
 		}
 		kindReg, err = registry.FromStore(&registry.FSStore{FS: mem})

@@ -114,7 +114,7 @@ func runBuild(ctx context.Context, c *cli.Command) (*buildResponse, error) {
 		writeTypes:    !schemasOnly,
 		resourceTypes: !schemasOnly,
 		schemasOnly:   schemasOnly,
-	}, p)
+	})
 }
 
 // buildPipelineOpts tunes runBuildPipeline.
@@ -145,7 +145,8 @@ type buildPipelineOpts struct {
 // FS) at registry-relative paths. Called by `veil build`, `veil new
 // kind|hook` (so scaffolding leaves a buildable state), and `veil render
 // --build` (into an in-memory FS the registry then reads via FSStore).
-func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opts buildPipelineOpts, p interact.Printer) (*buildResponse, error) {
+func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opts buildPipelineOpts) (*buildResponse, error) {
+	p := interact.Default()
 	resp := &buildResponse{Kinds: []builtKind{}}
 
 	var metadataSchema map[string]any
@@ -174,7 +175,7 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 	var checker tsc.Checker
 	if opts.typecheck {
 		checker = tsc.Find()
-		if checker == nil && p != nil {
+		if checker == nil {
 			p.Warn("no TypeScript compiler on PATH — skipping type check. Install `tsgo` or `tsc` to enable it.")
 		}
 	}
@@ -208,10 +209,8 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 		// kind.json, no registry index entry.
 		if opts.schemasOnly {
 			resp.Kinds = append(resp.Kinds, builtKind{Name: k.Name, Schema: display(schemaRel)})
-			if p != nil {
-				p.Successf("Built schema %s", k.Name)
-				p.KeyValue("schema", display(schemaRel))
-			}
+			p.Successf("Built schema %s", k.Name)
+			p.KeyValue("schema", display(schemaRel))
 			continue
 		}
 
@@ -264,13 +263,11 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 			Types:    typesPath,
 		})
 
-		if p != nil {
-			p.Successf("Built %s", k.Name)
-			p.KeyValue("compiled", display(jsonRel))
-			p.KeyValue("schema", display(schemaRel))
-			if typesPath != "" {
-				p.KeyValue("types", typesPath)
-			}
+		p.Successf("Built %s", k.Name)
+		p.KeyValue("compiled", display(jsonRel))
+		p.KeyValue("schema", display(schemaRel))
+		if typesPath != "" {
+			p.KeyValue("types", typesPath)
 		}
 	}
 
@@ -291,17 +288,15 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 		return nil, fmt.Errorf("writing registry: %w", err)
 	}
 	resp.Registry = display("registry.json")
-	if p != nil {
-		p.Successf("Built registry")
-		p.KeyValue("registry", display("registry.json"))
-	}
+	p.Successf("Built registry")
+	p.KeyValue("registry", display("registry.json"))
 
 	// Regenerate the veil-types.ts next to every resource's render hooks
 	// so resource-hook authors track the kind schema, just like kind
 	// hooks do. Gated on resourceTypes (only a full `veil build`), so
 	// `veil new` and in-memory render builds never touch the source tree.
 	if opts.resourceTypes {
-		resources, err := regenResourceTypes(ctx, reg, graph, fsys, p)
+		resources, err := regenResourceTypes(ctx, reg, graph, fsys)
 		if err != nil {
 			return nil, fmt.Errorf("regenerating resource hook types: %w", err)
 		}
@@ -502,7 +497,8 @@ func writeKindTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph
 // scaffold time. Resources without render hooks have nothing to type and
 // are skipped. Per-resource errors are collected so one bad resource
 // doesn't mask the rest, then returned joined.
-func regenResourceTypes(ctx context.Context, reg *config.Registry, graph *build.KindGraph, fsys fs.FS, p interact.Printer) ([]regeneratedResource, error) {
+func regenResourceTypes(ctx context.Context, reg *config.Registry, graph *build.KindGraph, fsys fs.FS) ([]regeneratedResource, error) {
+	p := interact.Default()
 	if reg.ResourceDiscovery == nil {
 		return nil, nil
 	}
@@ -568,10 +564,8 @@ func regenResourceTypes(ctx context.Context, reg *config.Registry, graph *build.
 				Kind:  h.Kind,
 				Types: cwdRel(typesPath),
 			})
-			if p != nil {
-				p.Successf("Regenerated resource types for %s", h.Name)
-				p.KeyValue("types", cwdRel(typesPath))
-			}
+			p.Successf("Regenerated resource types for %s", h.Name)
+			p.KeyValue("types", cwdRel(typesPath))
 		}
 	}
 	if len(errs) > 0 {

@@ -221,7 +221,7 @@ func runNewKind(ctx context.Context, c *cli.Command) (*newResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("re-discovering registry after scaffold: %w", err)
 	}
-	if _, err := runBuildPipeline(ctx, reg, vfs.NewDir(filepath.Join(reg.Root, config.PublicDir, "r")), buildPipelineOpts{typecheck: true, writeTypes: true}, p); err != nil {
+	if _, err := runBuildPipeline(ctx, reg, vfs.NewDir(filepath.Join(reg.Root, config.PublicDir, "r")), buildPipelineOpts{typecheck: true, writeTypes: true}); err != nil {
 		return nil, err
 	}
 	rb.commit()
@@ -229,8 +229,6 @@ func runNewKind(ctx context.Context, c *cli.Command) (*newResponse, error) {
 }
 
 func runNewHook(ctx context.Context, c *cli.Command) (*newResponse, error) {
-	p := interact.Default()
-
 	name := c.StringArg("name")
 	if err := validateName("hook name", name); err != nil {
 		return nil, err
@@ -261,15 +259,16 @@ func runNewHook(ctx context.Context, c *cli.Command) (*newResponse, error) {
 	}
 
 	if resourcePath != "" {
-		return runNewHookOnResource(cwd, name, resourcePath, p)
+		return runNewHookOnResource(cwd, name, resourcePath)
 	}
-	return runNewHookOnKind(ctx, cwd, name, kindName, p)
+	return runNewHookOnKind(ctx, cwd, name, kindName)
 }
 
 // runNewHookOnKind is the original `veil new hook --kind X` path: write
 // the hook .ts under <kindDir>/hooks/src/, append it to the kind file's
 // hooks.render, and re-run the build pipeline.
-func runNewHookOnKind(ctx context.Context, cwd, name, kindName string, p interact.Printer) (*newResponse, error) {
+func runNewHookOnKind(ctx context.Context, cwd, name, kindName string) (*newResponse, error) {
+	p := interact.Default()
 	reg, err := config.Discover(cwd)
 	if err != nil {
 		return nil, err
@@ -321,7 +320,7 @@ func runNewHookOnKind(ctx context.Context, cwd, name, kindName string, p interac
 	if err != nil {
 		return nil, fmt.Errorf("re-discovering registry after scaffold: %w", err)
 	}
-	if _, err := runBuildPipeline(ctx, reg, vfs.NewDir(filepath.Join(reg.Root, config.PublicDir, "r")), buildPipelineOpts{typecheck: true, writeTypes: true}, p); err != nil {
+	if _, err := runBuildPipeline(ctx, reg, vfs.NewDir(filepath.Join(reg.Root, config.PublicDir, "r")), buildPipelineOpts{typecheck: true, writeTypes: true}); err != nil {
 		return nil, err
 	}
 	rb.commit()
@@ -340,7 +339,8 @@ func runNewHookOnKind(ctx context.Context, cwd, name, kindName string, p interac
 // generator the kind compiler uses. The generator output is keyed to
 // the resource's kind, so authors get the same IDE completion they'd
 // get inside the kind's own hooks/src/.
-func runNewHookOnResource(cwd, name, resourcePath string, p interact.Printer) (*newResponse, error) {
+func runNewHookOnResource(cwd, name, resourcePath string) (*newResponse, error) {
+	p := interact.Default()
 	abs := resourcePath
 	if !filepath.IsAbs(abs) {
 		abs = filepath.Join(cwd, resourcePath)

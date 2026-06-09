@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/suite"
-
-	"github.com/vercel/veil/pkg/interact"
 )
 
 type MinVersionSuite struct {
@@ -60,7 +58,7 @@ func (s *MinVersionSuite) TestCompareVersions() {
 		{"v1.2.3-rc.1", "v1.2.3", -1, true}, // pre-release ranks below its release
 		{"v1.2.3", "v1.2.3-rc.1", 1, true},
 		{"v1.2.3-rc.1", "v1.2.3-rc.2", -1, true},
-		{"dev", "v1.0.0", 0, false},   // running build not comparable
+		{"dev", "v1.0.0", 0, false}, // running build not comparable
 		{"v1.0.0", "edge-abc", 0, false},
 	}
 	for _, c := range cases {
@@ -77,23 +75,22 @@ func (s *MinVersionSuite) TestCompareVersions() {
 // update/re-exec path is integration territory and isn't exercised here.
 func (s *MinVersionSuite) TestEnforceMinVersionNoops() {
 	ctx := context.Background()
-	p := interact.Default()
 	orig := Version
 	defer func() { Version = orig }()
 
 	// Unset cli_version → no-op (regardless of running version).
-	s.Require().NoError(enforceMinVersion(ctx, "", p))
+	s.Require().NoError(enforceMinVersion(ctx, ""))
 
 	// Malformed cli_version → error (caught before any download).
-	s.Require().Error(enforceMinVersion(ctx, "not-a-version", p))
+	s.Require().Error(enforceMinVersion(ctx, "not-a-version"))
 
 	// A dev/edge running build can't be compared, so any minimum is a
 	// no-op rather than clobbering a local build.
 	Version = "edge-abc123"
-	s.Require().NoError(enforceMinVersion(ctx, "v999.0.0", p))
+	s.Require().NoError(enforceMinVersion(ctx, "v999.0.0"))
 
 	// When the running build already satisfies the minimum, no-op.
 	Version = "v2.0.0"
-	s.Require().NoError(enforceMinVersion(ctx, "v1.0.0", p)) // above
-	s.Require().NoError(enforceMinVersion(ctx, "v2.0.0", p)) // equal
+	s.Require().NoError(enforceMinVersion(ctx, "v1.0.0")) // above
+	s.Require().NoError(enforceMinVersion(ctx, "v2.0.0")) // equal
 }
