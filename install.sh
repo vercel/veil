@@ -5,10 +5,10 @@ REPO="vercel/veil"
 # Default to a user-owned location so installation needs no sudo. Override
 # via VEIL_INSTALL_DIR for a different destination.
 INSTALL_DIR="${VEIL_INSTALL_DIR:-$HOME/.local/bin}"
-# Which release to install. Defaults to the rolling `edge` build; set
-# VEIL_VERSION=latest for the newest stable release, or a tag like v1.2.3
-# to pin a specific one.
-VEIL_VERSION="${VEIL_VERSION:-edge}"
+# Which release to install. Defaults to the latest stable release; set
+# VEIL_VERSION=edge for the rolling main build, or a tag like v1.2.3 to
+# pin a specific one.
+VEIL_VERSION="${VEIL_VERSION:-latest}"
 
 # Detect OS
 get_os() {
