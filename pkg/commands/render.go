@@ -128,6 +128,15 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 		return nil, err
 	}
 
+	// Enforce the project's minimum CLI version before any real work: when
+	// this is an older released build than veil.yaml's cli_version, this
+	// auto-updates to that version and re-execs, so it never returns on
+	// success. No-op when cli_version is unset, already satisfied, or this
+	// is a dev/edge build.
+	if err := enforceMinVersion(ctx, reg.CliVersion, p); err != nil {
+		return nil, err
+	}
+
 	vars, err := variables.Resolve(reg.Variables, c.StringMap("var"), os.LookupEnv)
 	if err != nil {
 		return nil, err

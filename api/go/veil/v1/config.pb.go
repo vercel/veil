@@ -122,7 +122,14 @@ type VeilConfigDefinition struct {
 	// Optional defaults for the source-side scaffolding commands
 	// (`veil init`, `veil new kind`, `veil new hook`). When unset, every
 	// generator falls back to its built-in default.
-	Generators    *Generators `protobuf:"bytes,5,opt,name=generators,proto3" json:"generators,omitempty"`
+	Generators *Generators `protobuf:"bytes,5,opt,name=generators,proto3" json:"generators,omitempty"`
+	// Minimum veil CLI version required to render this project, as a semver
+	// string (leading "v" optional, e.g. "v1.4.0"). When `veil render` runs
+	// on an older *released* build, it auto-updates to this version and
+	// re-execs so the render proceeds on a compatible CLI. Builds whose
+	// version isn't a comparable release (dev / edge) skip the check; unset
+	// means no minimum is enforced.
+	CliVersion    string `protobuf:"bytes,6,opt,name=cli_version,json=cliVersion,proto3" json:"cli_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -190,6 +197,13 @@ func (x *VeilConfigDefinition) GetGenerators() *Generators {
 		return x.Generators
 	}
 	return nil
+}
+
+func (x *VeilConfigDefinition) GetCliVersion() string {
+	if x != nil {
+		return x.CliVersion
+	}
+	return ""
 }
 
 // Generators configures the source-side scaffolding commands. Every
@@ -864,7 +878,7 @@ var File_veil_v1_config_proto protoreflect.FileDescriptor
 
 const file_veil_v1_config_proto_rawDesc = "" +
 	"\n" +
-	"\x14veil/v1/config.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xcb\x04\n" +
+	"\x14veil/v1/config.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xec\x04\n" +
 	"\x14VeilConfigDefinition\x12\"\n" +
 	"\x05kinds\x18\x01 \x03(\tB\f\xbaH\t\x92\x01\x06\"\x04r\x02\x10\x01R\x05kinds\x12p\n" +
 	"\tvariables\x18\x02 \x03(\v2,.veil.v1.VeilConfigDefinition.VariablesEntryB$\xbaH!\x9a\x01\x1e\"\x1cr\x1a2\x18^[a-zA-Z_][a-zA-Z0-9_]*$R\tvariables\x12\x8c\x01\n" +
@@ -874,7 +888,9 @@ const file_veil_v1_config_proto_rawDesc = "" +
 	"\x12resource_discovery\x18\x04 \x01(\v2\x1a.veil.v1.ResourceDiscoveryR\x11resourceDiscovery\x123\n" +
 	"\n" +
 	"generators\x18\x05 \x01(\v2\x13.veil.v1.GeneratorsR\n" +
-	"generators\x1aO\n" +
+	"generators\x12\x1f\n" +
+	"\vcli_version\x18\x06 \x01(\tR\n" +
+	"cliVersion\x1aO\n" +
 	"\x0eVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +
 	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\x1a=\n" +

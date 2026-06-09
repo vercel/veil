@@ -67,29 +67,48 @@ func runUpdate(ctx context.Context, c *cli.Command) (*updateResponse, error) {
 		return nil, err
 	}
 
+	target, url, err := selfReplace(ctx, version, p)
+	if err != nil {
+		return nil, err
+	}
+
+	p.Successf("veil (%s) updated at %s", version, target)
+	return &updateResponse{Path: target, OS: osName, Arch: arch, Version: version, URL: url}, nil
+}
+
+// selfReplace downloads the veil release asset for `version` (edge /
+// latest / a tag) for the current platform and atomically replaces the
+// running binary, returning the resolved binary path and the asset URL.
+// Shared by `veil update` and render's cli_version auto-update.
+func selfReplace(ctx context.Context, version string, p interact.Printer) (target, url string, err error) {
+	osName, arch, err := updateTarget()
+	if err != nil {
+		return "", "", err
+	}
+
 	// os.Executable returns the path used to invoke the process; resolve
 	// symlinks so we overwrite the actual binary, not a shim.
-	target, err := os.Executable()
+	target, err = os.Executable()
 	if err != nil {
-		return nil, fmt.Errorf("locating current binary: %w", err)
+		return "", "", fmt.Errorf("locating current binary: %w", err)
 	}
 	if resolved, err := filepath.EvalSymlinks(target); err == nil {
 		target = resolved
 	}
 
-	url := fmt.Sprintf("%s/veil-%s-%s", releaseBaseURL(version), osName, arch)
+	url = fmt.Sprintf("%s/veil-%s-%s", releaseBaseURL(version), osName, arch)
 	p.Infof("Downloading %s", url)
 
 	tmpPath, err := downloadToTemp(ctx, url, filepath.Dir(target))
 	if err != nil {
-		return nil, err
+		return "", "", err
 	}
 	// downloadToTemp returns a closed file; we own the cleanup until the
 	// rename succeeds.
 	defer os.Remove(tmpPath)
 
 	if err := os.Chmod(tmpPath, 0755); err != nil {
-		return nil, fmt.Errorf("chmod %s: %w", tmpPath, err)
+		return "", "", fmt.Errorf("chmod %s: %w", tmpPath, err)
 	}
 
 	if osName == "darwin" {
@@ -99,11 +118,9 @@ func runUpdate(ctx context.Context, c *cli.Command) (*updateResponse, error) {
 	}
 
 	if err := os.Rename(tmpPath, target); err != nil {
-		return nil, fmt.Errorf("replacing %s: %w", target, err)
+		return "", "", fmt.Errorf("replacing %s: %w", target, err)
 	}
-
-	p.Successf("veil (%s) updated at %s", version, target)
-	return &updateResponse{Path: target, OS: osName, Arch: arch, Version: version, URL: url}, nil
+	return target, url, nil
 }
 
 // updateTarget maps GOOS/GOARCH to the release asset's `${os}-${arch}`
