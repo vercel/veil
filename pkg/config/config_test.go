@@ -132,6 +132,28 @@ func (s *DiscoverSuite) TestLoadsVariablesWithDefaults() {
 	s.Equal(false, dv)
 }
 
+func (s *DiscoverSuite) TestLoadsCliVersion() {
+	root := s.T().TempDir()
+	path := s.writeVeilJSON(root, `{
+		"kinds": [],
+		`+stockRegistries+`,
+		"cli_version": "v1.4.0"
+	}`)
+
+	reg, err := Load(path)
+	s.Require().NoError(err)
+	s.Equal("v1.4.0", reg.CliVersion)
+}
+
+func (s *DiscoverSuite) TestCliVersionDefaultsEmptyWhenUnset() {
+	root := s.T().TempDir()
+	path := s.writeVeilJSON(root, `{"kinds": [], `+stockRegistries+`}`)
+
+	reg, err := Load(path)
+	s.Require().NoError(err)
+	s.Empty(reg.CliVersion)
+}
+
 func (s *DiscoverSuite) TestRejectsUnknownVariableType() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{

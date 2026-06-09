@@ -76,6 +76,10 @@ type Registry struct {
 	Registries        map[string]string
 	ResourceDiscovery *veilv1.ResourceDiscovery
 	Generators        *veilv1.Generators
+	// CliVersion is the project's minimum required veil CLI version
+	// (semver, leading "v" optional), or "" when unset. Enforced by
+	// `veil render`. See VeilConfigDefinition.cli_version.
+	CliVersion string
 }
 
 // DefaultKindsDir is the path (relative to the project root) where
@@ -244,6 +248,7 @@ func Load(configPath string) (*Registry, error) {
 		Registries:        cfg.Registries,
 		ResourceDiscovery: cfg.ResourceDiscovery,
 		Generators:        cfg.Generators,
+		CliVersion:        cfg.GetCliVersion(),
 	}, nil
 }
 

@@ -44,6 +44,14 @@ message VeilConfigDefinition {
   // (`veil init`, `veil new kind`, `veil new hook`). When unset, every
   // generator falls back to its built-in default.
   Generators generators = 5;
+
+  // Minimum veil CLI version required to render this project, as a semver
+  // string (leading "v" optional, e.g. "v1.4.0"). When `veil render` runs
+  // on an older *released* build, it auto-updates to this version and
+  // re-execs so the render proceeds on a compatible CLI. Builds whose
+  // version isn't a comparable release (dev / edge) skip the check; unset
+  // means no minimum is enforced.
+  string cli_version = 6;
 }
 
 // Generators configures the source-side scaffolding commands. Every
