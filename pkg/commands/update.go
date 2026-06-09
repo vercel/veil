@@ -67,7 +67,7 @@ func runUpdate(ctx context.Context, c *cli.Command) (*updateResponse, error) {
 		return nil, err
 	}
 
-	target, url, err := selfReplace(ctx, version, p)
+	target, url, err := selfReplace(ctx, version)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +80,8 @@ func runUpdate(ctx context.Context, c *cli.Command) (*updateResponse, error) {
 // latest / a tag) for the current platform and atomically replaces the
 // running binary, returning the resolved binary path and the asset URL.
 // Shared by `veil update` and render's cli_version auto-update.
-func selfReplace(ctx context.Context, version string, p interact.Printer) (target, url string, err error) {
+func selfReplace(ctx context.Context, version string) (target, url string, err error) {
+	p := interact.Default()
 	osName, arch, err := updateTarget()
 	if err != nil {
 		return "", "", err

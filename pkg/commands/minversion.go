@@ -27,7 +27,8 @@ import (
 // On a satisfied minimum (or a skip) it returns nil and the caller
 // continues. On a successful update it does NOT return — the process
 // image is replaced via re-exec.
-func enforceMinVersion(ctx context.Context, minVersion string, p interact.Printer) error {
+func enforceMinVersion(ctx context.Context, minVersion string) error {
+	p := interact.Default()
 	minVersion = strings.TrimSpace(minVersion)
 	if minVersion == "" {
 		return nil
@@ -58,7 +59,7 @@ func enforceMinVersion(ctx context.Context, minVersion string, p interact.Printe
 	}
 	p.Infof("veil %s is older than this project's required %s — updating…", cur, required)
 
-	target, _, err := selfReplace(ctx, required, p)
+	target, _, err := selfReplace(ctx, required)
 	if err != nil {
 		return fmt.Errorf("auto-updating to required veil %s: %w", required, err)
 	}

@@ -138,7 +138,7 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 	// Discovery mode: only the resource was given. List the kind's
 	// sources so the user can pick one for the next invocation.
 	if len(sourceArgs) == 0 {
-		listOverridableSources(p, kindName, resourceArg, res.GetMetadata().GetOverrides(), sources)
+		listOverridableSources(kindName, resourceArg, res.GetMetadata().GetOverrides(), sources)
 		return discoveryResponse(kindName, res.GetMetadata().GetOverrides(), sources), nil
 	}
 
@@ -236,7 +236,8 @@ func discoveryResponse(kindName string, existing []*veilv1.Override, sources map
 // when the override command is invoked without a source. Already-
 // overridden entries are flagged so the user knows what's already
 // taken without re-reading the resource JSON.
-func listOverridableSources(p interact.Printer, kindName, resourceArg string, existing []*veilv1.Override, sources map[string]string) {
+func listOverridableSources(kindName, resourceArg string, existing []*veilv1.Override, sources map[string]string) {
+	p := interact.Default()
 	taken := make(map[string]bool, len(existing))
 	for _, ov := range existing {
 		taken[ov.GetSource()] = true
