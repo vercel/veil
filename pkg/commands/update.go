@@ -37,12 +37,12 @@ func Update() *cli.Command {
 	return &cli.Command{
 		Name:      "update",
 		Usage:     "Download a veil release and replace this binary",
-		UsageText: "veil update [--version <edge|latest|vX.Y.Z>]",
+		UsageText: "veil update [--version <latest|edge|vX.Y.Z>]",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "version",
-				Usage: "Release to install: edge (latest main build, default), latest (newest stable release), or a tag like v1.2.3",
-				Value: "edge",
+				Usage: "Release to install: latest (newest stable release, default), edge (latest main build), or a tag like v1.2.3",
+				Value: "latest",
 			},
 		},
 		Action: withResult(runUpdate),
