@@ -144,7 +144,7 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 		// disk or HTTP registry takes, so no prebuilt registry need live on
 		// disk.
 		mem := vfs.NewMem()
-		if _, err := runBuildPipeline(reg, mem, buildPipelineOpts{}, nil); err != nil {
+		if _, err := runBuildPipeline(ctx, reg, mem, buildPipelineOpts{}, nil); err != nil {
 			return nil, fmt.Errorf("building registry: %w", err)
 		}
 		kindReg, err = registry.FromStore(&registry.FSStore{FS: mem})

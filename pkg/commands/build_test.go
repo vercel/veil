@@ -130,6 +130,58 @@ func (s *BuildSuite) TestBuildRegeneratesTypesBeforeBundling() {
 	s.Contains(string(types), "WorkerSpec")
 }
 
+// TestBuildRegeneratesResourceHookTypes proves `veil build` refreshes the
+// veil-types.ts next to a resource's render hooks — not just kind hooks —
+// so resource-hook authors track the kind schema. A second resource with
+// no render hooks is left untouched (nothing to type).
+func (s *BuildSuite) TestBuildRegeneratesResourceHookTypes() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	// Declare discovery so `veil build` can find resources under svc/.
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
+  "kinds": ["./.veil/kinds/worker/kind.json"],
+  "registries": { "": "./public/r/registry.json" },
+  "resource_discovery": { "paths": ["svc/*/production.json"] }
+}`), 0644))
+
+	// A worker resource we'll attach a render hook to.
+	hookedDir := filepath.Join(s.root, "svc", "my-api")
+	s.Require().NoError(os.MkdirAll(hookedDir, 0755))
+	hookedPath := filepath.Join(hookedDir, "production.json")
+	s.Require().NoError(os.WriteFile(hookedPath, []byte(`{
+  "metadata": { "kind": "worker", "name": "my-api" },
+  "spec": {}
+}`), 0644))
+
+	// The scaffolder writes the initial resource veil-types.ts; corrupt it
+	// so a stale copy would survive if build didn't regenerate it.
+	_, err = s.run("new", "hook", "fix-thing", "--resource", hookedPath)
+	s.Require().NoError(err)
+	typesPath := filepath.Join(hookedDir, "hooks", "veil-types.ts")
+	s.Require().FileExists(typesPath)
+	s.Require().NoError(os.WriteFile(typesPath, []byte("// corrupted\n"), 0644))
+
+	// A second worker resource with NO render hooks — must be skipped.
+	bareDir := filepath.Join(s.root, "svc", "bare")
+	s.Require().NoError(os.MkdirAll(bareDir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(bareDir, "production.json"), []byte(`{
+  "metadata": { "kind": "worker", "name": "bare" },
+  "spec": {}
+}`), 0644))
+
+	_, err = s.run("build")
+	s.Require().NoError(err)
+
+	// The hooked resource's types are regenerated from the worker schema.
+	types, err := os.ReadFile(typesPath)
+	s.Require().NoError(err)
+	s.Contains(string(types), "WorkerSpec")
+
+	// The hook-less resource never gets a hooks/veil-types.ts.
+	s.NoFileExists(filepath.Join(bareDir, "hooks", "veil-types.ts"))
+}
+
 func (s *BuildSuite) TestBuildTypesFileEmitsEnumUnion() {
 	_, err := s.run("new", "kind", "worker")
 	s.Require().NoError(err)
