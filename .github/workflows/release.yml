@@ -9,7 +9,26 @@ permissions:
   contents: write
 
 jobs:
+  # A versioned release is published only for a valid semver tag
+  # (vMAJOR.MINOR.PATCH, with optional -prerelease / +build metadata). The
+  # build and release jobs gate on this, so a malformed tag fails fast and
+  # publishes nothing.
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate semver tag
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(\+[0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*)?$'
+          if printf '%s' "$tag" | grep -Eq "$semver"; then
+            echo "✓ '$tag' is a valid semantic version."
+          else
+            echo "::error::Tag '$tag' is not a valid semantic version. Expected vMAJOR.MINOR.PATCH (e.g. v1.2.3), optionally with -prerelease / +build metadata."
+            exit 1
+          fi
+
   build:
+    needs: validate
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -30,7 +49,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version-file: go.mod
 
       - name: Build
         env:
@@ -40,7 +59,7 @@ jobs:
           ext=""
           if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
           output="veil-${GOOS}-${GOARCH}${ext}"
-          version="${GITHUB_REF#refs/tags/}"
+          version="${GITHUB_REF_NAME}"
           go build -ldflags="-s -w -X main.version=${version}" -o "$output" ./cmd/veil
           chmod +x "$output"
 

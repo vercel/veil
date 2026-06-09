@@ -15,33 +15,53 @@ import (
 	"github.com/vercel/veil/pkg/interact"
 )
 
-// updateReleaseURL points at the same `edge` release the curl-piped
-// install.sh pulls from. Kept here so both surfaces stay in sync.
-const updateReleaseURL = "https://github.com/vercel/veil/releases/download/edge"
+// releaseBaseURL returns the GitHub release download base for a version
+// selector. "edge" (the rolling prerelease the curl-piped install.sh
+// defaults to) and explicit tags like "v1.2.3" use the tagged-download
+// path; "latest" uses GitHub's redirect to the newest non-prerelease
+// release. Kept in sync with install.sh's URL logic.
+func releaseBaseURL(version string) string {
+	const releases = "https://github.com/vercel/veil/releases"
+	if version == "latest" {
+		return releases + "/latest/download"
+	}
+	return releases + "/download/" + version
+}
 
-// Update returns the "update" command — replaces the running veil
-// binary with the latest edge build. Mirrors install.sh: same release
-// tag, same platform asset naming, same macOS quarantine cleanup.
+// Update returns the "update" command — replaces the running veil binary
+// with a release build. Defaults to the rolling `edge` build; --version
+// selects `latest` (newest stable release) or a specific tag (e.g.
+// v1.2.3). Mirrors install.sh: same platform asset naming and macOS
+// quarantine cleanup.
 func Update() *cli.Command {
 	return &cli.Command{
 		Name:      "update",
-		Usage:     "Download the latest veil edge build and replace this binary",
-		UsageText: "veil update",
-		Action:    withResult(runUpdate),
+		Usage:     "Download a veil release and replace this binary",
+		UsageText: "veil update [--version <edge|latest|vX.Y.Z>]",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "version",
+				Usage: "Release to install: edge (latest main build, default), latest (newest stable release), or a tag like v1.2.3",
+				Value: "edge",
+			},
+		},
+		Action: withResult(runUpdate),
 	}
 }
 
 // updateResponse is the JSON payload for `veil update`.
 type updateResponse struct {
-	Path string `json:"path"`
-	OS   string `json:"os"`
-	Arch string `json:"arch"`
-	URL  string `json:"url"`
+	Path    string `json:"path"`
+	OS      string `json:"os"`
+	Arch    string `json:"arch"`
+	Version string `json:"version"`
+	URL     string `json:"url"`
 }
 
-func runUpdate(ctx context.Context, _ *cli.Command) (*updateResponse, error) {
+func runUpdate(ctx context.Context, c *cli.Command) (*updateResponse, error) {
 	p := interact.Default()
 
+	version := c.String("version")
 	osName, arch, err := updateTarget()
 	if err != nil {
 		return nil, err
@@ -57,7 +77,7 @@ func runUpdate(ctx context.Context, _ *cli.Command) (*updateResponse, error) {
 		target = resolved
 	}
 
-	url := fmt.Sprintf("%s/veil-%s-%s", updateReleaseURL, osName, arch)
+	url := fmt.Sprintf("%s/veil-%s-%s", releaseBaseURL(version), osName, arch)
 	p.Infof("Downloading %s", url)
 
 	tmpPath, err := downloadToTemp(ctx, url, filepath.Dir(target))
@@ -82,8 +102,8 @@ func runUpdate(ctx context.Context, _ *cli.Command) (*updateResponse, error) {
 		return nil, fmt.Errorf("replacing %s: %w", target, err)
 	}
 
-	p.Successf("veil updated at %s", target)
-	return &updateResponse{Path: target, OS: osName, Arch: arch, URL: url}, nil
+	p.Successf("veil (%s) updated at %s", version, target)
+	return &updateResponse{Path: target, OS: osName, Arch: arch, Version: version, URL: url}, nil
 }
 
 // updateTarget maps GOOS/GOARCH to the release asset's `${os}-${arch}`

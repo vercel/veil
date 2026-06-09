@@ -5,6 +5,10 @@ REPO="vercel/veil"
 # Default to a user-owned location so installation needs no sudo. Override
 # via VEIL_INSTALL_DIR for a different destination.
 INSTALL_DIR="${VEIL_INSTALL_DIR:-$HOME/.local/bin}"
+# Which release to install. Defaults to the rolling `edge` build; set
+# VEIL_VERSION=latest for the newest stable release, or a tag like v1.2.3
+# to pin a specific one.
+VEIL_VERSION="${VEIL_VERSION:-edge}"
 
 # Detect OS
 get_os() {
@@ -33,9 +37,15 @@ main() {
     mkdir -p "$INSTALL_DIR"
 
     binary_name="veil-${os}-${arch}"
-    download_url="https://github.com/${REPO}/releases/download/edge/${binary_name}"
+    # `latest` resolves through GitHub's newest-stable redirect; `edge` and
+    # explicit tags (e.g. v1.2.3) download from that tag directly.
+    if [ "$VEIL_VERSION" = "latest" ]; then
+        download_url="https://github.com/${REPO}/releases/latest/download/${binary_name}"
+    else
+        download_url="https://github.com/${REPO}/releases/download/${VEIL_VERSION}/${binary_name}"
+    fi
 
-    echo "Downloading veil edge (${os}/${arch})..."
+    echo "Downloading veil ${VEIL_VERSION} (${os}/${arch})..."
 
     curl -fsSL -o veil "${download_url}"
     chmod +x veil
@@ -48,7 +58,7 @@ main() {
         xattr -cr "${INSTALL_DIR}/veil" 2>/dev/null || true
     fi
 
-    echo "veil (edge) installed to ${INSTALL_DIR}/veil"
+    echo "veil (${VEIL_VERSION}) installed to ${INSTALL_DIR}/veil"
 
     case ":$PATH:" in
         *":$INSTALL_DIR:"*) ;;
