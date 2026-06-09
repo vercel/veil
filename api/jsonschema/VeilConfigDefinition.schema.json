@@ -3,6 +3,11 @@
   "additionalProperties": false,
   "description": "VeilConfigDefinition is the contents of .veil/veil.json — the\n hand-authored source-side project configuration. The \"Definition\"\n suffix marks it as a local-file shape; types under registry.proto\n (Kind, Registry, …) are the corresponding published forms.",
   "patternProperties": {
+    "^(cliVersion)$": {
+      "default": "",
+      "description": "Minimum veil CLI version required to render this project, as a semver\n string (leading \"v\" optional, e.g. \"v1.4.0\"). When `veil render` runs\n on an older *released* build, it auto-updates to this version and\n re-execs so the render proceeds on a compatible CLI. Builds whose\n version isn't a comparable release (dev / edge) skip the check; unset\n means no minimum is enforced.",
+      "type": "string"
+    },
     "^(resourceDiscovery)$": {
       "additionalProperties": false,
       "description": "Where to find the resource JSON files that make up the project's\n catalog. Used at render time to resolve dependency targets.",
@@ -21,6 +26,11 @@
     }
   },
   "properties": {
+    "cli_version": {
+      "default": "",
+      "description": "Minimum veil CLI version required to render this project, as a semver\n string (leading \"v\" optional, e.g. \"v1.4.0\"). When `veil render` runs\n on an older *released* build, it auto-updates to this version and\n re-execs so the render proceeds on a compatible CLI. Builds whose\n version isn't a comparable release (dev / edge) skip the check; unset\n means no minimum is enforced.",
+      "type": "string"
+    },
     "generators": {
       "additionalProperties": false,
       "description": "Optional defaults for the source-side scaffolding commands\n (`veil init`, `veil new kind`, `veil new hook`). When unset, every\n generator falls back to its built-in default.",
