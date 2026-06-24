@@ -7,12 +7,22 @@
       "default": "",
       "description": "Directory where `veil new kind` writes a new kind's tree, relative\n to the directory housing veil.json. `veil new hook` follows the\n existing kind on disk so this only affects newly created kinds.\n Defaults to `.veil/kinds` when unset.",
       "type": "string"
+    },
+    "^(sharedTypes)$": {
+      "default": "",
+      "description": "Path (relative to the directory housing veil.json) where `veil build`\n writes a single shared veil-types module holding the kind-independent\n type declarations (the host APIs Std/Os/Fetch, File, Resource,\n RegistryVariables, ValidationIssue/Result). When set, each per-hook\n veil-types.ts imports those symbols from this module instead of\n inlining them, so a change to a shared type touches one file instead\n of every generated veil-types.ts. When unset, the shared types are\n inlined into every file (the original behavior).",
+      "type": "string"
     }
   },
   "properties": {
     "kinds_dir": {
       "default": "",
       "description": "Directory where `veil new kind` writes a new kind's tree, relative\n to the directory housing veil.json. `veil new hook` follows the\n existing kind on disk so this only affects newly created kinds.\n Defaults to `.veil/kinds` when unset.",
+      "type": "string"
+    },
+    "shared_types": {
+      "default": "",
+      "description": "Path (relative to the directory housing veil.json) where `veil build`\n writes a single shared veil-types module holding the kind-independent\n type declarations (the host APIs Std/Os/Fetch, File, Resource,\n RegistryVariables, ValidationIssue/Result). When set, each per-hook\n veil-types.ts imports those symbols from this module instead of\n inlining them, so a change to a shared type touches one file instead\n of every generated veil-types.ts. When unset, the shared types are\n inlined into every file (the original behavior).",
       "type": "string"
     }
   },

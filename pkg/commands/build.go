@@ -187,6 +187,23 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 		return nil, fmt.Errorf("building kind graph: %w", err)
 	}
 
+	// When generators.shared_types is set, emit the kind-independent types
+	// once to that module; each kind/resource veil-types.ts then imports
+	// them. Written before the kind loop so it exists when tsc checks hooks.
+	sharedAbs := sharedTypesAbs(reg)
+	if sharedAbs != "" && opts.writeTypes {
+		shared, err := build.SharedVeilTypes(reg.Variables)
+		if err != nil {
+			return nil, fmt.Errorf("generating shared veil-types: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(sharedAbs), 0755); err != nil {
+			return nil, fmt.Errorf("writing shared veil-types: %w", err)
+		}
+		if err := os.WriteFile(sharedAbs, []byte(shared), 0644); err != nil {
+			return nil, fmt.Errorf("writing shared veil-types: %w", err)
+		}
+	}
+
 	var errs []error
 	for _, k := range reg.Kinds {
 		if err := validateKind(k); err != nil {
@@ -219,7 +236,7 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 		// not write into the source tree.
 		typesPath := ""
 		if opts.writeTypes {
-			if err := writeKindTypes(k, reg.Variables, graph); err != nil {
+			if err := writeKindTypes(k, reg.Variables, graph, sharedAbs); err != nil {
 				errs = append(errs, fmt.Errorf("%s: writing types: %w", k.Name, err))
 				continue
 			}
@@ -296,7 +313,7 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 	// hooks do. Gated on resourceTypes (only a full `veil build`), so
 	// `veil new` and in-memory render builds never touch the source tree.
 	if opts.resourceTypes {
-		resources, err := regenResourceTypes(ctx, reg, graph, fsys)
+		resources, err := regenResourceTypes(ctx, reg, graph, fsys, sharedAbs)
 		if err != nil {
 			return nil, fmt.Errorf("regenerating resource hook types: %w", err)
 		}
@@ -316,6 +333,38 @@ func cwdRel(abs string) string {
 		return rel
 	}
 	return abs
+}
+
+// sharedTypesAbs returns the absolute path of the project's shared
+// veil-types module (generators.shared_types), or "" when unset.
+func sharedTypesAbs(reg *config.Registry) string {
+	rel := reg.Generators.GetSharedTypes()
+	if rel == "" {
+		return ""
+	}
+	if filepath.IsAbs(rel) {
+		return rel
+	}
+	return filepath.Join(reg.Root, rel)
+}
+
+// sharedTypesImport returns the module specifier a veil-types.ts in fromDir
+// uses to import the shared module at sharedAbs — relative, '/'-separated,
+// '.ts' stripped, './'-prefixed when not reaching upward — or "" when no
+// shared module is configured (the inline path).
+func sharedTypesImport(fromDir, sharedAbs string) string {
+	if sharedAbs == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(fromDir, sharedAbs)
+	if err != nil {
+		return ""
+	}
+	rel = filepath.ToSlash(strings.TrimSuffix(rel, ".ts"))
+	if !strings.HasPrefix(rel, ".") {
+		rel = "./" + rel
+	}
+	return rel
 }
 
 // compileKind reads a kind's sources, bundles+minifies each render hook,
@@ -476,12 +525,12 @@ func compileDependents(k *config.Kind, projectRoot string, fsys fs.FS) ([]*veilv
 // hooks/src/ so `import … from './veil-types'` resolves naturally and
 // the package.json sitting one level up at hooks/ stays separate from
 // the source code.
-func writeKindTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph *build.KindGraph) error {
-	ts, err := build.VeilTypes(k, variables, graph)
+func writeKindTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph *build.KindGraph, sharedAbs string) error {
+	dir := filepath.Join(k.Dir, "hooks", "src")
+	ts, err := build.VeilTypes(k, variables, graph, sharedTypesImport(dir, sharedAbs))
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(k.Dir, "hooks", "src")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
@@ -497,7 +546,7 @@ func writeKindTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph
 // scaffold time. Resources without render hooks have nothing to type and
 // are skipped. Per-resource errors are collected so one bad resource
 // doesn't mask the rest, then returned joined.
-func regenResourceTypes(ctx context.Context, reg *config.Registry, graph *build.KindGraph, fsys fs.FS) ([]regeneratedResource, error) {
+func regenResourceTypes(ctx context.Context, reg *config.Registry, graph *build.KindGraph, fsys fs.FS, sharedAbs string) ([]regeneratedResource, error) {
 	p := interact.Default()
 	if reg.ResourceDiscovery == nil {
 		return nil, nil
@@ -534,11 +583,6 @@ func regenResourceTypes(ctx context.Context, reg *config.Registry, graph *build.
 			errs = append(errs, fmt.Errorf("%s: references kind %q not registered in veil.json", h.Path, h.Kind))
 			continue
 		}
-		ts, err := build.VeilTypes(k, reg.Variables, graph)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: generating types: %w", h.Path, err))
-			continue
-		}
 		// A resource hook imports `./veil-types`, so the file must sit in
 		// the same directory as the hook. Write one per distinct hook dir
 		// (normally just <resourceDir>/hooks).
@@ -552,6 +596,13 @@ func regenResourceTypes(ctx context.Context, reg *config.Registry, graph *build.
 			written[dir] = struct{}{}
 			if err := os.MkdirAll(dir, 0755); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", h.Path, err))
+				continue
+			}
+			// Each hook dir may sit at a different depth from the shared
+			// module, so compute the import (and the file) per dir.
+			ts, err := build.VeilTypes(k, reg.Variables, graph, sharedTypesImport(dir, sharedAbs))
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: generating types: %w", h.Path, err))
 				continue
 			}
 			typesPath := filepath.Join(dir, "veil-types.ts")

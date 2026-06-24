@@ -215,7 +215,16 @@ type Generators struct {
 	// to the directory housing veil.json. `veil new hook` follows the
 	// existing kind on disk so this only affects newly created kinds.
 	// Defaults to `.veil/kinds` when unset.
-	KindsDir      string `protobuf:"bytes,1,opt,name=kinds_dir,json=kindsDir,proto3" json:"kinds_dir,omitempty"`
+	KindsDir string `protobuf:"bytes,1,opt,name=kinds_dir,json=kindsDir,proto3" json:"kinds_dir,omitempty"`
+	// Path (relative to the directory housing veil.json) where `veil build`
+	// writes a single shared veil-types module holding the kind-independent
+	// type declarations (the host APIs Std/Os/Fetch, File, Resource,
+	// RegistryVariables, ValidationIssue/Result). When set, each per-hook
+	// veil-types.ts imports those symbols from this module instead of
+	// inlining them, so a change to a shared type touches one file instead
+	// of every generated veil-types.ts. When unset, the shared types are
+	// inlined into every file (the original behavior).
+	SharedTypes   string `protobuf:"bytes,2,opt,name=shared_types,json=sharedTypes,proto3" json:"shared_types,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -253,6 +262,13 @@ func (*Generators) Descriptor() ([]byte, []int) {
 func (x *Generators) GetKindsDir() string {
 	if x != nil {
 		return x.KindsDir
+	}
+	return ""
+}
+
+func (x *Generators) GetSharedTypes() string {
+	if x != nil {
+		return x.SharedTypes
 	}
 	return ""
 }
@@ -896,10 +912,11 @@ const file_veil_v1_config_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\x1a=\n" +
 	"\x0fRegistriesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\")\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"L\n" +
 	"\n" +
 	"Generators\x12\x1b\n" +
-	"\tkinds_dir\x18\x01 \x01(\tR\bkindsDir\"7\n" +
+	"\tkinds_dir\x18\x01 \x01(\tR\bkindsDir\x12!\n" +
+	"\fshared_types\x18\x02 \x01(\tR\vsharedTypes\"7\n" +
 	"\x11ResourceDiscovery\x12\"\n" +
 	"\x05paths\x18\x01 \x03(\tB\f\xbaH\t\x92\x01\x06\"\x04r\x02\x10\x01R\x05paths\"I\n" +
 	"\fVariableType\"9\n" +

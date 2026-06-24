@@ -63,6 +63,16 @@ message Generators {
   // existing kind on disk so this only affects newly created kinds.
   // Defaults to `.veil/kinds` when unset.
   string kinds_dir = 1;
+
+  // Path (relative to the directory housing veil.json) where `veil build`
+  // writes a single shared veil-types module holding the kind-independent
+  // type declarations (the host APIs Std/Os/Fetch, File, Resource,
+  // RegistryVariables, ValidationIssue/Result). When set, each per-hook
+  // veil-types.ts imports those symbols from this module instead of
+  // inlining them, so a change to a shared type touches one file instead
+  // of every generated veil-types.ts. When unset, the shared types are
+  // inlined into every file (the original behavior).
+  string shared_types = 2;
 }
 
 // ResourceDiscovery declares how `veil render` builds its catalog of

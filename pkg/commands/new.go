@@ -375,15 +375,15 @@ func runNewHookOnResource(cwd, name, resourcePath string) (*newResponse, error) 
 	if err != nil {
 		return nil, fmt.Errorf("building kind graph: %w", err)
 	}
-	types, err := build.VeilTypes(k, reg.Variables, graph)
-	if err != nil {
-		return nil, fmt.Errorf("generating veil-types.ts for resource hook: %w", err)
-	}
-
 	resourceDir := filepath.Dir(abs)
 	hooksDir := filepath.Join(resourceDir, "hooks")
 	outPath := filepath.Join(hooksDir, name+".ts")
 	typesPath := filepath.Join(hooksDir, "veil-types.ts")
+
+	types, err := build.VeilTypes(k, reg.Variables, graph, sharedTypesImport(hooksDir, sharedTypesAbs(reg)))
+	if err != nil {
+		return nil, fmt.Errorf("generating veil-types.ts for resource hook: %w", err)
+	}
 	if _, err := os.Stat(outPath); err == nil {
 		return nil, fmt.Errorf("hook %s already exists", outPath)
 	}

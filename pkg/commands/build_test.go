@@ -434,3 +434,47 @@ func (s *BuildSuite) TestBuildFailsOnMissingSource() {
 	s.Require().Error(err)
 	s.Contains(err.Error(), "missing.yaml")
 }
+
+// TestBuildSharedTypesEmitsModuleAndImports proves generators.shared_types
+// moves the kind-independent declarations into one shared module that each
+// kind's veil-types.ts imports, instead of inlining them into every file.
+func (s *BuildSuite) TestBuildSharedTypesEmitsModuleAndImports() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
+  "kinds": ["./.veil/kinds/worker/kind.json"],
+  "registries": { "": "./public/r/registry.json" },
+  "generators": { "shared_types": "./veil-shared-types.ts" },
+  "variables": { "env": { "type": "string", "default": "dev" } }
+}`), 0644))
+
+	_, err = s.run("build")
+	s.Require().NoError(err)
+
+	// The shared module is emitted once, carrying the kind-independent types.
+	shared, err := os.ReadFile(filepath.Join(s.root, "veil-shared-types.ts"))
+	s.Require().NoError(err)
+	st := string(shared)
+	s.Contains(st, "export interface Std {")
+	s.Contains(st, "export interface Os {")
+	s.Contains(st, "export interface File {")
+	s.Contains(st, "export interface Resource<Spec, Deps = never> {")
+	s.Contains(st, "export interface RegistryVariables {")
+	s.Contains(st, "env: string;")
+
+	// The kind's veil-types.ts imports the shared symbols instead of
+	// re-inlining them, but keeps its per-kind types local.
+	kindTypes, err := os.ReadFile(filepath.Join(s.root, ".veil", "kinds", "worker", "hooks", "src", "veil-types.ts"))
+	s.Require().NoError(err)
+	ts := string(kindTypes)
+	s.Contains(ts, "import type {")
+	s.Contains(ts, "veil-shared-types';")
+	s.Contains(ts, "export interface WorkerSpec {")
+	s.Contains(ts, "export interface RenderHookContext {")
+	s.Contains(ts, "export interface RenderHook {")
+	// Shared types are imported, not re-inlined.
+	s.NotContains(ts, "export interface Std {")
+	s.NotContains(ts, "export interface RegistryVariables {")
+	s.NotContains(ts, "export interface Resource<")
+}
