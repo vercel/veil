@@ -204,7 +204,6 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 	}
 
 	var errs []error
-	var builtImportKinds []string // import kinds whose module was written, for the manifest
 	for _, k := range reg.Kinds {
 		if err := validateKind(k); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", k.Name, err))
@@ -254,7 +253,6 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 					errs = append(errs, fmt.Errorf("%s: wiring types dependency: %w", k.Name, err))
 					continue
 				}
-				builtImportKinds = append(builtImportKinds, k.Name)
 				typesPath = cwdRel(file)
 			} else {
 				if err := writeKindTypes(k, reg.Variables, graph); err != nil {
@@ -312,14 +310,6 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
-	}
-
-	// Write the types package manifest now that the set of successfully-built
-	// kind modules is known, so its exports never reference a missing module.
-	if tp != nil {
-		if err := tp.writeManifest(builtImportKinds); err != nil {
-			return nil, fmt.Errorf("writing types package manifest: %w", err)
-		}
 	}
 
 	// --schemas-only emits no registry index — render builds it in memory.

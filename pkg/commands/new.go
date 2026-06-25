@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/goccy/go-json"
 	"github.com/urfave/cli/v3"
@@ -153,6 +154,25 @@ func runNewKind(ctx context.Context, c *cli.Command) (*newResponse, error) {
 		return nil, fmt.Errorf("directory %s already exists", kindDir)
 	}
 
+	// When a shared types package is configured, scaffold the kind in package
+	// mode: its hook imports the package (and `veil build` emits the kind's
+	// module) rather than a local veil-types.ts. typesPkgName is the
+	// repo-owned package name; importName ("" in inline mode) drives how the
+	// kind is registered in veil.json.
+	typesImport := "./veil-types"
+	typesPkgName := ""
+	importName := ""
+	importValue := ""
+	if typesDir := reg.TypesOutputDir(); typesDir != "" {
+		typesPkgName, err = typesPackageName(typesDir)
+		if err != nil {
+			return nil, err
+		}
+		typesImport = typesPkgName + "/" + name
+		importName = typesImport
+		importValue = "workspace:*"
+	}
+
 	sourcesDir := filepath.Join(kindDir, "sources")
 	hookSrcDir := filepath.Join(kindDir, "hooks", "src")
 	if err := os.MkdirAll(sourcesDir, 0755); err != nil {
@@ -179,9 +199,27 @@ func runNewKind(ctx context.Context, c *cli.Command) (*newResponse, error) {
 		return nil, fmt.Errorf("writing source.txt: %w", err)
 	}
 
-	helloTS := build.HookTemplate("hello-world", "./veil-types")
+	helloTS := build.HookTemplate("hello-world", typesImport)
 	if err := os.WriteFile(filepath.Join(hookSrcDir, "hello-world.ts"), []byte(helloTS), 0644); err != nil {
 		return nil, fmt.Errorf("writing hello-world.ts: %w", err)
+	}
+
+	// In package mode the hooks dir is a workspace package that depends on the
+	// shared types package, so `veil build` can wire and resolve the import.
+	if typesPkgName != "" {
+		hooksName := name + "-hooks"
+		if scope, _, ok := strings.Cut(typesPkgName, "/"); ok && strings.HasPrefix(typesPkgName, "@") {
+			hooksName = scope + "/" + hooksName
+		}
+		hooksPkg := map[string]any{
+			"name":            hooksName,
+			"version":         "0.0.0",
+			"private":         true,
+			"devDependencies": map[string]any{typesPkgName: importValue},
+		}
+		if err := writeJSON(filepath.Join(kindDir, "hooks", "package.json"), hooksPkg); err != nil {
+			return nil, err
+		}
 	}
 
 	kindJSON := map[string]any{
@@ -209,7 +247,7 @@ func runNewKind(ctx context.Context, c *cli.Command) (*newResponse, error) {
 		return nil, fmt.Errorf("computing relative kind path: %w", err)
 	}
 	relKind := "./" + filepath.ToSlash(rel)
-	if err := registerKindInVeilJSON(configPath, relKind); err != nil {
+	if err := registerKindInVeilJSON(configPath, relKind, importName, importValue); err != nil {
 		return nil, err
 	}
 	rb.restoreFile(configPath, prevVeil)
@@ -730,11 +768,12 @@ func writeJSON(path string, v any) error {
 	return nil
 }
 
-// registerKindInVeilJSON appends relKind to the kinds[] array in the
-// project config file (veil.json, veil.yaml, or veil.yml), preserving
-// the existing list. The file format is detected by extension; YAML
-// files round-trip back to YAML.
-func registerKindInVeilJSON(configPath, relKind string) error {
+// registerKindInVeilJSON appends relKind to the kinds[] array in the project
+// config file (veil.json, veil.yaml, or veil.yml), preserving the existing
+// list. When importName is non-empty the kind is added in the object form
+// `{path, import: {name, value}}` (package mode); otherwise as a bare path
+// string. The file format is detected by extension; YAML round-trips to YAML.
+func registerKindInVeilJSON(configPath, relKind, importName, importValue string) error {
 	return mutateGeneric(configPath, func(cfg map[string]any) error {
 		var kinds []any
 		if raw, ok := cfg["kinds"]; ok && raw != nil {
@@ -761,9 +800,38 @@ func registerKindInVeilJSON(configPath, relKind string) error {
 				return fmt.Errorf("%s: \"kinds\" entries must be a path string or {path, import?} object", configPath)
 			}
 		}
-		cfg["kinds"] = append(kinds, relKind)
+		var entry any = relKind
+		if importName != "" {
+			entry = map[string]any{
+				"path":   relKind,
+				"import": map[string]any{"name": importName, "value": importValue},
+			}
+		}
+		cfg["kinds"] = append(kinds, entry)
 		return nil
 	})
+}
+
+// typesPackageName reads the repo-owned name of the shared types package at
+// typesDir. veil never sets this name — it requires the package.json to exist
+// and declare one, so package-mode imports resolve to a real package.
+func typesPackageName(typesDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(typesDir, "package.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("types package has no package.json at %s — create one (with a name) before scaffolding a package-mode kind", typesDir)
+		}
+		return "", err
+	}
+	m, err := decodePackageJSON(data)
+	if err != nil {
+		return "", fmt.Errorf("parsing %s/package.json: %w", typesDir, err)
+	}
+	name, _ := m["name"].(string)
+	if name == "" {
+		return "", fmt.Errorf("%s/package.json must declare a name", typesDir)
+	}
+	return name, nil
 }
 
 // appendHookToResource appends relHook to the resource file's

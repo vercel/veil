@@ -382,7 +382,7 @@ func (s *BuildSuite) TestRegisterKindPreservesObjectEntries() {
   "registries": { "": "./public/r/registry.json" }
 }`), 0644))
 
-	s.Require().NoError(registerKindInVeilJSON(cfg, "./c/kind.json"))
+	s.Require().NoError(registerKindInVeilJSON(cfg, "./c/kind.json", "", ""))
 	out := s.readJSON(cfg)
 	kinds, ok := out["kinds"].([]any)
 	s.Require().True(ok)
@@ -394,8 +394,8 @@ func (s *BuildSuite) TestRegisterKindPreservesObjectEntries() {
 	s.Equal("./c/kind.json", kinds[2])
 
 	// Idempotent: re-registering an existing path (object or string) is a no-op.
-	s.Require().NoError(registerKindInVeilJSON(cfg, "./a/kind.json"))
-	s.Require().NoError(registerKindInVeilJSON(cfg, "./b/kind.json"))
+	s.Require().NoError(registerKindInVeilJSON(cfg, "./a/kind.json", "", ""))
+	s.Require().NoError(registerKindInVeilJSON(cfg, "./b/kind.json", "", ""))
 	s.Require().Len(s.readJSON(cfg)["kinds"].([]any), 3)
 }
 
@@ -459,6 +459,65 @@ func (s *BuildSuite) TestResolveTypesPackageValidation() {
 	s.Require().NoError(err)
 	s.Require().NotNil(tp)
 	s.Equal("@p/veil-types", tp.name)
+}
+
+// TestNewKindUsesPackageWhenConfigured proves `veil new kind` scaffolds in
+// package mode when generators.types is set — the hook imports the shared
+// package (not a local veil-types.ts), a hooks/package.json carries the
+// workspace dep, the kind registers in object form, and the kind's module is
+// emitted into the package and exported.
+func (s *BuildSuite) TestNewKindUsesPackageWhenConfigured() {
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
+  "kinds": [],
+  "registries": { "": "./public/r/registry.json" },
+  "generators": { "types": { "output_dir": "./types" } }
+}`), 0644))
+	// repo-owned types package.json (veil never names it)
+	s.Require().NoError(os.MkdirAll(filepath.Join(s.root, "types"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "types", "package.json"), []byte(`{
+  "name": "@scratch/veil",
+  "version": "0.0.0",
+  "private": true
+}`), 0644))
+	// make the package resolvable so the build's typecheck (if a compiler is
+	// present) finds @scratch/veil/<kind>
+	s.Require().NoError(os.MkdirAll(filepath.Join(s.root, "node_modules", "@scratch"), 0755))
+	s.Require().NoError(os.Symlink(filepath.Join(s.root, "types"), filepath.Join(s.root, "node_modules", "@scratch", "veil")))
+
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	// registered in object form with the import
+	cfg := s.readJSON(filepath.Join(s.root, "veil.json"))
+	kinds, ok := cfg["kinds"].([]any)
+	s.Require().True(ok)
+	s.Require().Len(kinds, 1)
+	entry, ok := kinds[0].(map[string]any)
+	s.Require().True(ok, "kind should be registered in object form")
+	imp, ok := entry["import"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal("@scratch/veil/worker", imp["name"])
+	s.Equal("workspace:*", imp["value"])
+
+	// hook imports the package; no inline veil-types.ts
+	hook, err := os.ReadFile(filepath.Join(s.root, ".veil", "kinds", "worker", "hooks", "src", "hello-world.ts"))
+	s.Require().NoError(err)
+	s.Contains(string(hook), "from '@scratch/veil/worker'")
+	s.NoFileExists(filepath.Join(s.root, ".veil", "kinds", "worker", "hooks", "src", "veil-types.ts"))
+
+	// hooks/package.json carries the workspace dep
+	hp := s.readJSON(filepath.Join(s.root, ".veil", "kinds", "worker", "hooks", "package.json"))
+	dev, ok := hp["devDependencies"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal("workspace:*", dev["@scratch/veil"])
+
+	// the kind's module is emitted + exported; repo-owned name untouched
+	s.FileExists(filepath.Join(s.root, "types", "worker.ts"))
+	pkg := s.readJSON(filepath.Join(s.root, "types", "package.json"))
+	s.Equal("@scratch/veil", pkg["name"])
+	exports, ok := pkg["exports"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal("./worker.ts", exports["./worker"])
 }
 
 func (s *BuildSuite) TestBuildTypesFileEmitsEnumUnion() {

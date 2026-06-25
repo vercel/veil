@@ -150,7 +150,13 @@ func (tp *typesPackage) writeShared(reg *config.Registry) error {
 	if err != nil {
 		return fmt.Errorf("host types: %w", err)
 	}
-	return os.WriteFile(filepath.Join(tp.dir, "host.ts"), []byte(host), 0644)
+	if err := os.WriteFile(filepath.Join(tp.dir, "host.ts"), []byte(host), 0644); err != nil {
+		return err
+	}
+	// Write the package.json exports up front — for every opted-in kind — so a
+	// hook's `@pkg/<kind>` import resolves during the typecheck that follows,
+	// including a brand-new kind whose module this same build generates.
+	return tp.writeManifest()
 }
 
 // writeKindModule writes one kind's generated module (output_dir/<subpath>.ts),
@@ -171,14 +177,12 @@ func (tp *typesPackage) writeKindModule(k *config.Kind, reg *config.Registry, gr
 }
 
 // writeManifest updates only the `exports` map of the types package's
-// package.json — an entry for ./host and each successfully-built kind module
-// (named in kinds). Every other field (name, version, private, …) is owned by
-// the repo and left untouched; veil names nothing. Existing exports entries
-// are preserved, so a repo can expose additional ones. Called after the
-// per-kind loop so exports never reference a module a failed build didn't
-// write; the package.json's existence and name are validated up front in
-// resolveTypesPackage.
-func (tp *typesPackage) writeManifest(kinds []string) error {
+// package.json — an entry for ./host and one per opted-in kind. Every other
+// field (name, version, private, …) is owned by the repo and left untouched;
+// veil names nothing. Existing exports entries are preserved, so a repo can
+// expose additional ones. The package.json's existence and name are validated
+// up front in resolveTypesPackage.
+func (tp *typesPackage) writeManifest() error {
 	pkgPath := filepath.Join(tp.dir, "package.json")
 	data, err := os.ReadFile(pkgPath)
 	if err != nil {
@@ -194,8 +198,7 @@ func (tp *typesPackage) writeManifest(kinds []string) error {
 		exports = map[string]any{}
 	}
 	exports["./host"] = "./host.ts"
-	for _, name := range kinds {
-		sub := tp.subpath[name]
+	for _, sub := range tp.subpath {
 		exports["./"+sub] = "./" + sub + ".ts"
 	}
 	m["exports"] = exports
