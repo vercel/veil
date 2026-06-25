@@ -10,10 +10,12 @@ import "google/protobuf/struct.proto";
 // suffix marks it as a local-file shape; types under registry.proto
 // (Kind, Registry, …) are the corresponding published forms.
 message VeilConfigDefinition {
-  // Relative or absolute paths to kind definition files. May be empty —
-  // a project with no kinds is valid (it can still depend on kinds
-  // published by aliased registries).
-  repeated string kinds = 1 [(buf.validate.field).repeated.items.string.min_len = 1];
+  // Kind references — each a bare path string or a {path, import?} object
+  // that the config loader narrows into a KindRef. May be empty — a project
+  // with no kinds is valid (it can still depend on kinds published by aliased
+  // registries). The {path, import} object form opts the kind's generated
+  // types into the shared types package (generators.types).
+  repeated google.protobuf.Value kinds = 1;
 
   // User-defined input variables keyed by name. Values are provided at
   // render time via --var flags or VEIL_VAR_<NAME> environment variables.
@@ -54,6 +56,29 @@ message VeilConfigDefinition {
   string cli_version = 6;
 }
 
+// KindRef is the narrowed form of a `kinds` entry: a path plus optional
+// types-package import wiring. The on-wire `kinds` field is repeated
+// google.protobuf.Value (string | object) since protojson can't express
+// "string OR struct"; the config loader narrows each entry into a KindRef.
+message KindRef {
+  // Path to the kind definition file (kind.json / kind.yaml). Required.
+  string path = 1;
+
+  // When set, this kind's generated types are written into the shared types
+  // package (generators.types.output_dir) and consumers import them via this
+  // entry instead of inlining. When unset, types are inlined per hook.
+  KindImport import = 2;
+}
+
+// KindImport is the package.json dependency entry a consumer uses to import
+// this kind's generated types from the shared types package.
+message KindImport {
+  // Import specifier hooks use, e.g. "@platform/veil-types/service".
+  string name = 1;
+  // package.json dependency value for the types package, e.g. "workspace:*".
+  string value = 2;
+}
+
 // Generators configures the source-side scaffolding commands. Every
 // field is optional; an unset (or empty) field falls back to the
 // command's built-in default so older veil.json files keep working.
@@ -63,6 +88,25 @@ message Generators {
   // existing kind on disk so this only affects newly created kinds.
   // Defaults to `.veil/kinds` when unset.
   string kinds_dir = 1;
+
+  // Configures the shared types package (see Types). When set, kinds whose
+  // `kinds` entry carries an `import` write their generated veil-types into
+  // the package's output_dir and their hooks import them by package
+  // specifier; kinds without an `import` keep inlining types per hook.
+  Types types = 2;
+}
+
+// Types configures the central package that generated veil-types are written
+// into when a kind opts in via its `kinds` entry's `import`. The shared
+// host-types module (Std/Os/Fetch/File/Resource/RegistryVariables/
+// ValidationIssue+Result) is written there once and imported by every kind
+// module, so a shared-type change touches one file instead of every
+// generated veil-types.ts.
+message Types {
+  // Directory (relative to the directory housing veil.json) where `veil
+  // build` writes the types package: its package.json, the shared
+  // host-types module, and one module per opted-in kind.
+  string output_dir = 1;
 }
 
 // ResourceDiscovery declares how `veil render` builds its catalog of

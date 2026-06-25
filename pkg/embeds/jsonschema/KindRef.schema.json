@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "KindRef is the narrowed form of a `kinds` entry: a path plus optional\n types-package import wiring. The on-wire `kinds` field is repeated\n google.protobuf.Value (string | object) since protojson can't express\n \"string OR struct\"; the config loader narrows each entry into a KindRef.",
+  "properties": {
+    "import": {
+      "additionalProperties": false,
+      "description": "When set, this kind's generated types are written into the shared types\n package (generators.types.output_dir) and consumers import them via this\n entry instead of inlining. When unset, types are inlined per hook.",
+      "properties": {
+        "name": {
+          "default": "",
+          "description": "Import specifier hooks use, e.g. \"@platform/veil-types/service\".",
+          "type": "string"
+        },
+        "value": {
+          "default": "",
+          "description": "package.json dependency value for the types package, e.g. \"workspace:*\".",
+          "type": "string"
+        }
+      },
+      "title": "Kind Import",
+      "type": "object"
+    },
+    "path": {
+      "default": "",
+      "description": "Path to the kind definition file (kind.json / kind.yaml). Required.",
+      "type": "string"
+    }
+  },
+  "title": "Kind Ref",
+  "type": "object"
+}
