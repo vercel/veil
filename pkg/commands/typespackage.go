@@ -27,7 +27,9 @@ type typesPackage struct {
 // resolveTypesPackage inspects the registry's generators.types output_dir and
 // each kind's import wiring, returning the shared types package to emit — or
 // nil when output_dir is unset or no kind opted in. Errors when opted-in kinds
-// disagree on the package name or omit a module subpath.
+// disagree on the package name or omit a module subpath, or when the
+// repo-owned package.json at output_dir is missing or names a different
+// package than the imports reference (veil manages only its `exports`).
 func resolveTypesPackage(reg *config.Registry) (*typesPackage, error) {
 	dir := reg.TypesOutputDir()
 	if dir == "" {
@@ -65,6 +67,31 @@ func resolveTypesPackage(reg *config.Registry) (*typesPackage, error) {
 	}
 	if tp.name == "" {
 		return nil, nil // output_dir set but nothing opted in
+	}
+
+	// The package.json at output_dir is owned by the repo, not veil — veil
+	// only manages its `exports`. Require it to exist and to declare the same
+	// name the imports reference, so the dependency veil wires into hooks
+	// actually resolves.
+	pkgPath := filepath.Join(dir, "package.json")
+	data, err := os.ReadFile(pkgPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("types package %q has no package.json at %s — create one (veil manages only its `exports`)", tp.name, dir)
+		}
+		return nil, err
+	}
+	m, err := decodePackageJSON(data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", pkgPath, err)
+	}
+	switch name, _ := m["name"].(string); name {
+	case "":
+		return nil, fmt.Errorf("%s must declare a name", pkgPath)
+	case tp.name:
+		// matches the import package — good.
+	default:
+		return nil, fmt.Errorf("%s name %q does not match the import package %q in the `kinds` config", pkgPath, name, tp.name)
 	}
 	return tp, nil
 }
@@ -143,15 +170,18 @@ func (tp *typesPackage) writeKindModule(k *config.Kind, reg *config.Registry, gr
 	return file, nil
 }
 
-// writeManifest writes (or updates) the types package's package.json: its
-// name plus an exports map for ./host and each successfully-built kind module
-// (named in kinds). Called after the per-kind loop so exports never reference
-// a module that a failed build didn't write. Other fields in an existing
-// package.json are preserved.
+// writeManifest updates only the `exports` map of the types package's
+// package.json — an entry for ./host and each successfully-built kind module
+// (named in kinds). Every other field (name, version, private, …) is owned by
+// the repo and left untouched; veil names nothing. Existing exports entries
+// are preserved, so a repo can expose additional ones. Called after the
+// per-kind loop so exports never reference a module a failed build didn't
+// write; the package.json's existence and name are validated up front in
+// resolveTypesPackage.
 func (tp *typesPackage) writeManifest(kinds []string) error {
 	pkgPath := filepath.Join(tp.dir, "package.json")
 	data, err := os.ReadFile(pkgPath)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil {
 		return err
 	}
 	m, err := decodePackageJSON(data)
@@ -159,13 +189,11 @@ func (tp *typesPackage) writeManifest(kinds []string) error {
 		return fmt.Errorf("parsing %s: %w", pkgPath, err)
 	}
 
-	m["name"] = tp.name
-	if _, ok := m["version"]; !ok {
-		m["version"] = "0.0.0"
+	exports, _ := m["exports"].(map[string]any)
+	if exports == nil {
+		exports = map[string]any{}
 	}
-	m["private"] = true
-
-	exports := map[string]any{"./host": "./host.ts"}
+	exports["./host"] = "./host.ts"
 	for _, name := range kinds {
 		sub := tp.subpath[name]
 		exports["./"+sub] = "./" + sub + ".ts"

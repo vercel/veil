@@ -216,6 +216,17 @@ func (s *BuildSuite) TestBuildEmitsTypesPackage() {
   "generators": { "types": { "output_dir": "./types" } }
 }`), 0644))
 
+	// The types package is owned by the repo — veil manages only its
+	// `exports`, so its package.json (name/version/private) must pre-exist.
+	// Use a non-default version to prove veil leaves it untouched.
+	s.Require().NoError(os.MkdirAll(filepath.Join(s.root, "types"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "types", "package.json"), []byte(`{
+  "name": "@platform/veil-types",
+  "version": "1.2.3",
+  "private": true
+}
+`), 0644))
+
 	// --no-typecheck: the scaffolded hook still imports ./veil-types and the
 	// workspace package isn't installed in the test tree, so we assert
 	// emission rather than resolution (that's covered against a real repo).
@@ -244,9 +255,11 @@ func (s *BuildSuite) TestBuildEmitsTypesPackage() {
 	s.NotContains(modStr, "export interface Std")
 	s.NotContains(modStr, "export interface RegistryVariables")
 
-	// package.json: name + exports for ./host and the kind subpath.
+	// package.json: veil added exports for ./host and the kind subpath while
+	// leaving the repo-owned name/version untouched (veil names nothing).
 	pkg := s.readJSON(filepath.Join(typesDir, "package.json"))
 	s.Equal("@platform/veil-types", pkg["name"])
+	s.Equal("1.2.3", pkg["version"]) // not overwritten with 0.0.0
 	exports, ok := pkg["exports"].(map[string]any)
 	s.Require().True(ok)
 	s.Equal("./host.ts", exports["./host"])
@@ -290,6 +303,13 @@ func (s *BuildSuite) TestBuildTypesPackageIsIdempotent() {
   "registries": { "": "./public/r/registry.json" },
   "generators": { "types": { "output_dir": "./types" } }
 }`), 0644))
+	s.Require().NoError(os.MkdirAll(filepath.Join(s.root, "types"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "types", "package.json"), []byte(`{
+  "name": "@platform/veil-types",
+  "version": "0.0.0",
+  "private": true
+}
+`), 0644))
 
 	read := func(p string) string {
 		b, err := os.ReadFile(p)
@@ -380,8 +400,9 @@ func (s *BuildSuite) TestRegisterKindPreservesObjectEntries() {
 }
 
 // TestResolveTypesPackageValidation pins the up-front config guards: an import
-// with no output_dir, and two kinds colliding on the same module subpath, are
-// both rejected rather than silently producing a broken or lossy tree.
+// with no output_dir, two kinds colliding on a module subpath, and a missing
+// or mismatched repo-owned package.json are all rejected rather than silently
+// producing a broken or lossy tree.
 func (s *BuildSuite) TestResolveTypesPackageValidation() {
 	mk := func(name string, imp *veilv1.KindImport) *config.Kind {
 		return &config.Kind{KindDefinition: &veilv1.KindDefinition{Name: name}, Import: imp}
@@ -409,15 +430,32 @@ func (s *BuildSuite) TestResolveTypesPackageValidation() {
 	s.Require().Error(err)
 	s.Contains(err.Error(), "subpath")
 
-	// distinct subpaths + output_dir set -> resolves to one package.
-	tp, err := resolveTypesPackage(&config.Registry{
+	// distinct subpaths, but the repo-owned package.json is missing -> error.
+	distinct := &config.Registry{
 		Root:       s.root,
 		Generators: withTypes,
 		Kinds: []*config.Kind{
 			mk("a", &veilv1.KindImport{Name: "@p/veil-types/a", Value: "workspace:*"}),
 			mk("b", &veilv1.KindImport{Name: "@p/veil-types/b", Value: "workspace:*"}),
 		},
-	})
+	}
+	_, err = resolveTypesPackage(distinct)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "no package.json")
+
+	typesDir := filepath.Join(s.root, "types")
+	s.Require().NoError(os.MkdirAll(typesDir, 0755))
+	pkgPath := filepath.Join(typesDir, "package.json")
+
+	// package.json names a different package than the imports -> error.
+	s.Require().NoError(os.WriteFile(pkgPath, []byte(`{ "name": "@other/types" }`), 0644))
+	_, err = resolveTypesPackage(distinct)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "does not match")
+
+	// matching name -> resolves; veil reads the name, it does not set it.
+	s.Require().NoError(os.WriteFile(pkgPath, []byte(`{ "name": "@p/veil-types", "version": "9.9.9" }`), 0644))
+	tp, err := resolveTypesPackage(distinct)
 	s.Require().NoError(err)
 	s.Require().NotNil(tp)
 	s.Equal("@p/veil-types", tp.name)
