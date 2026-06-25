@@ -486,6 +486,23 @@ func parseKindEntry(v *structpb.Value) (*veilv1.KindRef, error) {
 		}
 		return &veilv1.KindRef{Path: kind.StringValue}, nil
 	case *structpb.Value_StructValue:
+		// Reject unknown keys before unmarshalling: protoencode.Unmarshal uses
+		// DiscardUnknown, so a typo like `imprt:` would otherwise be silently
+		// dropped and the kind would quietly degrade to inline mode with no error.
+		for key := range kind.StructValue.GetFields() {
+			if key != "path" && key != "import" {
+				return nil, fmt.Errorf("kind entry has unknown field %q (allowed: path, import)", key)
+			}
+		}
+		if impVal, ok := kind.StructValue.GetFields()["import"]; ok {
+			if impStruct := impVal.GetStructValue(); impStruct != nil {
+				for key := range impStruct.GetFields() {
+					if key != "name" && key != "value" {
+						return nil, fmt.Errorf("kind entry import has unknown field %q (allowed: name, value)", key)
+					}
+				}
+			}
+		}
 		raw, err := protojson.Marshal(kind.StructValue)
 		if err != nil {
 			return nil, fmt.Errorf("marshalling kind entry: %w", err)

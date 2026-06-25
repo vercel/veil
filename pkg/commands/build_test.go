@@ -520,6 +520,47 @@ func (s *BuildSuite) TestNewKindUsesPackageWhenConfigured() {
 	s.Equal("./worker.ts", exports["./worker"])
 }
 
+// TestBuildRejectsUnknownKindEntryKey proves a typo in a kinds entry's keys
+// (e.g. `imprt` for `import`) is rejected rather than silently dropped — so a
+// kind can't quietly degrade to inline mode under DiscardUnknown.
+func (s *BuildSuite) TestBuildRejectsUnknownKindEntryKey() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
+  "kinds": [
+    { "path": "./.veil/kinds/worker/kind.json", "imprt": { "name": "@scratch/veil/worker", "value": "workspace:*" } }
+  ],
+  "registries": { "": "./public/r/registry.json" },
+  "generators": { "types": { "output_dir": "./types" } }
+}`), 0644))
+	_, err = s.run("build", "--no-typecheck")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "unknown field")
+}
+
+// TestBuildRejectsNonObjectExports proves veil refuses to overwrite a repo's
+// string-form `exports` (a data-loss guard) instead of silently dropping it.
+func (s *BuildSuite) TestBuildRejectsNonObjectExports() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, ".veil", "kinds", "worker", "hooks", "package.json"),
+		[]byte(`{ "name": "@scratch/worker-hooks", "version": "0.0.0", "private": true }`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
+  "kinds": [
+    { "path": "./.veil/kinds/worker/kind.json", "import": { "name": "@scratch/veil/worker", "value": "workspace:*" } }
+  ],
+  "registries": { "": "./public/r/registry.json" },
+  "generators": { "types": { "output_dir": "./types" } }
+}`), 0644))
+	// repo-owned package.json using the string-sugar exports form
+	s.Require().NoError(os.MkdirAll(filepath.Join(s.root, "types"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "types", "package.json"),
+		[]byte(`{ "name": "@scratch/veil", "version": "0.0.0", "exports": "./index.ts" }`), 0644))
+	_, err = s.run("build", "--no-typecheck")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "must be an object")
+}
+
 func (s *BuildSuite) TestBuildTypesFileEmitsEnumUnion() {
 	_, err := s.run("new", "kind", "worker")
 	s.Require().NoError(err)

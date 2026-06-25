@@ -139,9 +139,9 @@ func (tp *typesPackage) hostImportFor(kindName string) string {
 }
 
 // writeShared writes the package's kind-independent host.ts (the shared half
-// every kind module imports). The package.json manifest is written separately
-// by writeManifest after the per-kind loop, so its exports never reference a
-// module a failed build didn't write.
+// every kind module imports). The package.json `exports` are updated
+// incrementally by writeManifest as each kind's module is written in the build
+// loop, so they stay scoped to kinds that actually built.
 func (tp *typesPackage) writeShared(reg *config.Registry) error {
 	if err := os.MkdirAll(tp.dir, 0755); err != nil {
 		return err
@@ -150,13 +150,7 @@ func (tp *typesPackage) writeShared(reg *config.Registry) error {
 	if err != nil {
 		return fmt.Errorf("host types: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(tp.dir, "host.ts"), []byte(host), 0644); err != nil {
-		return err
-	}
-	// Write the package.json exports up front — for every opted-in kind — so a
-	// hook's `@pkg/<kind>` import resolves during the typecheck that follows,
-	// including a brand-new kind whose module this same build generates.
-	return tp.writeManifest()
+	return os.WriteFile(filepath.Join(tp.dir, "host.ts"), []byte(host), 0644)
 }
 
 // writeKindModule writes one kind's generated module (output_dir/<subpath>.ts),
@@ -177,12 +171,14 @@ func (tp *typesPackage) writeKindModule(k *config.Kind, reg *config.Registry, gr
 }
 
 // writeManifest updates only the `exports` map of the types package's
-// package.json — an entry for ./host and one per opted-in kind. Every other
-// field (name, version, private, …) is owned by the repo and left untouched;
-// veil names nothing. Existing exports entries are preserved, so a repo can
-// expose additional ones. The package.json's existence and name are validated
+// package.json — an entry for ./host and one per kind in kinds. Called
+// incrementally from the build loop with the kinds whose module has been
+// written so far, so exports never reference a module that a failed build
+// didn't write. Every other field (name, version, private, …) is owned by the
+// repo and left untouched; veil names nothing, and a repo's own `exports`
+// entries are preserved. The package.json's existence and name are validated
 // up front in resolveTypesPackage.
-func (tp *typesPackage) writeManifest() error {
+func (tp *typesPackage) writeManifest(kinds []string) error {
 	pkgPath := filepath.Join(tp.dir, "package.json")
 	data, err := os.ReadFile(pkgPath)
 	if err != nil {
@@ -193,13 +189,19 @@ func (tp *typesPackage) writeManifest() error {
 		return fmt.Errorf("parsing %s: %w", pkgPath, err)
 	}
 
-	exports, _ := m["exports"].(map[string]any)
+	// veil manages only the generated type-file exports; never clobber a
+	// repo's own `exports` (e.g. the string-sugar form "exports": "./x.ts").
+	existing, present := m["exports"]
+	exports, ok := existing.(map[string]any)
+	if present && !ok {
+		return fmt.Errorf("%s: `exports` must be an object for veil to add per-kind entries (found %T)", pkgPath, existing)
+	}
 	if exports == nil {
 		exports = map[string]any{}
 	}
 	exports["./host"] = "./host.ts"
-	for _, sub := range tp.subpath {
-		exports["./"+sub] = "./" + sub + ".ts"
+	for _, name := range kinds {
+		exports["./"+tp.subpath[name]] = "./" + tp.subpath[name] + ".ts"
 	}
 	m["exports"] = exports
 

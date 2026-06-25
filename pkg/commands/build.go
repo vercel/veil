@@ -204,6 +204,7 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 	}
 
 	var errs []error
+	var builtImportKinds []string // import kinds whose module was written, for the manifest
 	for _, k := range reg.Kinds {
 		if err := validateKind(k); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", k.Name, err))
@@ -251,6 +252,15 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 				// package.json sits directly under it.
 				if err := ensureTypesDep(filepath.Join(k.Dir, "hooks"), k.Dir, tp.name, k.Import.GetValue()); err != nil {
 					errs = append(errs, fmt.Errorf("%s: wiring types dependency: %w", k.Name, err))
+					continue
+				}
+				// Update the package exports now the module is written —
+				// scoped to kinds built so far — so this kind's `@pkg/<kind>`
+				// import resolves in the typecheck below, while a kind that
+				// failed earlier is never exported to a missing module.
+				builtImportKinds = append(builtImportKinds, k.Name)
+				if err := tp.writeManifest(builtImportKinds); err != nil {
+					errs = append(errs, fmt.Errorf("%s: writing types package manifest: %w", k.Name, err))
 					continue
 				}
 				typesPath = cwdRel(file)
