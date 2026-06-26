@@ -46,16 +46,35 @@
           "default": "",
           "description": "Directory where `veil new kind` writes a new kind's tree, relative\n to the directory housing veil.json. `veil new hook` follows the\n existing kind on disk so this only affects newly created kinds.\n Defaults to `.veil/kinds` when unset.",
           "type": "string"
+        },
+        "types": {
+          "additionalProperties": false,
+          "description": "Configures the shared types package (see Types). When set, kinds whose\n `kinds` entry carries an `import` write their generated veil-types into\n the package's output_dir and their hooks import them by package\n specifier; kinds without an `import` keep inlining types per hook.",
+          "patternProperties": {
+            "^(outputDir)$": {
+              "default": "",
+              "description": "Directory (relative to the directory housing veil.json) where `veil\n build` writes the types package: its package.json, the shared\n host-types module, and one module per opted-in kind.",
+              "type": "string"
+            }
+          },
+          "properties": {
+            "output_dir": {
+              "default": "",
+              "description": "Directory (relative to the directory housing veil.json) where `veil\n build` writes the types package: its package.json, the shared\n host-types module, and one module per opted-in kind.",
+              "type": "string"
+            }
+          },
+          "title": "Types",
+          "type": "object"
         }
       },
       "title": "Generators",
       "type": "object"
     },
     "kinds": {
-      "description": "Relative or absolute paths to kind definition files. May be empty —\n a project with no kinds is valid (it can still depend on kinds\n published by aliased registries).",
+      "description": "Kind references — each a bare path string or a {path, import?} object\n that the config loader narrows into a KindRef. May be empty — a project\n with no kinds is valid (it can still depend on kinds published by aliased\n registries). The {path, import} object form opts the kind's generated\n types into the shared types package (generators.types).",
       "items": {
-        "minLength": 1,
-        "type": "string"
+        "title": "Value"
       },
       "type": "array"
     },

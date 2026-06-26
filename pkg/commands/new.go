@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
+	"strings"
 
 	"github.com/goccy/go-json"
 	"github.com/urfave/cli/v3"
@@ -154,6 +154,25 @@ func runNewKind(ctx context.Context, c *cli.Command) (*newResponse, error) {
 		return nil, fmt.Errorf("directory %s already exists", kindDir)
 	}
 
+	// When a shared types package is configured, scaffold the kind in package
+	// mode: its hook imports the package (and `veil build` emits the kind's
+	// module) rather than a local veil-types.ts. typesPkgName is the
+	// repo-owned package name; importName ("" in inline mode) drives how the
+	// kind is registered in veil.json.
+	typesImport := "./veil-types"
+	typesPkgName := ""
+	importName := ""
+	importValue := ""
+	if typesDir := reg.TypesOutputDir(); typesDir != "" {
+		typesPkgName, err = typesPackageName(typesDir)
+		if err != nil {
+			return nil, err
+		}
+		typesImport = typesPkgName + "/" + name
+		importName = typesImport
+		importValue = "workspace:*"
+	}
+
 	sourcesDir := filepath.Join(kindDir, "sources")
 	hookSrcDir := filepath.Join(kindDir, "hooks", "src")
 	if err := os.MkdirAll(sourcesDir, 0755); err != nil {
@@ -180,9 +199,27 @@ func runNewKind(ctx context.Context, c *cli.Command) (*newResponse, error) {
 		return nil, fmt.Errorf("writing source.txt: %w", err)
 	}
 
-	helloTS := build.HookTemplate("hello-world")
+	helloTS := build.HookTemplate("hello-world", typesImport)
 	if err := os.WriteFile(filepath.Join(hookSrcDir, "hello-world.ts"), []byte(helloTS), 0644); err != nil {
 		return nil, fmt.Errorf("writing hello-world.ts: %w", err)
+	}
+
+	// In package mode the hooks dir is a workspace package that depends on the
+	// shared types package, so `veil build` can wire and resolve the import.
+	if typesPkgName != "" {
+		hooksName := name + "-hooks"
+		if scope, _, ok := strings.Cut(typesPkgName, "/"); ok && strings.HasPrefix(typesPkgName, "@") {
+			hooksName = scope + "/" + hooksName
+		}
+		hooksPkg := map[string]any{
+			"name":            hooksName,
+			"version":         "0.0.0",
+			"private":         true,
+			"devDependencies": map[string]any{typesPkgName: importValue},
+		}
+		if err := writeJSON(filepath.Join(kindDir, "hooks", "package.json"), hooksPkg); err != nil {
+			return nil, err
+		}
 	}
 
 	kindJSON := map[string]any{
@@ -210,7 +247,7 @@ func runNewKind(ctx context.Context, c *cli.Command) (*newResponse, error) {
 		return nil, fmt.Errorf("computing relative kind path: %w", err)
 	}
 	relKind := "./" + filepath.ToSlash(rel)
-	if err := registerKindInVeilJSON(configPath, relKind); err != nil {
+	if err := registerKindInVeilJSON(configPath, relKind, importName, importValue); err != nil {
 		return nil, err
 	}
 	rb.restoreFile(configPath, prevVeil)
@@ -297,7 +334,7 @@ func runNewHookOnKind(ctx context.Context, cwd, name, kindName string) (*newResp
 		return nil, fmt.Errorf("creating hooks directory: %w", err)
 	}
 
-	ts := build.HookTemplate(name)
+	ts := build.HookTemplate(name, hookTypesImport(k))
 	if err := os.WriteFile(outPath, []byte(ts), 0644); err != nil {
 		return nil, fmt.Errorf("writing hook: %w", err)
 	}
@@ -375,15 +412,10 @@ func runNewHookOnResource(cwd, name, resourcePath string) (*newResponse, error) 
 	if err != nil {
 		return nil, fmt.Errorf("building kind graph: %w", err)
 	}
-	types, err := build.VeilTypes(k, reg.Variables, graph)
-	if err != nil {
-		return nil, fmt.Errorf("generating veil-types.ts for resource hook: %w", err)
-	}
 
 	resourceDir := filepath.Dir(abs)
 	hooksDir := filepath.Join(resourceDir, "hooks")
 	outPath := filepath.Join(hooksDir, name+".ts")
-	typesPath := filepath.Join(hooksDir, "veil-types.ts")
 	if _, err := os.Stat(outPath); err == nil {
 		return nil, fmt.Errorf("hook %s already exists", outPath)
 	}
@@ -395,26 +427,54 @@ func runNewHookOnResource(cwd, name, resourcePath string) (*newResponse, error) 
 		return nil, fmt.Errorf("creating hooks directory: %w", err)
 	}
 
-	// veil-types.ts may already exist (from a prior `veil new hook
-	// --resource` on the same resource). Overwrite either way — the
-	// output is fully derived from the current kind state. Snapshot
-	// the prior bytes so a downstream failure restores them.
-	typesExists := false
-	var prevTypes []byte
-	if data, err := os.ReadFile(typesPath); err == nil {
-		typesExists = true
-		prevTypes = data
-	}
-	if err := os.WriteFile(typesPath, []byte(types), 0644); err != nil {
-		return nil, fmt.Errorf("writing veil-types.ts: %w", err)
-	}
-	if typesExists {
-		rb.restoreFile(typesPath, prevTypes)
+	if k.Import != nil {
+		// Package mode: the kind's types live in the shared types package, so
+		// wire the resource's hooks package.json to depend on it instead of
+		// writing a per-resource veil-types.ts. The module itself is emitted
+		// by `veil build` on the kind path.
+		pkg, _ := build.SplitImportSpecifier(k.Import.GetName())
+		// Floor the search at the resource's own directory so the dependency
+		// never lands in an unrelated ancestor manifest (a service's app
+		// package.json or the monorepo root).
+		pkgPath := nearestPackageJSON(hooksDir, resourceDir)
+		var prevPkg []byte
+		if pkgPath != "" {
+			prevPkg, _ = os.ReadFile(pkgPath)
+		}
+		if err := ensureTypesDep(hooksDir, resourceDir, pkg, k.Import.GetValue()); err != nil {
+			return nil, fmt.Errorf("wiring types dependency: %w", err)
+		}
+		if pkgPath != "" && prevPkg != nil {
+			rb.restoreFile(pkgPath, prevPkg)
+		}
 	} else {
-		rb.removeFile(typesPath)
+		// Inline mode: generate the veil-types.ts next to the hook so its
+		// `import … from './veil-types'` resolves. It may already exist (from
+		// a prior `veil new hook --resource` on the same resource); overwrite
+		// either way — the output is fully derived from the current kind
+		// state. Snapshot prior bytes so a downstream failure restores them.
+		types, err := build.VeilTypes(k, reg.Variables, graph, "")
+		if err != nil {
+			return nil, fmt.Errorf("generating veil-types.ts for resource hook: %w", err)
+		}
+		typesPath := filepath.Join(hooksDir, "veil-types.ts")
+		typesExists := false
+		var prevTypes []byte
+		if data, err := os.ReadFile(typesPath); err == nil {
+			typesExists = true
+			prevTypes = data
+		}
+		if err := os.WriteFile(typesPath, []byte(types), 0644); err != nil {
+			return nil, fmt.Errorf("writing veil-types.ts: %w", err)
+		}
+		if typesExists {
+			rb.restoreFile(typesPath, prevTypes)
+		} else {
+			rb.removeFile(typesPath)
+		}
 	}
 
-	ts := build.HookTemplate(name)
+	ts := build.HookTemplate(name, hookTypesImport(k))
 	if err := os.WriteFile(outPath, []byte(ts), 0644); err != nil {
 		return nil, fmt.Errorf("writing hook: %w", err)
 	}
@@ -708,33 +768,70 @@ func writeJSON(path string, v any) error {
 	return nil
 }
 
-// registerKindInVeilJSON appends relKind to the kinds[] array in the
-// project config file (veil.json, veil.yaml, or veil.yml), preserving
-// the existing list. The file format is detected by extension; YAML
-// files round-trip back to YAML.
-func registerKindInVeilJSON(configPath, relKind string) error {
+// registerKindInVeilJSON appends relKind to the kinds[] array in the project
+// config file (veil.json, veil.yaml, or veil.yml), preserving the existing
+// list. When importName is non-empty the kind is added in the object form
+// `{path, import: {name, value}}` (package mode); otherwise as a bare path
+// string. The file format is detected by extension; YAML round-trips to YAML.
+func registerKindInVeilJSON(configPath, relKind, importName, importValue string) error {
 	return mutateGeneric(configPath, func(cfg map[string]any) error {
-		var kinds []string
+		var kinds []any
 		if raw, ok := cfg["kinds"]; ok && raw != nil {
 			arr, ok := raw.([]any)
 			if !ok {
 				return fmt.Errorf("%s: \"kinds\" must be an array", configPath)
 			}
-			for _, v := range arr {
-				s, ok := v.(string)
-				if !ok {
-					return fmt.Errorf("%s: \"kinds\" entries must be strings", configPath)
+			kinds = arr
+		}
+		// A kinds entry is either a bare path string or a {path, import?}
+		// object. Preserve existing entries (including the object form)
+		// untouched and append the new path only if absent — dedupe by path.
+		for _, v := range kinds {
+			switch entry := v.(type) {
+			case string:
+				if entry == relKind {
+					return nil
 				}
-				kinds = append(kinds, s)
+			case map[string]any:
+				if p, _ := entry["path"].(string); p == relKind {
+					return nil
+				}
+			default:
+				return fmt.Errorf("%s: \"kinds\" entries must be a path string or {path, import?} object", configPath)
 			}
 		}
-		if slices.Contains(kinds, relKind) {
-			return nil
+		var entry any = relKind
+		if importName != "" {
+			entry = map[string]any{
+				"path":   relKind,
+				"import": map[string]any{"name": importName, "value": importValue},
+			}
 		}
-		kinds = append(kinds, relKind)
-		cfg["kinds"] = kinds
+		cfg["kinds"] = append(kinds, entry)
 		return nil
 	})
+}
+
+// typesPackageName reads the repo-owned name of the shared types package at
+// typesDir. veil never sets this name — it requires the package.json to exist
+// and declare one, so package-mode imports resolve to a real package.
+func typesPackageName(typesDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(typesDir, "package.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("types package has no package.json at %s — create one (with a name) before scaffolding a package-mode kind", typesDir)
+		}
+		return "", err
+	}
+	m, err := decodePackageJSON(data)
+	if err != nil {
+		return "", fmt.Errorf("parsing %s/package.json: %w", typesDir, err)
+	}
+	name, _ := m["name"].(string)
+	if name == "" {
+		return "", fmt.Errorf("%s/package.json must declare a name", typesDir)
+	}
+	return name, nil
 }
 
 // appendHookToResource appends relHook to the resource file's

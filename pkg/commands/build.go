@@ -187,7 +187,24 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 		return nil, fmt.Errorf("building kind graph: %w", err)
 	}
 
+	// Resolve the shared types package (generators.types) once. nil when no
+	// kind opts in — every kind then falls back to its inline veil-types.ts.
+	// Skipped for in-memory builds, which must not touch the source tree.
+	var tp *typesPackage
+	if opts.writeTypes {
+		tp, err = resolveTypesPackage(reg)
+		if err != nil {
+			return nil, fmt.Errorf("resolving types package: %w", err)
+		}
+		if tp != nil {
+			if err := tp.writeShared(reg); err != nil {
+				return nil, fmt.Errorf("writing types package: %w", err)
+			}
+		}
+	}
+
 	var errs []error
+	var builtImportKinds []string // import kinds whose module was written, for the manifest
 	for _, k := range reg.Kinds {
 		if err := validateKind(k); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", k.Name, err))
@@ -219,11 +236,41 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 		// not write into the source tree.
 		typesPath := ""
 		if opts.writeTypes {
-			if err := writeKindTypes(k, reg.Variables, graph); err != nil {
-				errs = append(errs, fmt.Errorf("%s: writing types: %w", k.Name, err))
-				continue
+			if tp.has(k.Name) {
+				// Package mode: write the kind's module into the shared types
+				// package and wire its hooks' package.json to depend on it,
+				// instead of emitting a per-hook veil-types.ts.
+				file, err := tp.writeKindModule(k, reg, graph)
+				if err != nil {
+					errs = append(errs, fmt.Errorf("%s: writing types: %w", k.Name, err))
+					continue
+				}
+				// Drop any stale inline veil-types.ts left from before the
+				// kind opted into the shared package.
+				_ = os.Remove(filepath.Join(k.Dir, "hooks", "src", "veil-types.ts"))
+				// Floor the dependency search at the kind dir — the hooks
+				// package.json sits directly under it.
+				if err := ensureTypesDep(filepath.Join(k.Dir, "hooks"), k.Dir, tp.name, k.Import.GetValue()); err != nil {
+					errs = append(errs, fmt.Errorf("%s: wiring types dependency: %w", k.Name, err))
+					continue
+				}
+				// Update the package exports now the module is written —
+				// scoped to kinds built so far — so this kind's `@pkg/<kind>`
+				// import resolves in the typecheck below, while a kind that
+				// failed earlier is never exported to a missing module.
+				builtImportKinds = append(builtImportKinds, k.Name)
+				if err := tp.writeManifest(builtImportKinds); err != nil {
+					errs = append(errs, fmt.Errorf("%s: writing types package manifest: %w", k.Name, err))
+					continue
+				}
+				typesPath = cwdRel(file)
+			} else {
+				if err := writeKindTypes(k, reg.Variables, graph); err != nil {
+					errs = append(errs, fmt.Errorf("%s: writing types: %w", k.Name, err))
+					continue
+				}
+				typesPath = cwdRel(filepath.Join(k.Dir, "hooks", "src", "veil-types.ts"))
 			}
-			typesPath = cwdRel(filepath.Join(k.Dir, "hooks", "src", "veil-types.ts"))
 		}
 
 		if checker != nil {
@@ -296,7 +343,7 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 	// hooks do. Gated on resourceTypes (only a full `veil build`), so
 	// `veil new` and in-memory render builds never touch the source tree.
 	if opts.resourceTypes {
-		resources, err := regenResourceTypes(ctx, reg, graph, fsys)
+		resources, err := regenResourceTypes(ctx, reg, graph, fsys, tp)
 		if err != nil {
 			return nil, fmt.Errorf("regenerating resource hook types: %w", err)
 		}
@@ -477,7 +524,7 @@ func compileDependents(k *config.Kind, projectRoot string, fsys fs.FS) ([]*veilv
 // the package.json sitting one level up at hooks/ stays separate from
 // the source code.
 func writeKindTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph *build.KindGraph) error {
-	ts, err := build.VeilTypes(k, variables, graph)
+	ts, err := build.VeilTypes(k, variables, graph, "")
 	if err != nil {
 		return err
 	}
@@ -497,7 +544,7 @@ func writeKindTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph
 // scaffold time. Resources without render hooks have nothing to type and
 // are skipped. Per-resource errors are collected so one bad resource
 // doesn't mask the rest, then returned joined.
-func regenResourceTypes(ctx context.Context, reg *config.Registry, graph *build.KindGraph, fsys fs.FS) ([]regeneratedResource, error) {
+func regenResourceTypes(ctx context.Context, reg *config.Registry, graph *build.KindGraph, fsys fs.FS, tp *typesPackage) ([]regeneratedResource, error) {
 	p := interact.Default()
 	if reg.ResourceDiscovery == nil {
 		return nil, nil
@@ -534,15 +581,23 @@ func regenResourceTypes(ctx context.Context, reg *config.Registry, graph *build.
 			errs = append(errs, fmt.Errorf("%s: references kind %q not registered in veil.json", h.Path, h.Kind))
 			continue
 		}
-		ts, err := build.VeilTypes(k, reg.Variables, graph)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: generating types: %w", h.Path, err))
-			continue
+		// Package-mode kinds expose their types through the shared package
+		// (written on the kind path); resource hooks import that package, so
+		// here we only wire the dependency — no per-resource veil-types.ts to
+		// generate. Inline kinds still get a freshly-generated veil-types.ts.
+		var ts string
+		if !tp.has(k.Name) {
+			ts, err = build.VeilTypes(k, reg.Variables, graph, "")
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: generating types: %w", h.Path, err))
+				continue
+			}
 		}
-		// A resource hook imports `./veil-types`, so the file must sit in
-		// the same directory as the hook. Write one per distinct hook dir
-		// (normally just <resourceDir>/hooks).
+		// A resource hook imports its types from the same directory (inline:
+		// `./veil-types`) or the shared package (package mode), so act once
+		// per distinct hook dir (normally just <resourceDir>/hooks).
 		resourceDir := filepath.Dir(h.Path)
+		resourceDirAbs := filepath.Join(reg.Root, resourceDir)
 		written := make(map[string]struct{})
 		for _, def := range r.RenderHooks {
 			dir := filepath.Join(reg.Root, resourceDir, filepath.Dir(def.GetPath()))
@@ -550,6 +605,31 @@ func regenResourceTypes(ctx context.Context, reg *config.Registry, graph *build.
 				continue
 			}
 			written[dir] = struct{}{}
+
+			if tp.has(k.Name) {
+				// Floor the search at the resource dir so the dependency never
+				// lands in an unrelated ancestor manifest (a service's app
+				// package.json or the monorepo root). With no package.json of
+				// its own, warn and skip rather than polluting an ancestor.
+				pkgPath := nearestPackageJSON(dir, resourceDirAbs)
+				if pkgPath == "" {
+					p.Warnf("skipping types dependency for %s: no package.json under %s", h.Name, cwdRel(resourceDirAbs))
+					continue
+				}
+				if err := addDepToPackageJSON(pkgPath, tp.name, k.Import.GetValue()); err != nil {
+					errs = append(errs, fmt.Errorf("%s: wiring types dependency: %w", h.Path, err))
+					continue
+				}
+				// Drop any stale inline veil-types.ts beside the resource hook.
+				_ = os.Remove(filepath.Join(dir, "veil-types.ts"))
+				out = append(out, regeneratedResource{
+					Path: cwdRel(filepath.Join(reg.Root, h.Path)),
+					Kind: h.Kind,
+				})
+				p.Successf("Wired resource types dependency for %s", h.Name)
+				continue
+			}
+
 			if err := os.MkdirAll(dir, 0755); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", h.Path, err))
 				continue

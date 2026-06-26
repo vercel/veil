@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "KindImport is the package.json dependency entry a consumer uses to import\n this kind's generated types from the shared types package.",
+  "properties": {
+    "name": {
+      "default": "",
+      "description": "Import specifier hooks use, e.g. \"@platform/veil-types/service\".",
+      "type": "string"
+    },
+    "value": {
+      "default": "",
+      "description": "package.json dependency value for the types package, e.g. \"workspace:*\".",
+      "type": "string"
+    }
+  },
+  "title": "Kind Import",
+  "type": "object"
+}

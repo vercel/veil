@@ -7,11 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/suite"
 
+	veilv1 "github.com/vercel/veil/api/go/veil/v1"
+	"github.com/vercel/veil/pkg/config"
 	"github.com/vercel/veil/pkg/embeds"
 )
 
@@ -180,6 +183,382 @@ func (s *BuildSuite) TestBuildRegeneratesResourceHookTypes() {
 
 	// The hook-less resource never gets a hooks/veil-types.ts.
 	s.NoFileExists(filepath.Join(bareDir, "hooks", "veil-types.ts"))
+}
+
+// TestBuildEmitsTypesPackage proves a kind whose `kinds` entry carries an
+// `import` (the object form) emits its types into the shared package at
+// generators.types.output_dir — host.ts once, a per-kind module importing it,
+// a package.json with name + exports — and wires the kind's hooks/package.json
+// to depend on it, instead of an inline per-hook veil-types.ts.
+func (s *BuildSuite) TestBuildEmitsTypesPackage() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	// A hooks/package.json the build can wire the types dependency into
+	// (mirrors the per-kind hooks package every real kind ships).
+	hooksPkg := filepath.Join(s.root, ".veil", "kinds", "worker", "hooks", "package.json")
+	s.Require().NoError(os.WriteFile(hooksPkg, []byte(`{
+  "name": "@platform/worker-hooks",
+  "version": "0.0.0",
+  "private": true,
+  "devDependencies": {
+    "kubernetes-types": "^1.30.0"
+  }
+}
+`), 0644))
+
+	// Opt the worker kind into the shared types package via the object form.
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
+  "kinds": [
+    { "path": "./.veil/kinds/worker/kind.json", "import": { "name": "@platform/veil-types/worker", "value": "workspace:*" } }
+  ],
+  "registries": { "": "./public/r/registry.json" },
+  "generators": { "types": { "output_dir": "./types" } }
+}`), 0644))
+
+	// The types package is owned by the repo — veil manages only its
+	// `exports`, so its package.json (name/version/private) must pre-exist.
+	// Use a non-default version to prove veil leaves it untouched.
+	s.Require().NoError(os.MkdirAll(filepath.Join(s.root, "types"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "types", "package.json"), []byte(`{
+  "name": "@platform/veil-types",
+  "version": "1.2.3",
+  "private": true
+}
+`), 0644))
+
+	// --no-typecheck: the scaffolded hook still imports ./veil-types and the
+	// workspace package isn't installed in the test tree, so we assert
+	// emission rather than resolution (that's covered against a real repo).
+	_, err = s.run("build", "--no-typecheck")
+	s.Require().NoError(err)
+
+	typesDir := filepath.Join(s.root, "types")
+
+	// host.ts holds the shared, kind-independent declarations once.
+	host, err := os.ReadFile(filepath.Join(typesDir, "host.ts"))
+	s.Require().NoError(err)
+	hostStr := string(host)
+	s.Contains(hostStr, "export interface Std")
+	s.Contains(hostStr, "export interface Resource<")
+	s.Contains(hostStr, "export interface RegistryVariables")
+	s.Contains(hostStr, "export type ValidationResult")
+
+	// The kind module imports the shared half from ./host and holds only the
+	// per-kind types — the shared types are not re-declared.
+	mod, err := os.ReadFile(filepath.Join(typesDir, "worker.ts"))
+	s.Require().NoError(err)
+	modStr := string(mod)
+	s.Contains(modStr, "from './host'")
+	s.Contains(modStr, "export interface WorkerSpec")
+	s.Contains(modStr, "export interface RenderHook")
+	s.NotContains(modStr, "export interface Std")
+	s.NotContains(modStr, "export interface RegistryVariables")
+
+	// package.json: veil added exports for ./host and the kind subpath while
+	// leaving the repo-owned name/version untouched (veil names nothing).
+	pkg := s.readJSON(filepath.Join(typesDir, "package.json"))
+	s.Equal("@platform/veil-types", pkg["name"])
+	s.Equal("1.2.3", pkg["version"]) // not overwritten with 0.0.0
+	exports, ok := pkg["exports"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal("./host.ts", exports["./host"])
+	s.Equal("./worker.ts", exports["./worker"])
+
+	// The hooks package.json gained the types dependency in devDependencies,
+	// preserving the pre-existing entry.
+	hp := s.readJSON(hooksPkg)
+	dev, ok := hp["devDependencies"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal("workspace:*", dev["@platform/veil-types"])
+	s.Equal("^1.30.0", dev["kubernetes-types"])
+
+	// No inline per-hook veil-types.ts for an import kind — the stale one
+	// scaffolding wrote is removed.
+	s.NoFileExists(filepath.Join(s.root, ".veil", "kinds", "worker", "hooks", "src", "veil-types.ts"))
+}
+
+// TestBuildTypesPackageIsIdempotent proves a second build produces
+// byte-identical package artifacts — including the consuming hooks
+// package.json — so re-running `veil build` never churns the tree. This
+// exercises the hand-rolled package.json encoder (top-level order preserved,
+// dependency maps stable) and the ensureTypesDep already-present no-op.
+func (s *BuildSuite) TestBuildTypesPackageIsIdempotent() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+	hooksPkg := filepath.Join(s.root, ".veil", "kinds", "worker", "hooks", "package.json")
+	s.Require().NoError(os.WriteFile(hooksPkg, []byte(`{
+  "name": "@platform/worker-hooks",
+  "version": "0.0.0",
+  "private": true,
+  "devDependencies": {
+    "kubernetes-types": "^1.30.0"
+  }
+}
+`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
+  "kinds": [
+    { "path": "./.veil/kinds/worker/kind.json", "import": { "name": "@platform/veil-types/worker", "value": "workspace:*" } }
+  ],
+  "registries": { "": "./public/r/registry.json" },
+  "generators": { "types": { "output_dir": "./types" } }
+}`), 0644))
+	s.Require().NoError(os.MkdirAll(filepath.Join(s.root, "types"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "types", "package.json"), []byte(`{
+  "name": "@platform/veil-types",
+  "version": "0.0.0",
+  "private": true
+}
+`), 0644))
+
+	read := func(p string) string {
+		b, err := os.ReadFile(p)
+		s.Require().NoError(err)
+		return string(b)
+	}
+
+	_, err = s.run("build", "--no-typecheck")
+	s.Require().NoError(err)
+	typesDir := filepath.Join(s.root, "types")
+	pkg1 := read(filepath.Join(typesDir, "package.json"))
+	host1 := read(filepath.Join(typesDir, "host.ts"))
+	mod1 := read(filepath.Join(typesDir, "worker.ts"))
+	hooks1 := read(hooksPkg)
+
+	_, err = s.run("build", "--no-typecheck")
+	s.Require().NoError(err)
+	s.Equal(pkg1, read(filepath.Join(typesDir, "package.json")), "types package.json must be byte-stable")
+	s.Equal(host1, read(filepath.Join(typesDir, "host.ts")), "host.ts must be byte-stable")
+	s.Equal(mod1, read(filepath.Join(typesDir, "worker.ts")), "kind module must be byte-stable")
+	s.Equal(hooks1, read(hooksPkg), "consuming hooks package.json must be byte-stable (no dep churn)")
+}
+
+// TestAddDepPreservesSpecialCharsAndOrder proves wiring the types dependency
+// into an existing package.json leaves unrelated fields byte-faithful: &, &&,
+// and > in npm scripts / repository URLs are NOT HTML-escaped, and the
+// top-level key order is preserved (not reordered alphabetically).
+func (s *BuildSuite) TestAddDepPreservesSpecialCharsAndOrder() {
+	pkg := filepath.Join(s.root, "package.json")
+	s.Require().NoError(os.WriteFile(pkg, []byte(`{
+  "name": "@platform/worker-hooks",
+  "scripts": {
+    "build": "tsc -b && eslint .",
+    "clean": "rm -rf dist > /dev/null"
+  },
+  "repository": "https://example.com/r?path=hooks&ref=main",
+  "devDependencies": {
+    "kubernetes-types": "^1.30.0"
+  }
+}
+`), 0644))
+
+	s.Require().NoError(addDepToPackageJSON(pkg, "@platform/veil-types", "workspace:*"))
+
+	got, err := os.ReadFile(pkg)
+	s.Require().NoError(err)
+	gs := string(got)
+	s.Contains(gs, `"@platform/veil-types": "workspace:*"`)
+	s.Contains(gs, "tsc -b && eslint .")
+	s.Contains(gs, "rm -rf dist > /dev/null")
+	s.Contains(gs, "?path=hooks&ref=main")
+	s.NotContains(gs, "&amp;")
+	s.NotContains(gs, "&gt;")
+	// Top-level key order preserved (not reordered alphabetically).
+	s.Less(strings.Index(gs, `"name"`), strings.Index(gs, `"scripts"`))
+	s.Less(strings.Index(gs, `"repository"`), strings.Index(gs, `"devDependencies"`))
+}
+
+// TestRegisterKindPreservesObjectEntries proves `veil new kind` can append to a
+// project whose `kinds` already uses the object form ({path, import}) — the
+// object entries are preserved verbatim, dedupe is by path, and the new kind is
+// appended as a bare path string.
+func (s *BuildSuite) TestRegisterKindPreservesObjectEntries() {
+	cfg := filepath.Join(s.root, "veil.json")
+	s.Require().NoError(os.WriteFile(cfg, []byte(`{
+  "kinds": [
+    { "path": "./a/kind.json", "import": { "name": "@p/veil-types/a", "value": "workspace:*" } },
+    "./b/kind.json"
+  ],
+  "registries": { "": "./public/r/registry.json" }
+}`), 0644))
+
+	s.Require().NoError(registerKindInVeilJSON(cfg, "./c/kind.json", "", ""))
+	out := s.readJSON(cfg)
+	kinds, ok := out["kinds"].([]any)
+	s.Require().True(ok)
+	s.Require().Len(kinds, 3)
+	obj, ok := kinds[0].(map[string]any)
+	s.Require().True(ok)
+	s.Equal("./a/kind.json", obj["path"])
+	s.Equal("./b/kind.json", kinds[1])
+	s.Equal("./c/kind.json", kinds[2])
+
+	// Idempotent: re-registering an existing path (object or string) is a no-op.
+	s.Require().NoError(registerKindInVeilJSON(cfg, "./a/kind.json", "", ""))
+	s.Require().NoError(registerKindInVeilJSON(cfg, "./b/kind.json", "", ""))
+	s.Require().Len(s.readJSON(cfg)["kinds"].([]any), 3)
+}
+
+// TestResolveTypesPackageValidation pins the up-front config guards: an import
+// with no output_dir, two kinds colliding on a module subpath, and a missing
+// or mismatched repo-owned package.json are all rejected rather than silently
+// producing a broken or lossy tree.
+func (s *BuildSuite) TestResolveTypesPackageValidation() {
+	mk := func(name string, imp *veilv1.KindImport) *config.Kind {
+		return &config.Kind{KindDefinition: &veilv1.KindDefinition{Name: name}, Import: imp}
+	}
+	withTypes := &veilv1.Generators{Types: &veilv1.Types{OutputDir: "./types"}}
+
+	// import set but output_dir unset -> error.
+	_, err := resolveTypesPackage(&config.Registry{
+		Root:       s.root,
+		Generators: &veilv1.Generators{},
+		Kinds:      []*config.Kind{mk("a", &veilv1.KindImport{Name: "@p/veil-types/a", Value: "workspace:*"})},
+	})
+	s.Require().Error(err)
+	s.Contains(err.Error(), "output_dir is unset")
+
+	// two kinds colliding on the same subpath -> error.
+	_, err = resolveTypesPackage(&config.Registry{
+		Root:       s.root,
+		Generators: withTypes,
+		Kinds: []*config.Kind{
+			mk("a", &veilv1.KindImport{Name: "@p/veil-types/shared", Value: "workspace:*"}),
+			mk("b", &veilv1.KindImport{Name: "@p/veil-types/shared", Value: "workspace:*"}),
+		},
+	})
+	s.Require().Error(err)
+	s.Contains(err.Error(), "subpath")
+
+	// distinct subpaths, but the repo-owned package.json is missing -> error.
+	distinct := &config.Registry{
+		Root:       s.root,
+		Generators: withTypes,
+		Kinds: []*config.Kind{
+			mk("a", &veilv1.KindImport{Name: "@p/veil-types/a", Value: "workspace:*"}),
+			mk("b", &veilv1.KindImport{Name: "@p/veil-types/b", Value: "workspace:*"}),
+		},
+	}
+	_, err = resolveTypesPackage(distinct)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "no package.json")
+
+	typesDir := filepath.Join(s.root, "types")
+	s.Require().NoError(os.MkdirAll(typesDir, 0755))
+	pkgPath := filepath.Join(typesDir, "package.json")
+
+	// package.json names a different package than the imports -> error.
+	s.Require().NoError(os.WriteFile(pkgPath, []byte(`{ "name": "@other/types" }`), 0644))
+	_, err = resolveTypesPackage(distinct)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "does not match")
+
+	// matching name -> resolves; veil reads the name, it does not set it.
+	s.Require().NoError(os.WriteFile(pkgPath, []byte(`{ "name": "@p/veil-types", "version": "9.9.9" }`), 0644))
+	tp, err := resolveTypesPackage(distinct)
+	s.Require().NoError(err)
+	s.Require().NotNil(tp)
+	s.Equal("@p/veil-types", tp.name)
+}
+
+// TestNewKindUsesPackageWhenConfigured proves `veil new kind` scaffolds in
+// package mode when generators.types is set — the hook imports the shared
+// package (not a local veil-types.ts), a hooks/package.json carries the
+// workspace dep, the kind registers in object form, and the kind's module is
+// emitted into the package and exported.
+func (s *BuildSuite) TestNewKindUsesPackageWhenConfigured() {
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
+  "kinds": [],
+  "registries": { "": "./public/r/registry.json" },
+  "generators": { "types": { "output_dir": "./types" } }
+}`), 0644))
+	// repo-owned types package.json (veil never names it)
+	s.Require().NoError(os.MkdirAll(filepath.Join(s.root, "types"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "types", "package.json"), []byte(`{
+  "name": "@scratch/veil",
+  "version": "0.0.0",
+  "private": true
+}`), 0644))
+	// make the package resolvable so the build's typecheck (if a compiler is
+	// present) finds @scratch/veil/<kind>
+	s.Require().NoError(os.MkdirAll(filepath.Join(s.root, "node_modules", "@scratch"), 0755))
+	s.Require().NoError(os.Symlink(filepath.Join(s.root, "types"), filepath.Join(s.root, "node_modules", "@scratch", "veil")))
+
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	// registered in object form with the import
+	cfg := s.readJSON(filepath.Join(s.root, "veil.json"))
+	kinds, ok := cfg["kinds"].([]any)
+	s.Require().True(ok)
+	s.Require().Len(kinds, 1)
+	entry, ok := kinds[0].(map[string]any)
+	s.Require().True(ok, "kind should be registered in object form")
+	imp, ok := entry["import"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal("@scratch/veil/worker", imp["name"])
+	s.Equal("workspace:*", imp["value"])
+
+	// hook imports the package; no inline veil-types.ts
+	hook, err := os.ReadFile(filepath.Join(s.root, ".veil", "kinds", "worker", "hooks", "src", "hello-world.ts"))
+	s.Require().NoError(err)
+	s.Contains(string(hook), "from '@scratch/veil/worker'")
+	s.NoFileExists(filepath.Join(s.root, ".veil", "kinds", "worker", "hooks", "src", "veil-types.ts"))
+
+	// hooks/package.json carries the workspace dep
+	hp := s.readJSON(filepath.Join(s.root, ".veil", "kinds", "worker", "hooks", "package.json"))
+	dev, ok := hp["devDependencies"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal("workspace:*", dev["@scratch/veil"])
+
+	// the kind's module is emitted + exported; repo-owned name untouched
+	s.FileExists(filepath.Join(s.root, "types", "worker.ts"))
+	pkg := s.readJSON(filepath.Join(s.root, "types", "package.json"))
+	s.Equal("@scratch/veil", pkg["name"])
+	exports, ok := pkg["exports"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal("./worker.ts", exports["./worker"])
+}
+
+// TestBuildRejectsUnknownKindEntryKey proves a typo in a kinds entry's keys
+// (e.g. `imprt` for `import`) is rejected rather than silently dropped — so a
+// kind can't quietly degrade to inline mode under DiscardUnknown.
+func (s *BuildSuite) TestBuildRejectsUnknownKindEntryKey() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
+  "kinds": [
+    { "path": "./.veil/kinds/worker/kind.json", "imprt": { "name": "@scratch/veil/worker", "value": "workspace:*" } }
+  ],
+  "registries": { "": "./public/r/registry.json" },
+  "generators": { "types": { "output_dir": "./types" } }
+}`), 0644))
+	_, err = s.run("build", "--no-typecheck")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "unknown field")
+}
+
+// TestBuildRejectsNonObjectExports proves veil refuses to overwrite a repo's
+// string-form `exports` (a data-loss guard) instead of silently dropping it.
+func (s *BuildSuite) TestBuildRejectsNonObjectExports() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, ".veil", "kinds", "worker", "hooks", "package.json"),
+		[]byte(`{ "name": "@scratch/worker-hooks", "version": "0.0.0", "private": true }`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "veil.json"), []byte(`{
+  "kinds": [
+    { "path": "./.veil/kinds/worker/kind.json", "import": { "name": "@scratch/veil/worker", "value": "workspace:*" } }
+  ],
+  "registries": { "": "./public/r/registry.json" },
+  "generators": { "types": { "output_dir": "./types" } }
+}`), 0644))
+	// repo-owned package.json using the string-sugar exports form
+	s.Require().NoError(os.MkdirAll(filepath.Join(s.root, "types"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(s.root, "types", "package.json"),
+		[]byte(`{ "name": "@scratch/veil", "version": "0.0.0", "exports": "./index.ts" }`), 0644))
+	_, err = s.run("build", "--no-typecheck")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "must be an object")
 }
 
 func (s *BuildSuite) TestBuildTypesFileEmitsEnumUnion() {

@@ -47,6 +47,10 @@ type Kind struct {
 	*veilv1.KindDefinition
 	Path string
 	Dir  string
+	// Import is the kind's types-package import wiring, set when its
+	// `kinds` entry used the {path, import} object form. nil for a bare
+	// path string — in which case the kind's types are inlined per hook.
+	Import *veilv1.KindImport
 
 	renderHooks     []*veilv1.RenderHookDefinition
 	validateHooks   []*veilv1.RenderHookDefinition
@@ -94,6 +98,21 @@ func (r *Registry) KindsDir() string {
 	dir := r.Generators.GetKindsDir()
 	if dir == "" {
 		dir = DefaultKindsDir
+	}
+	if filepath.IsAbs(dir) {
+		return filepath.Clean(dir)
+	}
+	return filepath.Clean(filepath.Join(r.Root, dir))
+}
+
+// TypesOutputDir returns the absolute directory where `veil build` writes
+// the shared types package (generators.types.output_dir), or "" when unset.
+// When set, kinds whose `kinds` entry carries an `import` emit their
+// generated types here and their hooks import them by package specifier.
+func (r *Registry) TypesOutputDir() string {
+	dir := r.Generators.GetTypes().GetOutputDir()
+	if dir == "" {
+		return ""
 	}
 	if filepath.IsAbs(dir) {
 		return filepath.Clean(dir)
@@ -221,8 +240,12 @@ func Load(configPath string) (*Registry, error) {
 
 	root := filepath.Dir(configPath)
 	kinds := make([]*Kind, 0, len(cfg.Kinds))
-	for _, ref := range cfg.Kinds {
-		path := ref
+	for i, entry := range cfg.Kinds {
+		ref, err := parseKindEntry(entry)
+		if err != nil {
+			return nil, fmt.Errorf("%s: kinds[%d]: %w", configPath, i, err)
+		}
+		path := ref.GetPath()
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(root, path)
 		}
@@ -230,8 +253,9 @@ func Load(configPath string) (*Registry, error) {
 
 		k, err := loadKind(path)
 		if err != nil {
-			return nil, fmt.Errorf("loading kind %s: %w", ref, err)
+			return nil, fmt.Errorf("loading kind %s: %w", ref.GetPath(), err)
 		}
+		k.Import = ref.GetImport()
 		kinds = append(kinds, k)
 	}
 
@@ -443,5 +467,58 @@ func parseHookEntry(v *structpb.Value) (*veilv1.RenderHookDefinition, error) {
 		return def, nil
 	default:
 		return nil, fmt.Errorf("hook entry must be a string path or {path, access?} object, got %T", v.Kind)
+	}
+}
+
+// parseKindEntry narrows one on-wire `kinds` entry — a bare path string or a
+// {path, import?} object — into a KindRef, mirroring parseHookEntry. The wire
+// field is google.protobuf.Value because protojson can't express "string OR
+// struct" on a typed field; narrowing it once at load time lets every
+// consumer read ref.Path / ref.Import directly.
+func parseKindEntry(v *structpb.Value) (*veilv1.KindRef, error) {
+	if v == nil {
+		return nil, fmt.Errorf("kind entry is nil")
+	}
+	switch kind := v.Kind.(type) {
+	case *structpb.Value_StringValue:
+		if kind.StringValue == "" {
+			return nil, fmt.Errorf("kind entry path is empty")
+		}
+		return &veilv1.KindRef{Path: kind.StringValue}, nil
+	case *structpb.Value_StructValue:
+		// Reject unknown keys before unmarshalling: protoencode.Unmarshal uses
+		// DiscardUnknown, so a typo like `imprt:` would otherwise be silently
+		// dropped and the kind would quietly degrade to inline mode with no error.
+		for key := range kind.StructValue.GetFields() {
+			if key != "path" && key != "import" {
+				return nil, fmt.Errorf("kind entry has unknown field %q (allowed: path, import)", key)
+			}
+		}
+		if impVal, ok := kind.StructValue.GetFields()["import"]; ok {
+			if impStruct := impVal.GetStructValue(); impStruct != nil {
+				for key := range impStruct.GetFields() {
+					if key != "name" && key != "value" {
+						return nil, fmt.Errorf("kind entry import has unknown field %q (allowed: name, value)", key)
+					}
+				}
+			}
+		}
+		raw, err := protojson.Marshal(kind.StructValue)
+		if err != nil {
+			return nil, fmt.Errorf("marshalling kind entry: %w", err)
+		}
+		ref := &veilv1.KindRef{}
+		if err := protoencode.Unmarshal.Unmarshal(raw, ref); err != nil {
+			return nil, fmt.Errorf("unmarshalling kind entry: %w", err)
+		}
+		if ref.GetPath() == "" {
+			return nil, fmt.Errorf("kind entry object missing required `path` field")
+		}
+		if imp := ref.GetImport(); imp != nil && (imp.GetName() == "" || imp.GetValue() == "") {
+			return nil, fmt.Errorf("kind entry %q: import requires both `name` and `value`", ref.GetPath())
+		}
+		return ref, nil
+	default:
+		return nil, fmt.Errorf("kind entry must be a string path or {path, import?} object, got %T", v.Kind)
 	}
 }
