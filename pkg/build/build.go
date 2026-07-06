@@ -50,13 +50,14 @@ func VeilTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph *Kin
 	}
 
 	node := graph.Node(k.Name)
+	packageMode := hostImport != ""
 
 	depTypes, err := dependencyTypes(node)
 	if err != nil {
 		return "", err
 	}
 
-	dependentTypes, err := dependentInterfaces(node)
+	dependentTypes, err := dependentInterfaces(node, packageMode)
 	if err != nil {
 		return "", err
 	}
@@ -70,6 +71,13 @@ func VeilTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph *Kin
 		fmt.Fprintf(&b, "import type {\n"+
 			"  File,\n  Std,\n  Os,\n  Fetch,\n  Resource,\n  ValidationResult,\n  RegistryVariables,\n"+
 			"} from '%s';\n\n", hostImport)
+		// Import each consumer kind's spec + FS from its own module rather than
+		// replicating them, so a change to a widely-consumed spec regenerates
+		// only that consumer's module, not every kind that depends on it.
+		if imports := dependentSpecImports(node); imports != "" {
+			b.WriteString(imports)
+			b.WriteString("\n")
+		}
 		b.WriteString(specInterface)
 		b.WriteString("\n")
 		b.WriteString(fsIface)
