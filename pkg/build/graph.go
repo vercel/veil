@@ -235,7 +235,7 @@ func dependencyTypes(n *KindNode) (string, error) {
 // consumer Spec / FS / Params interface plus a per-consumer
 // DependentHookContext and DependentHook. Returns "" when the node has
 // no incoming edges.
-func dependentInterfaces(n *KindNode) (string, error) {
+func dependentInterfaces(n *KindNode, packageMode bool) (string, error) {
 	dependents := n.Dependents()
 	if len(dependents) == 0 {
 		return "", nil
@@ -245,8 +245,14 @@ func dependentInterfaces(n *KindNode) (string, error) {
 	var b strings.Builder
 	b.WriteString("// ---- Dependent hook types ----------------------------------------------\n")
 	b.WriteString("// One block per consumer kind that may declare a dependency on this\n")
-	b.WriteString("// kind. Each block replicates the consumer's spec / FS shape so the\n")
-	b.WriteString("// per-consumer hook receives concretely-typed `consumer` and `fs`.\n\n")
+	if packageMode {
+		b.WriteString("// kind. The consumer's spec / FS types are imported from its own\n")
+		b.WriteString("// module (see the imports above) so the per-consumer hook receives\n")
+		b.WriteString("// concretely-typed `consumer` and `fs`.\n\n")
+	} else {
+		b.WriteString("// kind. Each block replicates the consumer's spec / FS shape so the\n")
+		b.WriteString("// per-consumer hook receives concretely-typed `consumer` and `fs`.\n\n")
+	}
 
 	for _, edge := range dependents {
 		consumer := edge.Consumer
@@ -257,23 +263,28 @@ func dependentInterfaces(n *KindNode) (string, error) {
 		ctxName := consumerPascal + "DependentHookContext"
 		hookName := consumerPascal + "DependentHook"
 
-		consumerSpec, err := interfaceFromSchemaMap(consumerSpecName, consumer.Spec)
-		if err != nil {
-			return "", fmt.Errorf("consumer %q spec: %w", consumer.Name, err)
+		// In package mode the consumer's spec + FS are imported from its own
+		// module (dependentSpecImports); only replicate them inline in the
+		// single-file (inline) mode.
+		if !packageMode {
+			consumerSpec, err := interfaceFromSchemaMap(consumerSpecName, consumer.Spec)
+			if err != nil {
+				return "", fmt.Errorf("consumer %q spec: %w", consumer.Name, err)
+			}
+			consumerFS, err := fsInterfaceNamed(consumerFSName, consumer.Sources)
+			if err != nil {
+				return "", fmt.Errorf("consumer %q fs: %w", consumer.Name, err)
+			}
+			b.WriteString(consumerSpec)
+			b.WriteString("\n")
+			b.WriteString(consumerFS)
+			b.WriteString("\n")
 		}
-		consumerFS, err := fsInterfaceNamed(consumerFSName, consumer.Sources)
-		if err != nil {
-			return "", fmt.Errorf("consumer %q fs: %w", consumer.Name, err)
-		}
+
 		paramsIface, err := interfaceFromSchemaMap(paramsName, edge.ParamsSchema)
 		if err != nil {
 			return "", fmt.Errorf("consumer %q params: %w", consumer.Name, err)
 		}
-
-		b.WriteString(consumerSpec)
-		b.WriteString("\n")
-		b.WriteString(consumerFS)
-		b.WriteString("\n")
 		b.WriteString(paramsIface)
 		b.WriteString("\n")
 
@@ -301,4 +312,36 @@ func dependentInterfaces(n *KindNode) (string, error) {
 		b.WriteString("}\n\n")
 	}
 	return b.String(), nil
+}
+
+// dependentSpecImports emits the import + re-export statements a package-mode
+// module needs for the consumer spec / FS types its dependent-hook blocks
+// reference. Each consumer's own module (./<consumer>) exports its spec as
+// `<Consumer>Spec` and its FS as `FS`, so we import the spec by name and alias
+// the FS to `<Consumer>FS` (for local use in this module's DependentHookContext
+// / DependentHook), then re-export both so the consumer's dependent hooks can
+// keep importing `<Consumer>Spec` / `<Consumer>FS` from THIS (target) kind's
+// module — the import site the generated hooks use. Returns "" when the node
+// has no incoming edges. Dependents() is sorted by consumer name with at most
+// one edge per consumer, so the output is ordered and unique (guarded anyway).
+func dependentSpecImports(n *KindNode) string {
+	dependents := n.Dependents()
+	if len(dependents) == 0 {
+		return ""
+	}
+	seen := make(map[string]bool, len(dependents))
+	var b strings.Builder
+	var exported []string
+	for _, edge := range dependents {
+		name := edge.Consumer.Name
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		pascal := PascalCase(name)
+		fmt.Fprintf(&b, "import type { %sSpec, FS as %sFS } from './%s';\n", pascal, pascal, name)
+		exported = append(exported, pascal+"Spec", pascal+"FS")
+	}
+	fmt.Fprintf(&b, "export type { %s };\n", strings.Join(exported, ", "))
+	return b.String()
 }
