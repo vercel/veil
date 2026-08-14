@@ -78,8 +78,34 @@ export default h;
 	result, err := hk.RenderHook(ctx, Bundle{})
 	s.Require().NoError(err)
 	s.Equal(`{"a":1,"b":["xx","yy"]}`, result["parsed.json"].Content)
-	// gopkg.in/yaml.v3 stringify: alphabetized keys + 2-space indent.
+	// yaml.stringify: alphabetized keys (the yaml.v3 default) + 2-space
+	// indent — "a"/"b" aren't touched by any key-order override.
 	s.Equal("a: 1\nb:\n  - xx\n  - yy\n", result["dumped.yaml"].Content)
+}
+
+func (s *HookSuite) TestCtxStdYamlStringifyMovesInitContainersBeforeContainers() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    var parsed = ctx.std.yaml.parse(
+      "containers:\n  - name: app\ninitContainers:\n  - name: migrate\n"
+    );
+    fs.add("dumped.yaml", ctx.std.yaml.stringify(parsed));
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code)
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	ctx := map[string]any{"name": "n", "spec": map[string]any{}, "vars": map[string]any{}}
+	result, err := hk.RenderHook(ctx, Bundle{})
+	s.Require().NoError(err)
+	// initContainers moves ahead of containers even though the source
+	// document (and plain alphabetical order) had it the other way.
+	s.Equal("initContainers:\n  - name: migrate\ncontainers:\n  - name: app\n", result["dumped.yaml"].Content)
 }
 
 func (s *HookSuite) TestCtxStdYamlParseThrowsOnMalformed() {

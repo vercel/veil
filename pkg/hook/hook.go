@@ -7,7 +7,6 @@
 package hook
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -519,16 +518,11 @@ func installHostFuncs(rt *qjs.Runtime, cfg options) error {
 		if err := json.Unmarshal([]byte(jsonStr), &v); err != nil {
 			return "", fmt.Errorf("yaml.stringify: %w", err)
 		}
-		var buf bytes.Buffer
-		enc := yaml.NewEncoder(&buf)
-		enc.SetIndent(2)
-		if err := enc.Encode(v); err != nil {
+		out, err := orderedYAMLMarshal(v)
+		if err != nil {
 			return "", fmt.Errorf("yaml.stringify: %w", err)
 		}
-		if err := enc.Close(); err != nil {
-			return "", fmt.Errorf("yaml.stringify: %w", err)
-		}
-		return buf.String(), nil
+		return string(out), nil
 	})
 	if err != nil {
 		return fmt.Errorf("wrapping yaml.stringify: %w", err)
