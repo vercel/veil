@@ -1,15 +1,18 @@
 package interact
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
+)
 
 // Adaptive colors that auto-detect dark/light terminal background.
 var (
-	colorGreen  = lipgloss.AdaptiveColor{Light: "#00873E", Dark: "#3BDB80"}
-	colorYellow = lipgloss.AdaptiveColor{Light: "#B8860B", Dark: "#FFD700"}
-	colorRed    = lipgloss.AdaptiveColor{Light: "#CC0000", Dark: "#FF5555"}
-	colorBlue   = lipgloss.AdaptiveColor{Light: "#0057B8", Dark: "#66B2FF"}
-	colorMuted  = lipgloss.AdaptiveColor{Light: "#666666", Dark: "#999999"}
-	colorBold   = lipgloss.AdaptiveColor{Light: "#1A1A1A", Dark: "#F0F0F0"}
+	colorGreen  = compat.AdaptiveColor{Light: lipgloss.Color("#00873E"), Dark: lipgloss.Color("#3BDB80")}
+	colorYellow = compat.AdaptiveColor{Light: lipgloss.Color("#B8860B"), Dark: lipgloss.Color("#FFD700")}
+	colorRed    = compat.AdaptiveColor{Light: lipgloss.Color("#CC0000"), Dark: lipgloss.Color("#FF5555")}
+	colorBlue   = compat.AdaptiveColor{Light: lipgloss.Color("#0057B8"), Dark: lipgloss.Color("#66B2FF")}
+	colorMuted  = compat.AdaptiveColor{Light: lipgloss.Color("#666666"), Dark: lipgloss.Color("#999999")}
+	colorBold   = compat.AdaptiveColor{Light: lipgloss.Color("#1A1A1A"), Dark: lipgloss.Color("#F0F0F0")}
 )
 
 // Theme holds lipgloss styles for consistent terminal output.
