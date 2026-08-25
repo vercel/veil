@@ -243,7 +243,9 @@ Four lifecycles exist today:
 For a single resource being rendered, the runner executes hooks in this order:
 
 1. The kind's `hooks.render` (in declaration order).
-2. For each declared dependency, the target kind's `hooks.dependents` matching this kind.
+2. For every dependency reachable by walking the full transitive dependency graph rooted at this
+   resource (breadth-first, cycle-safe, visit-once — see [Dependencies](#dependencies)), the
+   target kind's `hooks.dependents` matching the immediate consumer at that hop.
 3. The resource's own `metadata.hooks.render` (see [Resource](#resource) — paths relative to the
    resource file). Resource hooks see the bundle after every kind-level write.
 4. The kind's `hooks.post_render`. Mutating; runs after resource hooks so the kind owns the final
@@ -692,16 +694,33 @@ export default injectBucketEnv;
 
 ## Render-time execution
 
-After a resource's render hooks finish, veil iterates `dependencies` in declaration order. For each
-entry:
+After a resource's render hooks finish, veil walks the *full* transitive dependency graph rooted
+at the resource — not just its own `dependencies` list. The walk is breadth-first, the same shape
+`veil graph` uses to visualize a resource's dependency graph: cycle-safe and visit-once, so a
+target reached through more than one path (or a cycle back to an already-visited resource)
+resolves once and the walk still terminates. Every kind's dependencies resolve this way — it's a
+global capability of the render pipeline, not something a kind opts into.
+
+Starting from the root resource's own `dependencies`, and then from each newly-reached target's
+`dependencies` in turn, every edge (consumer, target) is processed:
 
 1. Resolve `(kind, name)` to a target resource in the catalog (built from
    `resource_discovery.paths`). Missing targets are a hard error.
 2. Apply the target's own overlays + spec defaults so `ctx.self` matches what the target would see
-   at its own render. No schema validation: targets are inspected, not re-rendered.
-3. Find the target kind's `hooks.dependents` entry matching the consumer's kind. A target that
-   doesn't list the consumer's kind as allowed is a hard error.
-4. Run each registered dependent hook against the consumer's FS, in declaration order.
+   at its own render. No schema validation: targets are inspected, not re-rendered. A target
+   reached via more than one edge is resolved only once and reused.
+3. Find the target kind's `hooks.dependents` entry matching the *immediate* consumer's kind — the
+   resource that declared this particular edge, which may be several hops away from the render
+   root. A target that doesn't list that consumer's kind as allowed is a hard error.
+4. Run each registered dependent hook against the render root's FS, in declaration order.
+
+Concretely: if a service depends on `package/api-rate-limits`, which itself depends on
+`dynamo-table/rate-limit-exceeded`, the dynamo-table's dependent hooks for consumer kind
+`package` run — with `ctx.self` set to the resolved dynamo-table resource and `ctx.consumer` set
+to the resolved `api-rate-limits` package, exactly as if the package were being rendered
+directly — but mutating the *service's* bundle, since that's the one FS threaded through the
+entire walk. `ctx.consumer` is always the immediate parent in the dependency chain, never
+necessarily the render root.
 
 Render hooks cannot observe state injected by dependent hooks — the lifecycles are strictly ordered
 (overrides → render → dependents → re-stamp `skip_hooks` overrides → write).
@@ -926,9 +945,10 @@ catalog and walks outward from.
    missing names abort the render with one error listing all of them plus the kind's descriptions. On
    success, log the granted vars and pass them to the hook on `ctx.env`.
 8. Apply `hooks.render` in order (calling each `RenderHook.render`), threading the FS through the pipeline
-9. Apply `dependencies` — for each entry, look up the target via the catalog, find the target kind's
-   matching `hooks.dependents` entry for the consumer's kind, and run those hooks against the
-   consumer's FS. See [Dependencies](#dependencies).
+9. Walk the full transitive dependency graph rooted at this resource (breadth-first, cycle-safe,
+   visit-once) — for every edge, look up the target via the catalog, find the target kind's
+   matching `hooks.dependents` entry for that edge's immediate consumer kind, and run those hooks
+   against the render root's FS. See [Dependencies](#dependencies).
 10. Re-stamp every `skip_hooks: true` override's bytes onto the bundle, discarding any in-flight hook
     mutations to those files.
 11. Write the final files to disk

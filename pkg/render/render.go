@@ -193,17 +193,14 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		bundle = newBundle
 	}
 
-	deps := resolved.GetDependencies()
-	if len(deps) > 0 {
-		logger.Info("applying dependencies", "count", len(deps))
+	if deps := resolved.GetDependencies(); len(deps) > 0 {
+		logger.Info("resolving dependency graph", "declared_dependencies", len(deps))
 	}
-	for _, dep := range deps {
-		newBundle, err := applyDependency(logger, bundle, dep, kindName, resourceName, r.Path, resourceMap, root, opts)
-		if err != nil {
-			return nil, fmt.Errorf("dependency %s/%s: %w", dep.GetKind(), dep.GetName(), err)
-		}
-		bundle = newBundle
+	newBundle, err := applyDependencies(logger, bundle, kindName, resourceName, r.Path, resolved, resourceMap, root, opts)
+	if err != nil {
+		return nil, fmt.Errorf("dependencies: %w", err)
 	}
+	bundle = newBundle
 
 	// Resource-level render hooks: paths declared inline on the resource
 	// yaml under metadata.hooks.render. Compiled on demand at render
@@ -370,50 +367,102 @@ func resourceToMap(r *veilv1.Resource) (map[string]any, error) {
 	return out, nil
 }
 
-// applyDependency resolves one declared dependency from the consumer's
-// resource: it looks up the target in the catalog, applies the target's
-// own overlays + schema defaults so `ctx.self` matches what the target
-// would see at render time, then runs every dependent hook the target
-// kind registers for this consumer kind. Each hook receives the
-// consumer's bundle and may mutate it before returning.
-func applyDependency(parent *slog.Logger, bundle hook.Bundle, dep *veilv1.Dependency, consumerKind, consumerName, consumerPath string, consumerMap map[string]any, root string, opts *Options) (hook.Bundle, error) {
+// depNode is one visited node in the transitive dependency walk: the
+// resource's identity plus its resolved (overlay + schema-defaulted)
+// form and map encoding, cached so a target reached through multiple
+// consumer paths is only loaded and resolved once.
+type depNode struct {
+	kind, name, path string
+	resource         *veilv1.Resource
+	resourceMap      map[string]any
+}
+
+func depNodeID(kind, name string) string { return kind + "/" + name }
+
+// applyDependencies walks the full transitive dependency graph reachable
+// from the root resource — breadth-first, cycle-safe, visit-once, the
+// same shape commands.buildResourceGraph uses for `veil graph` — and
+// applies every qualifying dependent hook along the way, not just the
+// root's own directly-declared dependencies.
+//
+// At each edge, the "consumer" the target's dependent hook sees is the
+// immediate parent in the walk, not the root: a service depending on a
+// package that itself depends on a dynamo-table runs the dynamo-table's
+// "package" dependent hooks with the package as ctx.consumer, exactly as
+// if the package were being rendered directly. That parent's bundle is
+// always the one shared, root-owned bundle threaded through the whole
+// walk, so every hop's mutations land in the same output.
+func applyDependencies(parent *slog.Logger, bundle hook.Bundle, rootKind, rootName, rootPath string, rootResource *veilv1.Resource, rootMap map[string]any, root string, opts *Options) (hook.Bundle, error) {
 	if opts.Catalog == nil {
 		return nil, fmt.Errorf("no catalog configured")
 	}
-	targetKind := dep.GetKind()
-	targetName := dep.GetName()
-	logger := parent.With("dep_kind", targetKind, "dep_name", targetName)
 
-	logger.Debug("resolving dependency target")
-	target, err := opts.Catalog.LoadResource(targetKind, targetName)
-	if err != nil {
-		return nil, err
+	rootNode := &depNode{kind: rootKind, name: rootName, path: rootPath, resource: rootResource, resourceMap: rootMap}
+	visited := map[string]*depNode{depNodeID(rootKind, rootName): rootNode}
+	queue := []*depNode{rootNode}
+	edges := 0
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, dep := range cur.resource.GetDependencies() {
+			targetKind, targetName := dep.GetKind(), dep.GetName()
+			logger := parent.With("dep_kind", targetKind, "dep_name", targetName)
+
+			id := depNodeID(targetKind, targetName)
+			node, seen := visited[id]
+			if !seen {
+				logger.Debug("resolving dependency target")
+				target, err := opts.Catalog.LoadResource(targetKind, targetName)
+				if err != nil {
+					return nil, fmt.Errorf("dependency %s/%s: %w", targetKind, targetName, err)
+				}
+				resolvedTarget, err := resolveTargetResource(target, opts)
+				if err != nil {
+					return nil, fmt.Errorf("dependency %s/%s: resolving target: %w", targetKind, targetName, err)
+				}
+				targetMap, err := resourceToMap(resolvedTarget)
+				if err != nil {
+					return nil, fmt.Errorf("dependency %s/%s: encoding target: %w", targetKind, targetName, err)
+				}
+				node = &depNode{kind: targetKind, name: targetName, path: target.Path, resource: resolvedTarget, resourceMap: targetMap}
+				visited[id] = node
+				queue = append(queue, node)
+			}
+
+			newBundle, err := applyDependentHooks(logger, bundle, dep, node, cur, root, opts)
+			if err != nil {
+				return nil, fmt.Errorf("dependency %s/%s: %w", targetKind, targetName, err)
+			}
+			bundle = newBundle
+			edges++
+		}
 	}
-
-	resolvedTarget, err := resolveTargetResource(target, opts)
-	if err != nil {
-		return nil, fmt.Errorf("resolving target: %w", err)
+	if edges > 0 {
+		parent.Info("applied dependency graph", "nodes", len(visited)-1, "edges", edges)
 	}
+	return bundle, nil
+}
 
-	loadedKind, err := opts.Registry.LoadKind(targetKind)
+// applyDependentHooks runs every dependent hook target's kind registers
+// for consumer's kind against the shared bundle. target is already
+// resolved (overlays + schema defaults applied) by the caller — reused
+// across every consumer that reaches it during the walk so a
+// many-times-depended-on resource is only resolved once.
+func applyDependentHooks(parent *slog.Logger, bundle hook.Bundle, dep *veilv1.Dependency, target, consumer *depNode, root string, opts *Options) (hook.Bundle, error) {
+	loadedKind, err := opts.Registry.LoadKind(target.kind)
 	if err != nil {
 		return nil, fmt.Errorf("loading target kind: %w", err)
 	}
 
 	var dependentEntry *veilv1.DependentHook
 	for _, d := range loadedKind.Kind.GetHooks().GetDependents() {
-		if d.GetKind() == consumerKind {
+		if d.GetKind() == consumer.kind {
 			dependentEntry = d
 			break
 		}
 	}
 	if dependentEntry == nil {
-		return nil, fmt.Errorf("target kind %q does not list %q as a valid consumer", targetKind, consumerKind)
-	}
-
-	targetMap, err := resourceToMap(resolvedTarget)
-	if err != nil {
-		return nil, fmt.Errorf("encoding target: %w", err)
+		return nil, fmt.Errorf("target kind %q does not list %q as a valid consumer", target.kind, consumer.kind)
 	}
 
 	var paramsMap map[string]any
@@ -421,16 +470,16 @@ func applyDependency(parent *slog.Logger, bundle hook.Bundle, dep *veilv1.Depend
 		paramsMap = p.AsMap()
 	}
 	depCtx := map[string]any{
-		"self":     targetMap,
-		"consumer": consumerMap,
-		"path":     consumerPath,
+		"self":     target.resourceMap,
+		"consumer": consumer.resourceMap,
+		"path":     consumer.path,
 		"params":   paramsMap,
 		"vars":     opts.Variables,
 		"root":     root,
 	}
 
 	for _, h := range dependentEntry.GetHooks() {
-		newBundle, err := invokeHook(logger, h, targetKind, targetName, depCtx, bundle)
+		newBundle, err := invokeHook(parent, h, target.kind, target.name, depCtx, bundle)
 		if err != nil {
 			return nil, fmt.Errorf("hook %s: %w", h.GetName(), err)
 		}
