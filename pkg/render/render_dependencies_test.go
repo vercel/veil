@@ -15,15 +15,18 @@ func dependentHookIIFE(markerFile string) string {
 	return `var __veilMod=(()=>{var h={render:function(ctx,fs){fs.add("` + markerFile + `","target="+ctx.self.metadata.name+" consumer="+ctx.consumer.metadata.name);return fs;}};return{default:h};})();`
 }
 
-// dependentHookIIFEKeyedByConsumer returns a pre-bundled dependent hook
-// that stamps a marker file per invocation, named after the immediate
-// consumer rather than a fixed path. A target reached through more
+// dependentHookIIFEKeyedByParam returns a pre-bundled dependent hook
+// that stamps a marker file per invocation, named after one of the
+// edge's own params rather than a fixed path. ctx.consumer is always
+// the render root (see applyDependencies in render.go) — identical
+// for every edge into a shared target — so params are the only
+// signal that still varies per edge; a target reached through more
 // than one incoming edge (a diamond dependency) writes one such file
 // per edge instead of one shared file the second firing would
 // silently overwrite — proof that each edge's hook ran independently
 // rather than the target's node-level dedup suppressing repeat edges.
-func dependentHookIIFEKeyedByConsumer(prefix string) string {
-	return `var __veilMod=(()=>{var h={render:function(ctx,fs){fs.add("` + prefix + `-via-"+ctx.consumer.metadata.name+".txt","target="+ctx.self.metadata.name+" consumer="+ctx.consumer.metadata.name);return fs;}};return{default:h};})();`
+func dependentHookIIFEKeyedByParam(prefix, paramKey string) string {
+	return `var __veilMod=(()=>{var h={render:function(ctx,fs){fs.add("` + prefix + `-via-"+ctx.params.` + paramKey + `+".txt","target="+ctx.self.metadata.name+" consumer="+ctx.consumer.metadata.name+" param="+ctx.params.` + paramKey + `);return fs;}};return{default:h};})();`
 }
 
 // noopDependentHookIIFE is a dependent hook that satisfies a required
@@ -139,7 +142,7 @@ func (s *RenderSuite) renderKind(kind, name, dir, outDir string) (*RenderedResou
 func (s *RenderSuite) TestMultiHopDependencyAppliesTransitiveDependentHooks() {
 	s.writeSimpleKind("service")
 	s.writeDependentKind("package", "service", dependentHookIIFE("from-package.txt"))
-	s.writeDependentKind("dynamo-table", "package", dependentHookIIFE("from-dynamo.txt"))
+	s.writeDependentKind("dynamo-table", "service", dependentHookIIFE("from-dynamo.txt"))
 	s.reloadRegistryWithKinds("service", "package", "dynamo-table")
 
 	dir := filepath.Join(s.root, "svc")
@@ -177,16 +180,19 @@ func (s *RenderSuite) TestMultiHopDependencyAppliesTransitiveDependentHooks() {
 	// dynamo-table — the regression this test guards against.
 	fromDynamo, err := os.ReadFile(filepath.Join(out, "my-service", "from-dynamo.txt"))
 	s.Require().NoError(err)
-	s.Equal("target=rate-limit-exceeded consumer=api-rate-limits", string(fromDynamo))
+	s.Equal("target=rate-limit-exceeded consumer=my-service", string(fromDynamo))
 }
 
 // TestDependencyCycleAppliesEachEdgeOnceWithoutInfiniteLoop covers the
 // cycle-safety half of the BFS walk: alpha depends on beta and beta
-// depends back on alpha, and both kinds accept the other as a
-// consumer. The walk must apply each real edge's hooks exactly once
-// and terminate instead of looping forever re-visiting the same pair.
+// depends back on alpha. ctx.consumer is always the render root
+// (alpha/a1), so alpha's own dependents list must accept its own kind
+// to allow the back-edge — beta's back-edge into alpha is checked
+// against the root's kind, not beta's. The walk must apply each real
+// edge's hooks exactly once and terminate instead of looping forever
+// re-visiting the same pair.
 func (s *RenderSuite) TestDependencyCycleAppliesEachEdgeOnceWithoutInfiniteLoop() {
-	s.writeDependentKind("alpha", "beta", dependentHookIIFE("from-alpha.txt"))
+	s.writeDependentKind("alpha", "alpha", dependentHookIIFE("from-alpha.txt"))
 	s.writeDependentKind("beta", "alpha", dependentHookIIFE("from-beta.txt"))
 	s.reloadRegistryWithKinds("alpha", "beta")
 
@@ -214,7 +220,7 @@ func (s *RenderSuite) TestDependencyCycleAppliesEachEdgeOnceWithoutInfiniteLoop(
 
 	fromAlpha, err := os.ReadFile(filepath.Join(out, "a1", "from-alpha.txt"))
 	s.Require().NoError(err)
-	s.Equal("target=a1 consumer=b1", string(fromAlpha))
+	s.Equal("target=a1 consumer=a1", string(fromAlpha))
 }
 
 // TestDiamondDependencyFiresTargetHookOncePerIncomingEdge covers the
@@ -225,11 +231,14 @@ func (s *RenderSuite) TestDependencyCycleAppliesEachEdgeOnceWithoutInfiniteLoop(
 // expansion), but its dependent hook must still fire once per
 // incoming edge — the visited-set dedup is about not re-expanding a
 // node's own dependencies, not about suppressing repeat edges into
-// it.
+// it. ctx.consumer is always the render root (diamond-root/r1) for
+// both firings, identical either way, so the two edges are
+// distinguished by their own params instead — the one thing that
+// still varies per edge.
 func (s *RenderSuite) TestDiamondDependencyFiresTargetHookOncePerIncomingEdge() {
 	s.writeSimpleKind("diamond-root")
 	s.writeDependentKind("diamond-branch", "diamond-root", noopDependentHookIIFE)
-	s.writeDependentKind("diamond-leaf", "diamond-branch", dependentHookIIFEKeyedByConsumer("from-leaf"))
+	s.writeDependentKind("diamond-leaf", "diamond-root", dependentHookIIFEKeyedByParam("from-leaf", "tag"))
 	s.reloadRegistryWithKinds("diamond-root", "diamond-branch", "diamond-leaf")
 
 	dir := filepath.Join(s.root, "dmd")
@@ -243,14 +252,18 @@ func (s *RenderSuite) TestDiamondDependencyFiresTargetHookOncePerIncomingEdge() 
 		},
 	})
 	s.writeJSON(filepath.Join(dir, "b1.json"), map[string]any{
-		"metadata":     map[string]any{"kind": "diamond-branch", "name": "b1"},
-		"spec":         map[string]any{},
-		"dependencies": []map[string]any{{"kind": "diamond-leaf", "name": "d1", "params": map[string]any{}}},
+		"metadata": map[string]any{"kind": "diamond-branch", "name": "b1"},
+		"spec":     map[string]any{},
+		"dependencies": []map[string]any{
+			{"kind": "diamond-leaf", "name": "d1", "params": map[string]any{"tag": "b1"}},
+		},
 	})
 	s.writeJSON(filepath.Join(dir, "c1.json"), map[string]any{
-		"metadata":     map[string]any{"kind": "diamond-branch", "name": "c1"},
-		"spec":         map[string]any{},
-		"dependencies": []map[string]any{{"kind": "diamond-leaf", "name": "d1", "params": map[string]any{}}},
+		"metadata": map[string]any{"kind": "diamond-branch", "name": "c1"},
+		"spec":     map[string]any{},
+		"dependencies": []map[string]any{
+			{"kind": "diamond-leaf", "name": "d1", "params": map[string]any{"tag": "c1"}},
+		},
 	})
 	s.writeJSON(filepath.Join(dir, "d1.json"), map[string]any{
 		"metadata": map[string]any{"kind": "diamond-leaf", "name": "d1"},
@@ -266,9 +279,9 @@ func (s *RenderSuite) TestDiamondDependencyFiresTargetHookOncePerIncomingEdge() 
 	// edge, not one shared file the second firing silently overwrote.
 	viaB, err := os.ReadFile(filepath.Join(out, "r1", "from-leaf-via-b1.txt"))
 	s.Require().NoError(err)
-	s.Equal("target=d1 consumer=b1", string(viaB))
+	s.Equal("target=d1 consumer=r1 param=b1", string(viaB))
 
 	viaC, err := os.ReadFile(filepath.Join(out, "r1", "from-leaf-via-c1.txt"))
 	s.Require().NoError(err)
-	s.Equal("target=d1 consumer=c1", string(viaC))
+	s.Equal("target=d1 consumer=r1 param=c1", string(viaC))
 }
