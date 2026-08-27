@@ -245,7 +245,8 @@ For a single resource being rendered, the runner executes hooks in this order:
 1. The kind's `hooks.render` (in declaration order).
 2. For every dependency reachable by walking the full transitive dependency graph rooted at this
    resource (breadth-first, cycle-safe, visit-once — see [Dependencies](#dependencies)), the
-   target kind's `hooks.dependents` matching the immediate consumer at that hop.
+   target kind's `hooks.dependents` matching *this* resource's own kind — never the
+   intermediate resource that actually declared the edge.
 3. The resource's own `metadata.hooks.render` (see [Resource](#resource) — paths relative to the
    resource file). Resource hooks see the bundle after every kind-level write.
 4. The kind's `hooks.post_render`. Mutating; runs after resource hooks so the kind owns the final
@@ -620,14 +621,18 @@ the `hooks.dependents` block — `dependents` is just another lifecycle alongsid
 
 Each entry has:
 
-- **`kind`** — the consumer kind that may depend on this resource.
+- **`kind`** — the kind of render root that may reach this resource as a dependency, directly or
+  transitively through any number of pass-through resources. See
+  [Render-time execution](#render-time-execution): the hook's `consumer` is always the render
+  root, never the resource that actually declared the edge, so this entry is keyed on the root's
+  kind regardless of how many hops separate it from this target.
 - **`paths`** — at least one hook file path that runs when a resource of `kind` depends on this one.
   Hooks run in declaration order. An empty `paths` array is a build error.
 - **`params_path`** — JSON Schema describing the `params` object the consumer must supply. Paths are
   resolved relative to the `kind.json` file. Required.
 
-Because hooks are registered per consumer kind, each hook receives a concretely typed `consumer` and
-`params` — no union narrowing inside the hook body.
+Because hooks are registered per render-root kind, each hook receives a concretely typed `consumer`
+and `params` — no union narrowing inside the hook body.
 
 ## `dependent` hooks
 
@@ -702,25 +707,27 @@ resolves once and the walk still terminates. Every kind's dependencies resolve t
 global capability of the render pipeline, not something a kind opts into.
 
 Starting from the root resource's own `dependencies`, and then from each newly-reached target's
-`dependencies` in turn, every edge (consumer, target) is processed:
+`dependencies` in turn, every edge (declarer, target) is processed:
 
 1. Resolve `(kind, name)` to a target resource in the catalog (built from
    `resource_discovery.paths`). Missing targets are a hard error.
 2. Apply the target's own overlays + spec defaults so `ctx.self` matches what the target would see
    at its own render. No schema validation: targets are inspected, not re-rendered. A target
    reached via more than one edge is resolved only once and reused.
-3. Find the target kind's `hooks.dependents` entry matching the *immediate* consumer's kind — the
-   resource that declared this particular edge, which may be several hops away from the render
-   root. A target that doesn't list that consumer's kind as allowed is a hard error.
+3. Find the target kind's `hooks.dependents` entry matching the *render root's* kind — never the
+   declarer's kind, even when the declarer (the resource whose own `dependencies` list named this
+   target) is several hops away from the root. A target that doesn't list the root's kind as
+   allowed is a hard error.
 4. Run each registered dependent hook against the render root's FS, in declaration order.
 
 Concretely: if a service depends on `package/api-rate-limits`, which itself depends on
 `dynamo-table/rate-limit-exceeded`, the dynamo-table's dependent hooks for consumer kind
-`package` run — with `ctx.self` set to the resolved dynamo-table resource and `ctx.consumer` set
-to the resolved `api-rate-limits` package, exactly as if the package were being rendered
-directly — but mutating the *service's* bundle, since that's the one FS threaded through the
-entire walk. `ctx.consumer` is always the immediate parent in the dependency chain, never
-necessarily the render root.
+`service` run — with `ctx.self` set to the resolved dynamo-table resource and `ctx.consumer` set
+to the resolved *service*, not the package that actually declared the edge. `ctx.consumer` is
+always the render root, and the FS the hook mutates is always the render root's bundle, so the two
+stay consistent — a target's `dependents` entry never needs to name every pass-through kind that
+might sit between it and the root; dynamo-table's existing `[service, subscriber]` entries already
+cover it being reached through any number of intermediate packages.
 
 Render hooks cannot observe state injected by dependent hooks — the lifecycles are strictly ordered
 (overrides → render → dependents → re-stamp `skip_hooks` overrides → write).
@@ -947,8 +954,9 @@ catalog and walks outward from.
 8. Apply `hooks.render` in order (calling each `RenderHook.render`), threading the FS through the pipeline
 9. Walk the full transitive dependency graph rooted at this resource (breadth-first, cycle-safe,
    visit-once) — for every edge, look up the target via the catalog, find the target kind's
-   matching `hooks.dependents` entry for that edge's immediate consumer kind, and run those hooks
-   against the render root's FS. See [Dependencies](#dependencies).
+   matching `hooks.dependents` entry for *this resource's own* kind (the render root, never the
+   declarer at that hop), and run those hooks against the render root's FS. See
+   [Dependencies](#dependencies).
 10. Re-stamp every `skip_hooks: true` override's bytes onto the bundle, discarding any in-flight hook
     mutations to those files.
 11. Write the final files to disk

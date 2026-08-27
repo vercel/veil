@@ -385,13 +385,20 @@ func depNodeID(kind, name string) string { return kind + "/" + name }
 // applies every qualifying dependent hook along the way, not just the
 // root's own directly-declared dependencies.
 //
-// At each edge, the "consumer" the target's dependent hook sees is the
-// immediate parent in the walk, not the root: a service depending on a
-// package that itself depends on a dynamo-table runs the dynamo-table's
-// "package" dependent hooks with the package as ctx.consumer, exactly as
-// if the package were being rendered directly. That parent's bundle is
-// always the one shared, root-owned bundle threaded through the whole
-// walk, so every hop's mutations land in the same output.
+// At every edge, the "consumer" a target's dependent hook sees is the
+// render root — never the intermediate resource that actually declared
+// the edge. A service depending on a package that itself depends on a
+// dynamo-table runs the dynamo-table's "service" dependent hooks with
+// the *service* as ctx.consumer, not the package: the package is a
+// pass-through, and the only FS a dependent hook can ever mutate is
+// the render root's bundle, so ctx.consumer names the resource that
+// bundle actually belongs to. This also means a target kind's
+// `dependents` list is keyed by the possible render-root kinds that
+// can reach it, regardless of how many pass-through kinds sit in
+// between — dynamo-table's existing `dependents: [service, subscriber]`
+// already covers a service reaching it through any number of
+// intermediate packages, with no new entry required per pass-through
+// kind.
 func applyDependencies(parent *slog.Logger, bundle hook.Bundle, rootKind, rootName, rootPath string, rootResource *veilv1.Resource, rootMap map[string]any, root string, opts *Options) (hook.Bundle, error) {
 	if opts.Catalog == nil {
 		return nil, fmt.Errorf("no catalog configured")
@@ -429,7 +436,7 @@ func applyDependencies(parent *slog.Logger, bundle hook.Bundle, rootKind, rootNa
 				queue = append(queue, node)
 			}
 
-			newBundle, err := applyDependentHooks(logger, bundle, dep, node, cur, root, opts)
+			newBundle, err := applyDependentHooks(logger, bundle, dep, node, rootNode, root, opts)
 			if err != nil {
 				return nil, fmt.Errorf("dependency %s/%s: %w", targetKind, targetName, err)
 			}
@@ -444,10 +451,15 @@ func applyDependencies(parent *slog.Logger, bundle hook.Bundle, rootKind, rootNa
 }
 
 // applyDependentHooks runs every dependent hook target's kind registers
-// for consumer's kind against the shared bundle. target is already
-// resolved (overlays + schema defaults applied) by the caller — reused
-// across every consumer that reaches it during the walk so a
-// many-times-depended-on resource is only resolved once.
+// for the render root's kind against the shared bundle. consumer is
+// always the render root (see applyDependencies), never the resource
+// that actually declared this edge — a target's `dependents` list is
+// matched against the root's kind regardless of which hop the edge
+// came from. target is already resolved (overlays + schema defaults
+// applied) by the caller — reused across every edge that reaches it
+// during the walk so a many-times-depended-on resource is only
+// resolved once; params are read fresh per edge below, so two edges
+// into the same target with different params still apply independently.
 func applyDependentHooks(parent *slog.Logger, bundle hook.Bundle, dep *veilv1.Dependency, target, consumer *depNode, root string, opts *Options) (hook.Bundle, error) {
 	loadedKind, err := opts.Registry.LoadKind(target.kind)
 	if err != nil {
