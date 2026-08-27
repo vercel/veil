@@ -192,10 +192,14 @@ message KindDefinition {
     (buf.validate.field).required = true
   ];
 
-  // Source configuration files that make up the kind. May be empty —
-  // a kind with no sources is valid (it's the bare template plus
-  // whatever its hooks add at render time).
-  repeated string sources = 2 [(buf.validate.field).repeated.items.string.min_len = 1];
+  // Source configuration files that make up the kind. May be empty.
+  //
+  // google.protobuf.Value so an entry can be a bare string path (no
+  // schema) or a SourceDefinition object (path + optional schema) —
+  // same polymorphism as `hooks`, same reason: protojson can't type
+  // "string OR struct". The build pipeline narrows each Value into a
+  // SourceDefinition at load time.
+  repeated google.protobuf.Value sources = 2;
 
   // Hook code files grouped by lifecycle point. The dependents block —
   // the per-consumer hooks that fire when another kind declares a
@@ -212,6 +216,23 @@ message KindDefinition {
   // kind is rejected. Otherwise the shape and resolution rules are
   // identical to VeilConfigDefinition.variables.
   map<string, Variable> variables = 6 [(buf.validate.field).map.keys.string.pattern = "^[a-zA-Z_][a-zA-Z0-9_]*$"];
+}
+
+// SourceDefinition is one kind.json source entry: a path plus optional
+// `schema` — a JSON Schema file describing the source's shape. No
+// `schema` means raw content, as before. Declaring one makes the
+// source's content a contract the runner enforces at render time: reads
+// and writes go through the parsed value, not the raw string.
+message SourceDefinition {
+  // Resolved relative to the enclosing kind.json.
+  string path = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // JSON Schema file for this source's shape, resolved relative to the
+  // enclosing kind.json. Omit for no declared shape.
+  string schema = 2;
 }
 
 // HooksDefinition groups a kind's hook files by lifecycle point. Each
