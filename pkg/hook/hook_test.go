@@ -2,6 +2,7 @@ package hook
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/suite"
 
 	"github.com/vercel/veil/pkg/bundle"
@@ -759,6 +761,172 @@ export default h;
 
 	s.Equal(1, bytesCount(buf.String(), "call 1"), "first call's log should not replay on the second")
 	s.Equal(1, bytesCount(buf.String(), "call 2"))
+}
+
+func (s *HookSuite) TestRenderHookTypedAccessorRoundTrip() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    const file = fs.getAppJson();
+    const obj = file.getContent();
+    obj.replicas = obj.replicas + 1;
+    file.setContent(obj);
+    return fs;
+  }
+};
+export default h;
+`)
+	validate := func(path, jsonText string) error {
+		var v map[string]any
+		if err := json.Unmarshal([]byte(jsonText), &v); err != nil {
+			return err
+		}
+		if _, ok := v["replicas"].(float64); !ok {
+			return fmt.Errorf("replicas must be a number")
+		}
+		return nil
+	}
+	hk, err := New(code, WithTypedSources(map[string]string{"app.json": "json"}), WithSchemaValidate(validate))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	bundle := Bundle{"app.json": File{Path: "app.json", Content: `{"replicas":3}`}}
+	out, err := hk.RenderHook(map[string]any{}, bundle)
+	s.Require().NoError(err)
+	s.JSONEq(`{"replicas":4}`, out["app.json"].Content)
+}
+
+func (s *HookSuite) TestRenderHookTypedAccessorRejectsInvalidWrite() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    fs.getAppJson().setContent({ replicas: "oops" });
+    return fs;
+  }
+};
+export default h;
+`)
+	validate := func(path, jsonText string) error {
+		var v map[string]any
+		_ = json.Unmarshal([]byte(jsonText), &v)
+		if _, ok := v["replicas"].(float64); !ok {
+			return fmt.Errorf("replicas must be a number")
+		}
+		return nil
+	}
+	hk, err := New(code, WithTypedSources(map[string]string{"app.json": "json"}), WithSchemaValidate(validate))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	bundle := Bundle{"app.json": File{Path: "app.json", Content: `{"replicas":3}`}}
+	_, err = hk.RenderHook(map[string]any{}, bundle)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "replicas must be a number")
+}
+
+func (s *HookSuite) TestRenderHookTypedAccessorYAMLCodec() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    const file = fs.getAppYaml();
+    const obj = file.getContent();
+    obj.replicas = obj.replicas + 1;
+    file.setContent(obj);
+    return fs;
+  }
+};
+export default h;
+`)
+	validate := func(path, jsonText string) error { return nil }
+	hk, err := New(code, WithTypedSources(map[string]string{"app.yaml": "yaml"}), WithSchemaValidate(validate))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	bundle := Bundle{"app.yaml": File{Path: "app.yaml", Content: "replicas: 3\n"}}
+	out, err := hk.RenderHook(map[string]any{}, bundle)
+	s.Require().NoError(err)
+	s.Equal("replicas: 4\n", out["app.yaml"].Content)
+}
+
+// TestFileEscapeHatchValidatesButStaysString proves fs.get() validates
+// a schema-declared source on every access but never parses it.
+func (s *HookSuite) TestFileEscapeHatchValidatesButStaysString() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    const file = fs.get("app.json");
+    const content = file.getContent();
+    file.setContent(content);
+    return fs;
+  }
+};
+export default h;
+`)
+	var sawJSON string
+	validate := func(path, jsonText string) error {
+		sawJSON = jsonText
+		return nil
+	}
+	hk, err := New(code, WithTypedSources(map[string]string{"app.json": "json"}), WithSchemaValidate(validate))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	bundle := Bundle{"app.json": File{Path: "app.json", Content: `{"replicas":3}`}}
+	out, err := hk.RenderHook(map[string]any{}, bundle)
+	s.Require().NoError(err)
+	s.Equal(`{"replicas":3}`, out["app.json"].Content)
+	s.JSONEq(`{"replicas":3}`, sawJSON)
+}
+
+func (s *HookSuite) TestFileEscapeHatchRejectsInvalidWrite() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    fs.get("app.json").setContent('{"replicas":"oops"}');
+    return fs;
+  }
+};
+export default h;
+`)
+	validate := func(path, jsonText string) error {
+		var v map[string]any
+		_ = json.Unmarshal([]byte(jsonText), &v)
+		if _, ok := v["replicas"].(float64); !ok {
+			return fmt.Errorf("replicas must be a number")
+		}
+		return nil
+	}
+	hk, err := New(code, WithTypedSources(map[string]string{"app.json": "json"}), WithSchemaValidate(validate))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	bundle := Bundle{"app.json": File{Path: "app.json", Content: `{"replicas":3}`}}
+	_, err = hk.RenderHook(map[string]any{}, bundle)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "replicas must be a number")
+}
+
+func (s *HookSuite) TestValidateHookTypedAccessorReadsParsedObject() {
+	code := s.compile(`
+const h = {
+  validate(ctx, fs) {
+    const obj = fs.getAppJson().getContent();
+    if (obj.replicas > 10) return "too many replicas";
+    return [];
+  }
+};
+export default h;
+`)
+	validate := func(path, jsonText string) error { return nil }
+	hk, err := New(code, WithTypedSources(map[string]string{"app.json": "json"}), WithSchemaValidate(validate))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	bundle := Bundle{"app.json": File{Path: "app.json", Content: `{"replicas":20}`}}
+	issues, err := hk.ValidateHook(map[string]any{}, bundle)
+	s.Require().NoError(err)
+	s.Require().Len(issues, 1)
+	s.Equal("too many replicas", issues[0].Message)
 }
 
 func bytesCount(s, sub string) int {

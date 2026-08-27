@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "SourceDefinition is one kind.json source entry: a path plus optional\n `schema` — a JSON Schema file describing the source's shape. No\n `schema` means raw content, as before. Declaring one makes the\n source's content a contract the runner enforces at render time: reads\n and writes go through the parsed value, not the raw string.",
+  "properties": {
+    "path": {
+      "description": "Resolved relative to the enclosing kind.json.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema": {
+      "default": "",
+      "description": "JSON Schema file for this source's shape, resolved relative to the\n enclosing kind.json. Omit for no declared shape.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path"
+  ],
+  "title": "Source Definition",
+  "type": "object"
+}

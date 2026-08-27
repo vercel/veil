@@ -71,3 +71,47 @@ func TestDependentSpecImportsEmptyWhenNoDependents(t *testing.T) {
 		t.Errorf("expected empty imports for a kind with no consumers, got %q", got)
 	}
 }
+
+// In inline mode, a target kind's replicated <Consumer>FS must type a
+// schema-declared source's accessor to File<T> the same way the
+// consumer's own FS would — not fall back to the plain File a nil
+// typeNameByPath produces. Package mode never replicates FS at all
+// (it imports the consumer's own module instead), so this only
+// applies to the inline branch.
+func TestInlineModeTypesReplicatedConsumerFSToSchema(t *testing.T) {
+	service := &KindNode{
+		Name:            "service",
+		Spec:            map[string]any{"type": "object", "properties": map[string]any{}},
+		Sources:         []string{"./sources/app.yaml"},
+		SourceTypeNames: map[string]string{"./sources/app.yaml": "ServiceDeployment"},
+		SourceTypes:     "export interface ServiceDeployment {\n  replicas: number;\n}\n\n",
+	}
+	cache := &KindNode{
+		Name: "cache",
+		Spec: map[string]any{"type": "object", "properties": map[string]any{}},
+	}
+	cache.dependents = []*DependencyEdge{{
+		Consumer:     service,
+		Target:       cache,
+		ParamsSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+	}}
+
+	inline, err := dependentInterfaces(cache, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(inline, "export interface ServiceDeployment {") {
+		t.Errorf("inline mode must emit the consumer's schema-derived interface:\n%s", inline)
+	}
+	if !strings.Contains(inline, "getSourcesAppYaml(): File<ServiceDeployment>;") {
+		t.Errorf("replicated ServiceFS must type its schema-declared accessor to File<ServiceDeployment>:\n%s", inline)
+	}
+
+	pkg, err := dependentInterfaces(cache, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(pkg, "export interface ServiceDeployment") {
+		t.Errorf("package mode must not replicate the consumer's schema types:\n%s", pkg)
+	}
+}

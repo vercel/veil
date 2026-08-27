@@ -180,12 +180,13 @@ A resource definition is a JSON file at `.veil/kinds/<name>/kind.json` with the 
 {
   "name": "service",
   "sources": [
-    "./sources/service/deployment.yaml",
-    "./sources/service/hpa.yaml"
+    "./sources/service/hpa.yaml",
+    { "path": "./sources/service/deployment.yaml", "schema": "./schemas/deployment.schema.json" }
   ],
   "hooks": {
     "render": [
-      { "path": "./hooks/src/inject-env-var.ts" }
+      { "path": "./hooks/src/inject-env-var.ts" },
+      { "path": "./hooks/src/bump-replicas.ts" }
     ],
     "dependents": [
       {
@@ -207,8 +208,22 @@ both Go code and JSON Schemas. The JSON schemas are embedded in the CLI binary v
 A set of source configuration files that make up the resource. These are the raw config files — Kubernetes manifests,
 Terraform HCL, Envoy configs, etc. They are the starting point that hooks operate on.
 
-Sources are format-agnostic. Veil does not parse or understand their contents; it treats them as opaque files that
-are passed through the hook pipeline and ultimately rendered to disk.
+Each entry is either a bare path string, or an object with `path` plus an optional `schema` — a JSON Schema
+file (resolved relative to `kind.json`, same convention as the kind-level `schema` field) describing that one
+source's shape. The string short-form (`["./sources/hpa.yaml"]`) is equivalent to `{path: "./sources/hpa.yaml"}`
+with no declared schema, and is the only form that existed before `schema` was added — every kind.json written
+against the older shape keeps working unchanged.
+
+A source with no `schema` is exactly what it always was: veil does not parse or understand its contents, and
+passes it through the hook pipeline as an opaque string. Declaring `schema` changes that: from then on, that
+source's content is a contract the runner enforces at render time — see [Schema-typed sources](#schema-typed-sources)
+for what that buys a hook author, and [Schema enforcement](#schema-enforcement) for exactly when and how it's checked.
+
+A schema-declared source's own path must end in `.json`, `.yaml`, or `.yml` — the only formats a
+typed `File<T>` accessor knows how to parse and re-serialize. Anything else is rejected at kind-load
+time, alongside the check that `schema` itself resolves to a file that exists. This restriction
+doesn't apply to a source with no `schema`: its content stays an opaque string regardless of
+extension, same as before `schema` existed at all.
 
 ### `hooks`
 
@@ -220,21 +235,22 @@ Four lifecycles exist today:
 - **`render`** — runs during the consumer's own `veil render`. Each entry is an object with a
   required `path` (TS/JS file that exports a `RenderHook`) plus optional `access` declaring host
   resources the hook needs (env vars today; filesystem / network later). The string short-form is
-  also accepted (`["./hooks/foo.ts"]`) and gets expanded to `{path: "./hooks/foo.ts"}` at load time.
+  also accepted (`["./hooks/foo.ts"]`) and gets expanded to `{path: "./hooks/foo.ts"}` (no access)
+  at load time.
 - **`dependents`** — per-consumer hooks that fire when *another* kind declares a dependency on this
   one. Each entry binds a consumer kind to one or more hook file paths and a JSON Schema for the
   params the consumer must supply. See [Dependencies](#dependencies) for the full design.
-- **`post_render`** — the kind's final normalization pass. Same `{path, access?}` shape and same
-  `RenderHook(ctx, fs)` contract as `render` (mutating, declaration-ordered). Runs after every
+- **`post_render`** — the kind's final normalization pass. Same `{path, access?}` shape and
+  same `RenderHook(ctx, fs)` contract as `render` (mutating, declaration-ordered). Runs after every
   resource-level render hook so the kind can react to whatever resource customizations produced —
   consistent formatting, deterministic key ordering, banner stamping, etc. Kind-scoped only;
   resources cannot declare `metadata.hooks.post_render`.
 - **`validate`** — read-only checks that run *after* every other lifecycle point on a resource
   (kind `render`, dependents, resource hooks, and `post_render`) has finished. Each entry has the
-  same `{path, access?}` shape as `render`. Mutations a validate hook makes to the FS or ctx are
-  discarded by the runner; the only observable output is the array of `ValidationIssue` entries
-  the hook returns. **Every validate hook runs regardless of failures** so the author sees every
-  issue at once; the render fails at the end with an aggregated report if any error-severity
+  same `{path, access?}` shape as `render`. Mutations a validate hook makes to the FS or
+  ctx are discarded by the runner; the only observable output is the array of `ValidationIssue`
+  entries the hook returns. **Every validate hook runs regardless of failures** so the author sees
+  every issue at once; the render fails at the end with an aggregated report if any error-severity
   issues come back. A throw from one hook is treated as a single error-severity issue and does
   not abort the loop. See [Validation hooks](#validation-hooks) for the full design.
 
@@ -303,19 +319,23 @@ declared keys. Vars the hook didn't declare are not visible regardless of host s
 Files under `hooks.render` export a `RenderHook`:
 
 ```ts
-export interface File {
-  getContent(): string;
-  setContent(content: string): void;
+export interface File<T = string> {
+  getContent(): T;
+  setContent(content: T): void;
   getPath(): string;
   setOutputPath(path: string): void;
 }
 
 export interface FS {
-  // Generated per declared source — strongly typed handles:
-  getSourcesDeploymentYaml(): File;
+  // Generated per declared source — strongly typed handles. A schema-declared
+  // source's accessor returns File<T> for that schema's generated interface;
+  // one with no schema returns plain File (File<string>):
+  getSourcesDeploymentYaml(): File<Deployment>;
+  getSourcesHpaYaml(): File;
   // ...
 
-  // Escape hatches for dynamic files:
+  // Escape hatches for dynamic files — always File<string>, since there's no
+  // static path here to resolve a schema type from:
   get(key: string): File | undefined;
   getAll(): File[];
   add(path: string, content: string): File;
@@ -333,10 +353,12 @@ export interface RenderHook {
   the env vars declared under the hook entry's `access.env` (and only those).
 - **FS**: holds the file state for this render. Each declared source gets a typed, generated accessor so
   renames in `kind.json` surface as TypeScript errors at build time. `./sources/deployment.yaml` produces
-  `fs.getSourcesDeploymentYaml(): File`.
-- **File**: a handle to one entry. `getContent`/`setContent` read/write contents; `getPath`/`setOutputPath`
-  read/rewrite the destination path on disk. **Identity is stable** — calling `setOutputPath` changes where
-  the file *lands* without changing the FS key, so downstream hooks still reach it via the same typed getter.
+  `fs.getSourcesDeploymentYaml(): File` — `File<Deployment>` if that source declared a `schema`, plain
+  `File` (`File<string>`) if it didn't. See [Schema-typed sources](#schema-typed-sources).
+- **File\<T\>**: a handle to one entry. `getContent`/`setContent` read/write contents as `T`; `getPath`/
+  `setOutputPath` read/rewrite the destination path on disk. **Identity is stable** — calling
+  `setOutputPath` changes where the file *lands* without changing the FS key, so downstream hooks still
+  reach it via the same typed getter.
 
 The generated accessor algorithm: strip the leading `./`, split on `/`, `.`, `-`, `_`, and space, then
 PascalCase-concatenate and prefix with `get`. `./sources/my-file.json` → `getSourcesMyFileJson`.
@@ -347,6 +369,90 @@ return a replacement FS, return nothing (implicit passthrough), or `throw` to ab
 
 At final write time, veil walks the bundle and writes each entry's contents to `<outDir>/<instance>/<file.path>`.
 If two entries resolve to the same destination path, that's a hard error.
+
+#### Schema-typed sources
+
+A source's `schema` field does more than get enforced (see [Schema enforcement](#schema-enforcement)
+below) — it also changes what that source's generated `FS` accessor hands a hook. Every declared
+source gets a `File<T>` accessor regardless; for one with no `schema`, `T` is `string` (the default)
+and `getContent`/`setContent` deal in raw text exactly as before. For one that declares a `schema`,
+`T` is the schema's generated interface: `getContent()` returns the *parsed, already-valid* object
+and `setContent()` takes one back, validating and re-serializing it — no manual `fs.get(...).
+getContent()` / `JSON.parse` / `setContent` boilerplate, and no `as` cast to trust.
+
+`veil build` generates one TS interface per unique schema file a kind's sources reference — named
+after the schema file (`kubernetes-deployment.schema.json` → `KubernetesDeployment`; two sources
+sharing a schema share the interface) — into the same `veil-types.ts` as `RenderHookContext`, `FS`,
+etc.
+
+```ts
+import type { RenderHook } from './veil-types';
+
+const bumpReplicas: RenderHook = {
+  render(ctx, fs) {
+    const file = fs.getSourcesDeploymentYaml();  // File<Deployment>, since this source has a schema
+    const app = file.getContent();                // already a parsed, schema-valid Deployment
+    app.spec.replicas = (app.spec.replicas ?? 1) + 1;
+    file.setContent(app);                          // validated + re-serialized on the way out
+    return fs;
+  },
+};
+
+export default bumpReplicas;
+```
+
+Compare with a source that has no `schema` — same shape, but `getContent`/`setContent` deal in the
+raw string and any parsing is the hook's own responsibility, with no host-enforced guarantee the
+cast is actually true:
+
+```ts
+// No schema on this source: manual parse/serialize, and the `as` cast is trusted, not verified.
+import { load, dump } from 'js-yaml';
+import type { Deployment } from 'kubernetes-types/apps/v1';
+
+const bumpReplicas: RenderHook = {
+  render(ctx, fs) {
+    const file = fs.getSourcesDeploymentYaml();  // plain File (File<string>)
+    const app = load(file.getContent()) as Deployment;
+    app.spec!.replicas = (app.spec!.replicas ?? 1) + 1;
+    file.setContent(dump(app));
+    return fs;
+  },
+};
+```
+
+The escape hatch (`fs.get(key)`) always returns plain `File` (`File<string>`) — it has no static
+path to resolve a schema type from, so it never parses for you even against a schema-declared
+source. It's still schema-*enforced* the same as the typed accessor (see below); it just hands back
+and accepts raw text instead of an object.
+
+There's no separate hook interface or lifecycle wiring for any of this — `RenderHook`, `post_render`,
+`dependents`, and `ValidateHook` all just receive `FS`, and a schema-declared source's typed accessor
+works identically wherever that `FS` shows up.
+
+#### Schema enforcement
+
+Declaring `schema` on a source is a contract on that *source*, independent of which accessor a hook
+uses to reach it — the generated typed accessor and the `fs.get()` escape hatch enforce it exactly
+the same way. Two checks cover the source's content end to end:
+
+1. **Pre-render gate.** Before any hook runs, every schema-declared source's initial content is
+   parsed and validated, all in one pass. A `File<T>` accessor can't meaningfully hand back a `T`
+   for content that doesn't conform to begin with, so this has to happen before the render/
+   post_render/validate lifecycles start at all. Every violation across every schema-declared
+   source is collected and reported together — through the same aggregated report `hooks.validate`
+   issues use — rather than failing on the first one found.
+2. **Validated on every access.** Every `getContent()` and every `setContent()` call against a
+   schema-declared source — through its typed accessor or through `fs.get()` — validates against
+   the schema at that exact call, synchronously. A `setContent()` that doesn't conform throws
+   immediately, aborting the render and attributing the failure to whichever hook made the call; a
+   `getContent()` re-checks too, in case an earlier hook's raw-string write (via the escape hatch)
+   slipped something invalid in without going through a typed `setContent()`. Because every access
+   point is itself a checkpoint, there's no separate bulk re-check after the fact — the last thing
+   that touched a schema-declared source already proved it was valid.
+
+A source with no declared `schema` is never checked by either — declaring `schema` is what opts a
+source into this contract.
 
 #### Validation hooks
 
@@ -691,6 +797,13 @@ const injectBucketEnv: DependentHook = {
 
 export default injectBucketEnv;
 ```
+
+`dependents[].paths` are bare hook paths — there's no per-entry binding to a specific source, typed
+or otherwise. That's fine: a dependent hook's job is reading/patching whatever the *consumer*
+declared, not one of the *target's* own sources, and if the consumer's own kind declared a `schema`
+on the file a dependent hook reaches for (`app.yaml` above), its accessor is just as typed here as
+it would be inside one of the consumer's own hooks — typing is a property of the `FS`/`File`
+mechanism itself, not of how a given hook got invoked.
 
 ## Render-time execution
 

@@ -2,6 +2,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "Kind is the compiled output of `veil build` for a single kind. It bundles\n every source file's contents and every hook's minified code into a\n single document, so rendering does not need access to the original\n filesystem. Compare with KindDefinition (config.proto), which is the\n hand-authored source-side shape that this is compiled from.",
+  "patternProperties": {
+    "^(sourceSchemas)$": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Raw JSON Schema text per schema-declared source, keyed like\n `sources` (path relative to the kind directory). Inlined — like\n DependentHook.params_schema — so render can validate without\n filesystem access to the kind directory. No entry for a source\n with no declared schema.",
+      "propertyNames": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "object"
+    }
+  },
   "properties": {
     "hooks": {
       "additionalProperties": false,
@@ -358,6 +371,17 @@
       "minLength": 1,
       "pattern": "^[a-z][a-z0-9_-]*$",
       "type": "string"
+    },
+    "source_schemas": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Raw JSON Schema text per schema-declared source, keyed like\n `sources` (path relative to the kind directory). Inlined — like\n DependentHook.params_schema — so render can validate without\n filesystem access to the kind directory. No entry for a source\n with no declared schema.",
+      "propertyNames": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "object"
     },
     "sources": {
       "additionalProperties": {

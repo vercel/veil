@@ -98,10 +98,38 @@ function __veilMethodSuffix(p) {
   return out;
 }
 
-function __veilMakeFile(entry) {
+// __veilMakeFile builds the object a hook sees for one bundle entry.
+// schemaCodec null means no schema — same as always, no validation.
+// Set (json/yaml), every getContent/setContent on ANY File for this
+// entry — typed accessor or escape hatch alike — validates via the
+// host callback and throws on a violation; "typed" picks whether they
+// traffic in the parsed object or the raw string.
+function __veilMakeFile(entry, path, schemaCodec, typed, validateSchema) {
+  function parseByCodec(text) {
+    return schemaCodec === 'yaml' ? globalThis.__veilHost.std.yaml.parse(text) : JSON.parse(text);
+  }
+  function stringifyByCodec(value) {
+    return schemaCodec === 'yaml' ? globalThis.__veilHost.std.yaml.stringify(value) : JSON.stringify(value);
+  }
+
   return {
-    getContent: function() { return entry.content; },
-    setContent: function(c) { entry.content = String(c); },
+    getContent: function() {
+      if (!schemaCodec) return entry.content;
+      var value = parseByCodec(entry.content);
+      validateSchema(path, JSON.stringify(value));
+      return typed ? value : entry.content;
+    },
+    setContent: function(c) {
+      if (!schemaCodec) { entry.content = String(c); return; }
+      if (typed) {
+        validateSchema(path, JSON.stringify(c));
+        entry.content = stringifyByCodec(c);
+      } else {
+        var text = String(c);
+        validateSchema(path, JSON.stringify(parseByCodec(text)));
+        entry.content = text;
+      }
+    },
     getPath: function() { return entry.path; },
     setOutputPath: function(p) { entry.path = String(p); },
     isDeleted: function() { return !!entry.deleted; },
@@ -109,7 +137,10 @@ function __veilMakeFile(entry) {
   };
 }
 
-function __veilMakeFS(initial) {
+// schemaByPath maps a schema-declared source's path to its codec
+// ("json"/"yaml"); absent paths stay plain. validateSchema is the
+// synchronous host callback that throws on a schema violation.
+function __veilMakeFS(initial, schemaByPath, validateSchema) {
   // Normalize: accept either the structured form { key: {path, content, deleted?} }
   // or a legacy flat form { key: "content" } (path defaults to the key).
   var entries = {};
@@ -127,10 +158,14 @@ function __veilMakeFS(initial) {
     }
   }
 
+  function codecFor(key) {
+    return Object.prototype.hasOwnProperty.call(schemaByPath, key) ? schemaByPath[key] : null;
+  }
+
   var fs = {
     get: function(path) {
       if (!Object.prototype.hasOwnProperty.call(entries, path)) return undefined;
-      return __veilMakeFile(entries[path]);
+      return __veilMakeFile(entries[path], path, codecFor(path), false, validateSchema);
     },
     add: function(path, content) {
       if (typeof path !== 'string' || !path) throw new Error('fs.add: path must be a non-empty string');
@@ -138,7 +173,7 @@ function __veilMakeFS(initial) {
         throw new Error('fs.add: path ' + JSON.stringify(path) + ' already exists');
       }
       entries[path] = { path: path, content: String(content == null ? '' : content), deleted: false };
-      return __veilMakeFile(entries[path]);
+      return __veilMakeFile(entries[path], path, null, false, validateSchema);
     },
     delete: function(path) {
       if (Object.prototype.hasOwnProperty.call(entries, path)) entries[path].deleted = true;
@@ -148,7 +183,7 @@ function __veilMakeFS(initial) {
       var out = [];
       for (var k in entries) {
         if (Object.prototype.hasOwnProperty.call(entries, k)) {
-          out.push(__veilMakeFile(entries[k]));
+          out.push(__veilMakeFile(entries[k], k, codecFor(k), false, validateSchema));
         }
       }
       return out;
@@ -171,7 +206,11 @@ function __veilMakeFS(initial) {
     var key = ks[i];
     var suffix = __veilMethodSuffix(key);
     if (!suffix) continue;
-    fs['get' + suffix] = (function(k) { return function() { return __veilMakeFile(entries[k]); }; })(key);
+    fs['get' + suffix] = (function(k) {
+      var codec = codecFor(k);
+      var typed = !!codec;
+      return function() { return __veilMakeFile(entries[k], k, codec, typed, validateSchema); };
+    })(key);
   }
   return fs;
 }
@@ -227,7 +266,10 @@ const (
   __ctx.fetch = globalThis.__veilHost.fetch;
   __ctx.env = globalThis.__veilHost.env;
   const __fs = __veilMakeFS(`
-	renderHookScriptSuffix = `);
+	// splices in the schema-codec map + validate callback, __veilMakeFS's
+	// 2nd/3rd args — see its doc comment above.
+	renderHookScriptMiddle2 = `, `
+	renderHookScriptSuffix = `, globalThis.__veilHost.validateSchema);
   let __res = __veilMod.default.render(__ctx, __fs);
   if (__res && typeof __res.then === 'function') __res = await __res;
   const __final = __res == null ? __fs : __res;
@@ -258,7 +300,8 @@ const (
   __ctx.fetch = globalThis.__veilHost.fetch;
   __ctx.env = globalThis.__veilHost.env;
   const __fs = __veilMakeFS(`
-	validateHookScriptSuffix = `);
+	validateHookScriptMiddle2 = `, `
+	validateHookScriptSuffix = `, globalThis.__veilHost.validateSchema);
   let __res = __veilMod.default.validate(__ctx, __fs);
   if (__res && typeof __res.then === 'function') __res = await __res;
   function __veilNormIssue(x) {
@@ -298,6 +341,12 @@ type options struct {
 	http        HTTPConfig
 	env         map[string]string
 	cwd         string
+	// typedSources maps a schema-declared source's path to its codec
+	// ("json"/"yaml"); see WithTypedSources.
+	typedSources map[string]string
+	// schemaValidate is the schema check a typed File calls on every
+	// access; see WithSchemaValidate.
+	schemaValidate func(path, jsonText string) error
 }
 
 // WithTimeout bounds a single RenderHook call. When the timeout fires the
@@ -346,6 +395,27 @@ func WithEnv(env map[string]string) Option {
 // directory — multiple hooks can run concurrently with different (or the
 // same) roots. Defaults to the process working directory when unset.
 func WithCwd(dir string) Option { return func(o *options) { o.cwd = dir } }
+
+// WithTypedSources declares which bundle entries are schema-declared,
+// mapping each path to its codec ("json"/"yaml"). Every File for one
+// of these paths — typed accessor or escape hatch alike — validates
+// against WithSchemaValidate's callback on every getContent/setContent;
+// the typed accessor additionally hands back the parsed object instead
+// of the raw string. Paths not listed behave as they always have.
+func WithTypedSources(codecByPath map[string]string) Option {
+	return func(o *options) { o.typedSources = codecByPath }
+}
+
+// WithSchemaValidate supplies the schema check a typed File calls
+// synchronously on every read/write, throwing at the exact call site
+// rather than surfacing as a Go error after the fact. path matches a
+// key in WithTypedSources' map; jsonText is the candidate value as
+// canonical JSON. A plain closure so this package stays decoupled from
+// any JSON-Schema library (pkg/registry's LoadedKind.ValidateSource
+// supplies it in practice).
+func WithSchemaValidate(fn func(path, jsonText string) error) Option {
+	return func(o *options) { o.schemaValidate = fn }
+}
 
 // Hook is the Go-side abstraction for a veil hook. Every lifecycle method
 // is safe to call; methods whose underlying JS function is not defined
@@ -453,7 +523,19 @@ func New(code string, opts ...Option) (Hook, error) {
 	}
 	envVal.Free()
 
-	return &jsHook{rt: rt, cfg: cfg, sourcemap: smap}, nil
+	// Precompute once; default to {} not null since __veilMakeFS does
+	// hasOwnProperty.call(schemaByPath, key), which throws on null.
+	typedSources := cfg.typedSources
+	if typedSources == nil {
+		typedSources = map[string]string{}
+	}
+	typedSourcesJSON, err := json.Marshal(typedSources)
+	if err != nil {
+		rt.Close()
+		return nil, fmt.Errorf("encoding typed sources: %w", err)
+	}
+
+	return &jsHook{rt: rt, cfg: cfg, sourcemap: smap, typedSourcesJSON: typedSourcesJSON}, nil
 }
 
 // rewriteErr returns err with any `hook.js:line:col` references in its
@@ -533,12 +615,25 @@ func installHostFuncs(rt *qjs.Runtime, cfg options) error {
 	if err != nil {
 		return fmt.Errorf("wrapping yaml.stringify: %w", err)
 	}
+	validateFn, err := qjs.FuncToJS(rt.Context(), func(path, jsonText string) (string, error) {
+		if cfg.schemaValidate == nil {
+			return "", nil
+		}
+		if err := cfg.schemaValidate(path, jsonText); err != nil {
+			return "", err
+		}
+		return "", nil
+	})
+	if err != nil {
+		return fmt.Errorf("wrapping schema validate: %w", err)
+	}
 
 	global := rt.Context().Global()
 	defer global.Free()
 	global.SetPropertyStr("__veilFetch", fetchFn)
 	global.SetPropertyStr("__veilYamlParse", parseFn)
 	global.SetPropertyStr("__veilYamlStringify", stringifyFn)
+	global.SetPropertyStr("__veilValidateSchema", validateFn)
 	return nil
 }
 
@@ -718,6 +813,7 @@ const hostNamespaceJS = `
 
   var nativeYamlParse = globalThis.__veilYamlParse;
   var nativeYamlStringify = globalThis.__veilYamlStringify;
+  var nativeValidateSchema = globalThis.__veilValidateSchema;
 
   var yamlCodec = {
     parse: function(s) {
@@ -744,7 +840,7 @@ const hostNamespaceJS = `
     get platform() { return nativeOs.platform; }
   };
 
-  globalThis.__veilHost = { std: stdProxy, os: osProxy, fetch: fetchPolyfill };
+  globalThis.__veilHost = { std: stdProxy, os: osProxy, fetch: fetchPolyfill, validateSchema: nativeValidateSchema };
 
   // Replace globalThis.std with the read-only proxy (same object as
   // ctx.std). The full QuickJS std module is gone but loadFile / getenv
@@ -760,15 +856,17 @@ const hostNamespaceJS = `
   delete globalThis.__veilFetch;
   delete globalThis.__veilYamlParse;
   delete globalThis.__veilYamlStringify;
+  delete globalThis.__veilValidateSchema;
 })();
 `
 
 type jsHook struct {
-	rt        *qjs.Runtime
-	cfg       options
-	sourcemap *sourcemap.Consumer
-	closed    bool
-	stuck     bool // set after a timeout; rt must not be touched again
+	rt               *qjs.Runtime
+	cfg              options
+	sourcemap        *sourcemap.Consumer
+	typedSourcesJSON []byte
+	closed           bool
+	stuck            bool // set after a timeout; rt must not be touched again
 }
 
 func (h *jsHook) Close() error {
@@ -819,11 +917,13 @@ func (h *jsHook) RenderHook(ctx any, bundle Bundle) (Bundle, error) {
 	}
 
 	var b strings.Builder
-	b.Grow(len(renderHookScriptPrefix) + len(ctxJSON) + len(renderHookScriptMiddle) + len(bundleJSON) + len(renderHookScriptSuffix))
+	b.Grow(len(renderHookScriptPrefix) + len(ctxJSON) + len(renderHookScriptMiddle) + len(bundleJSON) + len(renderHookScriptMiddle2) + len(h.typedSourcesJSON) + len(renderHookScriptSuffix))
 	b.WriteString(renderHookScriptPrefix)
 	b.Write(ctxJSON)
 	b.WriteString(renderHookScriptMiddle)
 	b.Write(bundleJSON)
+	b.WriteString(renderHookScriptMiddle2)
+	b.Write(h.typedSourcesJSON)
 	b.WriteString(renderHookScriptSuffix)
 	script := b.String()
 
@@ -909,11 +1009,13 @@ func (h *jsHook) ValidateHook(ctx any, bundle Bundle) ([]ValidationIssue, error)
 	}
 
 	var b strings.Builder
-	b.Grow(len(validateHookScriptPrefix) + len(ctxJSON) + len(validateHookScriptMiddle) + len(bundleJSON) + len(validateHookScriptSuffix))
+	b.Grow(len(validateHookScriptPrefix) + len(ctxJSON) + len(validateHookScriptMiddle) + len(bundleJSON) + len(validateHookScriptMiddle2) + len(h.typedSourcesJSON) + len(validateHookScriptSuffix))
 	b.WriteString(validateHookScriptPrefix)
 	b.Write(ctxJSON)
 	b.WriteString(validateHookScriptMiddle)
 	b.Write(bundleJSON)
+	b.WriteString(validateHookScriptMiddle2)
+	b.Write(h.typedSourcesJSON)
 	b.WriteString(validateHookScriptSuffix)
 	script := b.String()
 
