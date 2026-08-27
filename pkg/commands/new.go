@@ -76,6 +76,10 @@ func newHook() *cli.Command {
 				Name:  "resource",
 				Usage: "Path to the resource yaml this hook belongs to (mutually exclusive with --kind)",
 			},
+			&cli.StringFlag{
+				Name:  "source",
+				Usage: "Bind this hook to one of the kind's declared sources (typed hook, --kind only): render(ctx, obj) instead of render(ctx, fs)",
+			},
 		},
 		Arguments: []cli.Argument{
 			&cli.StringArg{
@@ -273,8 +277,12 @@ func runNewHook(ctx context.Context, c *cli.Command) (*newResponse, error) {
 
 	kindName := c.String("kind")
 	resourcePath := c.String("resource")
+	source := c.String("source")
 	if kindName != "" && resourcePath != "" {
 		return nil, fmt.Errorf("--kind and --resource are mutually exclusive")
+	}
+	if source != "" && resourcePath != "" {
+		return nil, fmt.Errorf("--source requires --kind (typed hooks bind to a kind's own declared sources, not a resource)")
 	}
 
 	cwd, err := os.Getwd()
@@ -298,13 +306,17 @@ func runNewHook(ctx context.Context, c *cli.Command) (*newResponse, error) {
 	if resourcePath != "" {
 		return runNewHookOnResource(cwd, name, resourcePath)
 	}
-	return runNewHookOnKind(ctx, cwd, name, kindName)
+	return runNewHookOnKind(ctx, cwd, name, kindName, source)
 }
 
 // runNewHookOnKind is the original `veil new hook --kind X` path: write
 // the hook .ts under <kindDir>/hooks/src/, append it to the kind file's
-// hooks.render, and re-run the build pipeline.
-func runNewHookOnKind(ctx context.Context, cwd, name, kindName string) (*newResponse, error) {
+// hooks.render, and re-run the build pipeline. When source is non-empty
+// it must match one of the kind's declared sources — the scaffolded
+// hook is then a TypedRenderHook<T> bound to it (T is the generated
+// interface for that source's schema, or `unknown` if it declared
+// none) instead of the whole-bundle RenderHook.
+func runNewHookOnKind(ctx context.Context, cwd, name, kindName, source string) (*newResponse, error) {
 	p := interact.Default()
 	reg, err := config.Discover(cwd)
 	if err != nil {
@@ -322,6 +334,25 @@ func runNewHookOnKind(ctx context.Context, cwd, name, kindName string) (*newResp
 		return nil, fmt.Errorf("kind %q not found in registry", kindName)
 	}
 
+	var typeName string
+	if source != "" {
+		found := false
+		for _, p := range k.SourcePaths() {
+			if p == source {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("source %q is not declared in kind %q's `sources`", source, kindName)
+		}
+		_, typeNames, err := build.SourceSchemaTypes(k)
+		if err != nil {
+			return nil, fmt.Errorf("resolving source types: %w", err)
+		}
+		typeName = typeNames[source]
+	}
+
 	outPath := filepath.Join(k.Dir, "hooks", "src", name+".ts")
 	if _, err := os.Stat(outPath); err == nil {
 		return nil, fmt.Errorf("hook %s already exists", outPath)
@@ -334,7 +365,12 @@ func runNewHookOnKind(ctx context.Context, cwd, name, kindName string) (*newResp
 		return nil, fmt.Errorf("creating hooks directory: %w", err)
 	}
 
-	ts := build.HookTemplate(name, hookTypesImport(k))
+	var ts string
+	if source != "" {
+		ts = build.TypedHookTemplate(name, hookTypesImport(k), typeName)
+	} else {
+		ts = build.HookTemplate(name, hookTypesImport(k))
+	}
 	if err := os.WriteFile(outPath, []byte(ts), 0644); err != nil {
 		return nil, fmt.Errorf("writing hook: %w", err)
 	}
@@ -346,7 +382,7 @@ func runNewHookOnKind(ctx context.Context, cwd, name, kindName string) (*newResp
 		return nil, fmt.Errorf("reading %s: %w", kindPath, err)
 	}
 	relHook := "./" + filepath.ToSlash(filepath.Join("hooks", "src", name+".ts"))
-	if err := appendHookToKind(kindPath, "render", relHook); err != nil {
+	if err := appendHookToKind(kindPath, "render", relHook, source); err != nil {
 		return nil, err
 	}
 	rb.restoreFile(kindPath, prevKind)
@@ -882,9 +918,10 @@ func appendHookToResource(resourcePath, lifecycle, relHook string) error {
 }
 
 // appendHookToKind appends relHook to the kind file's hooks.<lifecycle>
-// array. The kind file may be JSON or YAML — the format is preserved
-// across the mutation.
-func appendHookToKind(kindPath, lifecycle, relHook string) error {
+// array, with `source` set on the new entry when non-empty (a typed
+// hook binding — see Typed hooks in SPEC.md). The kind file may be
+// JSON or YAML — the format is preserved across the mutation.
+func appendHookToKind(kindPath, lifecycle, relHook, source string) error {
 	return mutateGeneric(kindPath, func(raw map[string]any) error {
 		hooksObj, _ := raw["hooks"].(map[string]any)
 		if hooksObj == nil {
@@ -911,7 +948,11 @@ func appendHookToKind(kindPath, lifecycle, relHook string) error {
 				return nil
 			}
 		}
-		list = append(list, map[string]any{"path": relHook})
+		entry := map[string]any{"path": relHook}
+		if source != "" {
+			entry["source"] = source
+		}
+		list = append(list, entry)
 		hooksObj[lifecycle] = list
 		raw["hooks"] = hooksObj
 		return nil

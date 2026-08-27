@@ -195,7 +195,15 @@ message KindDefinition {
   // Source configuration files that make up the kind. May be empty —
   // a kind with no sources is valid (it's the bare template plus
   // whatever its hooks add at render time).
-  repeated string sources = 2 [(buf.validate.field).repeated.items.string.min_len = 1];
+  //
+  // Entries are typed as `google.protobuf.Value` so each one can be
+  // EITHER a bare string path (no declared schema) OR an object
+  // matching SourceDefinition (path plus optional `schema`) — the
+  // same polymorphism `hooks` already uses, for the same reason:
+  // protojson can't express "string OR struct" on a typed field. The
+  // build pipeline converts each Value into a SourceDefinition before
+  // compilation.
+  repeated google.protobuf.Value sources = 2;
 
   // Hook code files grouped by lifecycle point. The dependents block —
   // the per-consumer hooks that fire when another kind declares a
@@ -214,6 +222,28 @@ message KindDefinition {
   map<string, Variable> variables = 6 [(buf.validate.field).map.keys.string.pattern = "^[a-zA-Z_][a-zA-Z0-9_]*$"];
 }
 
+// SourceDefinition is a single source entry in kind.json: a path to
+// the source configuration file plus optional `schema` — a JSON
+// Schema file describing the source's shape, resolved the same way
+// KindDefinition.schema resolves the spec schema. A source with no
+// `schema` behaves exactly as before: raw content, no per-source
+// typing. Declaring `schema` makes the source's final content a
+// contract the runner enforces regardless of whether any hook binds
+// to it as typed (see RenderHookDefinition.source).
+message SourceDefinition {
+  // Path to the source file. Resolved relative to the enclosing
+  // kind.json file.
+  string path = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Path to a JSON Schema file describing this source's shape.
+  // Resolved relative to the enclosing kind.json file. Optional —
+  // omit for a source with no declared shape.
+  string schema = 2;
+}
+
 // HooksDefinition groups a kind's hook files by lifecycle point. Each
 // field is an ordered list; the order determines invocation order at
 // that lifecycle point. Additional lifecycle points will be added as
@@ -224,7 +254,7 @@ message KindDefinition {
 // `google.protobuf.Value` so each entry can be EITHER a bare string
 // (treated as the hook's source path with no extra access grants) OR
 // an object matching RenderHookDefinition (path plus optional
-// `access` block). The wire format is whatever the user wrote;
+// `access`/`source` fields). The wire format is whatever the user
 // the build pipeline converts each Value into a RenderHookDefinition
 // before compilation.
 message HooksDefinition {
@@ -276,6 +306,14 @@ message RenderHookDefinition {
   // Optional declaration of host resources this hook needs (env vars,
   // and eventually filesystem / network as they're added).
   HookAccess access = 2;
+
+  // Path referencing this kind's declared `sources` entry this hook
+  // is bound to. When set, the hook receives (and must return) the
+  // parsed object for that one source instead of the whole-bundle
+  // FS: `render(ctx, obj)` in place of `render(ctx, fs)`. Must match
+  // a `SourceDefinition.path` in the same kind.json's `sources` list.
+  // Empty (the default) preserves today's whole-bundle contract.
+  string source = 3;
 }
 
 // HookAccess declares the host resources a hook is allowed to reach. The

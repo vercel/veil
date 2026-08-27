@@ -67,7 +67,7 @@ func BuildGraph(kinds []*config.Kind) (*KindGraph, error) {
 		g.nodes[k.Name] = &KindNode{
 			Name:    k.Name,
 			Spec:    spec,
-			Sources: append([]string(nil), k.Sources...),
+			Sources: append([]string(nil), k.SourcePaths()...),
 		}
 		g.nodesOrder = append(g.nodesOrder, k.Name)
 	}

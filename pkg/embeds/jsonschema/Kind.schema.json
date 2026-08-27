@@ -2,6 +2,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "Kind is the compiled output of `veil build` for a single kind. It bundles\n every source file's contents and every hook's minified code into a\n single document, so rendering does not need access to the original\n filesystem. Compare with KindDefinition (config.proto), which is the\n hand-authored source-side shape that this is compiled from.",
+  "patternProperties": {
+    "^(sourceSchemas)$": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Raw JSON Schema text for every source that declared `schema` in\n its KindDefinition.SourceDefinition, keyed the same way `sources`\n is (path relative to the kind directory). Inlined here — like\n DependentHook.params_schema — so render can validate a source's\n content without filesystem access to the original kind\n directory. Sources with no declared schema have no entry here.",
+      "propertyNames": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "object"
+    }
+  },
   "properties": {
     "hooks": {
       "additionalProperties": false,
@@ -56,6 +69,11 @@
               "name": {
                 "description": "Relative path from the kind directory (e.g. \"hooks/hello-world.ts\").",
                 "minLength": 1,
+                "type": "string"
+              },
+              "source": {
+                "default": "",
+                "description": "Path into the compiled Kind.sources/source_schemas maps this hook\n is bound to (copied from KindDefinition.RenderHookDefinition.source\n at compile time). Empty (the default) means this is a\n whole-bundle hook: RenderHook(ctx, fs). Non-empty means the\n runner invokes RenderHookTyped(ctx, obj) instead, parsing/\n re-serializing that one source around the call.",
                 "type": "string"
               }
             },
@@ -132,6 +150,11 @@
                     "name": {
                       "description": "Relative path from the kind directory (e.g. \"hooks/hello-world.ts\").",
                       "minLength": 1,
+                      "type": "string"
+                    },
+                    "source": {
+                      "default": "",
+                      "description": "Path into the compiled Kind.sources/source_schemas maps this hook\n is bound to (copied from KindDefinition.RenderHookDefinition.source\n at compile time). Empty (the default) means this is a\n whole-bundle hook: RenderHook(ctx, fs). Non-empty means the\n runner invokes RenderHookTyped(ctx, obj) instead, parsing/\n re-serializing that one source around the call.",
                       "type": "string"
                     }
                   },
@@ -216,6 +239,11 @@
                 "description": "Relative path from the kind directory (e.g. \"hooks/hello-world.ts\").",
                 "minLength": 1,
                 "type": "string"
+              },
+              "source": {
+                "default": "",
+                "description": "Path into the compiled Kind.sources/source_schemas maps this hook\n is bound to (copied from KindDefinition.RenderHookDefinition.source\n at compile time). Empty (the default) means this is a\n whole-bundle hook: RenderHook(ctx, fs). Non-empty means the\n runner invokes RenderHookTyped(ctx, obj) instead, parsing/\n re-serializing that one source around the call.",
+                "type": "string"
               }
             },
             "required": [
@@ -276,6 +304,11 @@
               "name": {
                 "description": "Relative path from the kind directory (e.g. \"hooks/hello-world.ts\").",
                 "minLength": 1,
+                "type": "string"
+              },
+              "source": {
+                "default": "",
+                "description": "Path into the compiled Kind.sources/source_schemas maps this hook\n is bound to (copied from KindDefinition.RenderHookDefinition.source\n at compile time). Empty (the default) means this is a\n whole-bundle hook: RenderHook(ctx, fs). Non-empty means the\n runner invokes RenderHookTyped(ctx, obj) instead, parsing/\n re-serializing that one source around the call.",
                 "type": "string"
               }
             },
@@ -338,6 +371,11 @@
                 "description": "Relative path from the kind directory (e.g. \"hooks/hello-world.ts\").",
                 "minLength": 1,
                 "type": "string"
+              },
+              "source": {
+                "default": "",
+                "description": "Path into the compiled Kind.sources/source_schemas maps this hook\n is bound to (copied from KindDefinition.RenderHookDefinition.source\n at compile time). Empty (the default) means this is a\n whole-bundle hook: RenderHook(ctx, fs). Non-empty means the\n runner invokes RenderHookTyped(ctx, obj) instead, parsing/\n re-serializing that one source around the call.",
+                "type": "string"
               }
             },
             "required": [
@@ -358,6 +396,17 @@
       "minLength": 1,
       "pattern": "^[a-z][a-z0-9_-]*$",
       "type": "string"
+    },
+    "source_schemas": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Raw JSON Schema text for every source that declared `schema` in\n its KindDefinition.SourceDefinition, keyed the same way `sources`\n is (path relative to the kind directory). Inlined here — like\n DependentHook.params_schema — so render can validate a source's\n content without filesystem access to the original kind\n directory. Sources with no declared schema have no entry here.",
+      "propertyNames": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "object"
     },
     "sources": {
       "additionalProperties": {

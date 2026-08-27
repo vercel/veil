@@ -49,6 +49,11 @@
           "description": "Path to the hook source file. Resolved relative to the enclosing\n kind.json file.",
           "minLength": 1,
           "type": "string"
+        },
+        "source": {
+          "default": "",
+          "description": "Path referencing this kind's declared `sources` entry this hook\n is bound to. When set, the hook receives (and must return) the\n parsed object for that one source instead of the whole-bundle\n FS: `render(ctx, obj)` in place of `render(ctx, fs)`. Must match\n a `SourceDefinition.path` in the same kind.json's `sources` list.\n Empty (the default) preserves today's whole-bundle contract.",
+          "type": "string"
         }
       },
       "required": [

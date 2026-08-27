@@ -237,6 +237,69 @@ func (s *NewSuite) TestNewHookAppendsToKind() {
 	}, hooksField["render"])
 }
 
+func (s *NewSuite) TestNewHookWithSourceScaffoldsTypedHook() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	kindDir := filepath.Join(s.root, ".veil", "kinds", "worker")
+	s.Require().NoError(os.MkdirAll(filepath.Join(kindDir, "schemas"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "schemas", "deployment.schema.json"),
+		[]byte(`{"type":"object","properties":{"replicas":{"type":"integer"}},"required":["replicas"]}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "sources", "deployment.json"), []byte(`{"replicas":1}`), 0644))
+
+	kind := s.readJSON(filepath.Join(kindDir, "kind.json"))
+	sources, _ := kind["sources"].([]any)
+	sources = append(sources, map[string]any{"path": "./sources/deployment.json", "schema": "./schemas/deployment.schema.json"})
+	kind["sources"] = sources
+	data, err := json.MarshalIndent(kind, "", "  ")
+	s.Require().NoError(err)
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "kind.json"), data, 0644))
+
+	_, err = s.run("new", "hook", "bump", "--kind", "worker", "--source", "./sources/deployment.json")
+	s.Require().NoError(err)
+
+	hookPath := filepath.Join(kindDir, "hooks", "src", "bump.ts")
+	contents, err := os.ReadFile(hookPath)
+	s.Require().NoError(err)
+	s.Contains(string(contents), "TypedRenderHook<Deployment>")
+	s.Contains(string(contents), "obj: Deployment")
+	s.Contains(string(contents), "from './veil-types'")
+
+	compiledKind := s.readJSON(filepath.Join(kindDir, "kind.json"))
+	hooksField, ok := compiledKind["hooks"].(map[string]any)
+	s.Require().True(ok)
+	render, ok := hooksField["render"].([]any)
+	s.Require().True(ok)
+	var found bool
+	for _, h := range render {
+		entry := h.(map[string]any)
+		if entry["path"] == "./hooks/src/bump.ts" {
+			s.Equal("./sources/deployment.json", entry["source"])
+			found = true
+		}
+	}
+	s.True(found)
+
+	types, err := os.ReadFile(filepath.Join(kindDir, "hooks", "src", "veil-types.ts"))
+	s.Require().NoError(err)
+	s.Contains(string(types), "export interface Deployment {")
+}
+
+func (s *NewSuite) TestNewHookRejectsUnknownSource() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	_, err = s.run("new", "hook", "bump", "--kind", "worker", "--source", "./sources/does-not-exist.json")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "does-not-exist.json")
+}
+
+func (s *NewSuite) TestNewHookRejectsSourceWithResourceFlag() {
+	_, err := s.run("new", "hook", "bump", "--resource", "./foo.yaml", "--source", "./sources/app.yaml")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "--source requires --kind")
+}
+
 func (s *NewSuite) TestNewHookRequiresKindOrResourceFlagOrAutoDetect() {
 	// cwd is the empty temp dir — no kind file, no resource file → auto-detect
 	// has nothing to grab onto, so the command errors with a message asking

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Entries in the render / validate / post_render arrays are typed as\n `google.protobuf.Value` so each entry can be EITHER a bare string\n (treated as the hook's source path with no extra access grants) OR\n an object matching RenderHookDefinition (path plus optional\n `access` block). The wire format is whatever the user wrote;\n the build pipeline converts each Value into a RenderHookDefinition\n before compilation.",
+  "description": "Entries in the render / validate / post_render arrays are typed as\n `google.protobuf.Value` so each entry can be EITHER a bare string\n (treated as the hook's source path with no extra access grants) OR\n an object matching RenderHookDefinition (path plus optional\n `access`/`source` fields). The wire format is whatever the user\n the build pipeline converts each Value into a RenderHookDefinition\n before compilation.",
   "patternProperties": {
     "^(postRender)$": {
       "description": "Post-render hooks that run after resource-level render hooks but\n before validate. Same `RenderHook(ctx, fs)` contract as the\n `render` lifecycle — mutating, declaration-ordered — but their\n job is the kind's final word on normalization: consistent\n formatting, key ordering, banner stamping, etc. Splitting this\n from `render` lets a kind react to whatever resource hooks\n produced (which the kind couldn't see at the `render` stage)\n without giving up the deterministic last-mile pass.",
