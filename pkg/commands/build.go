@@ -371,8 +371,10 @@ func cwdRel(abs string) string {
 // plus every kind's kind.json), copied verbatim so the compiled document
 // is self-contained at render time.
 func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectRoot string, fsys fs.FS) (*veilv1.Kind, error) {
-	sources := make(map[string]string, len(k.Sources))
-	for _, src := range k.Sources {
+	sources := make(map[string]string, len(k.SourceDefs()))
+	sourceSchemas := make(map[string]string)
+	for _, def := range k.SourceDefs() {
+		src := def.GetPath()
 		abs := src
 		if !filepath.IsAbs(abs) {
 			abs = filepath.Join(k.Dir, src)
@@ -381,11 +383,30 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 		if err != nil {
 			return nil, fmt.Errorf("reading source %s: %w", src, err)
 		}
-		key, err := filepath.Rel(k.Dir, abs)
+		key, err := sourceKey(k, src)
 		if err != nil {
-			return nil, fmt.Errorf("resolving source key for %s: %w", src, err)
+			return nil, err
 		}
-		sources[filepath.ToSlash(key)] = string(data)
+		sources[key] = string(data)
+
+		if schema := def.GetSchema(); schema != "" {
+			schemaAbs := schema
+			if !filepath.IsAbs(schemaAbs) {
+				schemaAbs = filepath.Join(k.Dir, schema)
+			}
+			schemaData, err := os.ReadFile(schemaAbs)
+			if err != nil {
+				return nil, fmt.Errorf("reading schema for source %s: %w", src, err)
+			}
+			var probe map[string]any
+			if err := json.Unmarshal(schemaData, &probe); err != nil {
+				return nil, fmt.Errorf("source %s: schema %s: invalid JSON: %w", src, schema, err)
+			}
+			sourceSchemas[key] = string(schemaData)
+		}
+	}
+	if len(sourceSchemas) == 0 {
+		sourceSchemas = nil
 	}
 
 	render, err := compileRenderHookDefs(k, projectRoot, fsys, k.RenderHooks())
@@ -408,9 +429,14 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 		return nil, err
 	}
 
+	if err := checkHookSources(sources, render, validate, postRender); err != nil {
+		return nil, err
+	}
+
 	return &veilv1.Kind{
-		Name:    k.Name,
-		Sources: sources,
+		Name:          k.Name,
+		Sources:       sources,
+		SourceSchemas: sourceSchemas,
 		Hooks: &veilv1.Hooks{
 			Render:     render,
 			Dependents: dependents,
@@ -419,6 +445,41 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 		},
 		Variables: variables,
 	}, nil
+}
+
+// checkHookSources is a build-time safety net: every compiled hook whose
+// Source is set must name a key actually present in the compiled
+// sources map. pkg/config already rejects an unknown source reference
+// at kind.json load time, but that check compares the as-declared
+// path string, while Source here has been normalized to the same
+// kind-dir-relative key sources/source_schemas use — this catches any
+// drift between the two forms before it reaches render.
+func checkHookSources(sources map[string]string, lists ...[]*veilv1.Hook) error {
+	for _, list := range lists {
+		for _, h := range list {
+			if src := h.GetSource(); src != "" {
+				if _, ok := sources[src]; !ok {
+					return fmt.Errorf("hook %s: source %q not found among compiled sources", h.GetName(), src)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// sourceKey resolves a source (or hook `source` reference) path to the
+// kind-dir-relative key used by Kind.sources/Kind.source_schemas —
+// mirrors compileHook's Name normalization so the two stay in lockstep.
+func sourceKey(k *config.Kind, p string) (string, error) {
+	abs := p
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(k.Dir, p)
+	}
+	key, err := filepath.Rel(k.Dir, abs)
+	if err != nil {
+		return "", fmt.Errorf("resolving source key for %s: %w", p, err)
+	}
+	return filepath.ToSlash(key), nil
 }
 
 // compileHookList bundles+minifies every hook path in paths, resolving
@@ -447,6 +508,13 @@ func compileRenderHookDefs(k *config.Kind, projectRoot string, fsys fs.FS, defs 
 			return nil, err
 		}
 		hk.Access = d.GetAccess()
+		if src := d.GetSource(); src != "" {
+			key, err := sourceKey(k, src)
+			if err != nil {
+				return nil, fmt.Errorf("hook %s: %w", d.GetPath(), err)
+			}
+			hk.Source = key
+		}
 		hooks = append(hooks, hk)
 	}
 	return hooks, nil
@@ -705,7 +773,12 @@ func validateKind(k *config.Kind) error {
 			}
 		}
 	}
-	check("source", k.Sources)
+	check("source", k.SourcePaths())
+	for _, def := range k.SourceDefs() {
+		if schema := def.GetSchema(); schema != "" {
+			check(fmt.Sprintf("source %q schema", def.GetPath()), []string{schema})
+		}
+	}
 	for _, d := range k.RenderHooks() {
 		check("render hook", []string{d.GetPath()})
 	}

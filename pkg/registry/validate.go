@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/goccy/go-json"
@@ -28,6 +29,11 @@ type LoadedKind struct {
 	SchemaPath string
 	// validator is the composite kind.schema.json compiled once at load.
 	validator *jsonschema.Schema
+	// sourceValidators holds one compiled validator per schema-declared
+	// source (Kind.source_schemas), keyed the same way source_schemas
+	// is — the kind-dir-relative path. A source with no declared
+	// schema has no entry here.
+	sourceValidators map[string]*jsonschema.Schema
 }
 
 // Validate checks a resource document — its spec already overlay-merged,
@@ -42,6 +48,41 @@ func (k *LoadedKind) Validate(doc map[string]any) error {
 		return errors.New(stripSchemaURL(err.Error()))
 	}
 	return nil
+}
+
+// ValidateSource checks doc — the parsed content of a schema-declared
+// source — against that source's compiled validator. A source with no
+// declared schema (not present in sourceValidators) always passes: it
+// never opted into this contract.
+func (k *LoadedKind) ValidateSource(path string, doc any) error {
+	sch, ok := k.sourceValidators[path]
+	if !ok {
+		return nil
+	}
+	if err := sch.Validate(doc); err != nil {
+		return errors.New(stripSourceSchemaURL(path, err.Error()))
+	}
+	return nil
+}
+
+// HasSourceSchema reports whether the source at path declared a
+// `schema` — i.e. whether ValidateSource actually checks anything for
+// it.
+func (k *LoadedKind) HasSourceSchema(path string) bool {
+	_, ok := k.sourceValidators[path]
+	return ok
+}
+
+// SchemaSources returns every source path that declared a `schema`, in
+// deterministic order — the set the render pipeline's pre-render gate
+// and final post-post_render check both iterate.
+func (k *LoadedKind) SchemaSources() []string {
+	paths := make([]string, 0, len(k.sourceValidators))
+	for p := range k.sourceValidators {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 // extractSpecSubschema parses the composite kind.schema.json bytes and
@@ -80,4 +121,40 @@ var schemaURLRE = regexp.MustCompile(`'mem://schema#?[^']*'`)
 func stripSchemaURL(msg string) string {
 	msg = schemaURLRE.ReplaceAllString(msg, "kind schema")
 	return strings.TrimPrefix(msg, "jsonschema validation failed with kind schema\n")
+}
+
+// compileSourceSchemas compiles one validator per entry in a compiled
+// Kind's source_schemas map (path -> raw JSON Schema text). Each gets
+// its own URI under the same compiler instance so a build/render with
+// many typed sources doesn't spin up a separate jsonschema.Compiler
+// per source. Returns nil for a kind with no schema-declared sources.
+func compileSourceSchemas(schemas map[string]string) (map[string]*jsonschema.Schema, error) {
+	if len(schemas) == 0 {
+		return nil, nil
+	}
+	compiler := jsonschema.NewCompiler()
+	out := make(map[string]*jsonschema.Schema, len(schemas))
+	for path, raw := range schemas {
+		var doc any
+		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+			return nil, fmt.Errorf("source %q: parsing schema: %w", path, err)
+		}
+		uri := "mem://source/" + path
+		if err := compiler.AddResource(uri, doc); err != nil {
+			return nil, fmt.Errorf("source %q: registering schema: %w", path, err)
+		}
+		sch, err := compiler.Compile(uri)
+		if err != nil {
+			return nil, fmt.Errorf("source %q: compiling schema: %w", path, err)
+		}
+		out[path] = sch
+	}
+	return out, nil
+}
+
+func stripSourceSchemaURL(path, msg string) string {
+	re := regexp.MustCompile(`'mem://source/` + regexp.QuoteMeta(path) + `#?[^']*'`)
+	label := fmt.Sprintf("source %q schema", path)
+	msg = re.ReplaceAllString(msg, label)
+	return strings.TrimPrefix(msg, fmt.Sprintf("jsonschema validation failed with %s\n", label))
 }

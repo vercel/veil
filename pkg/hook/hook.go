@@ -287,6 +287,79 @@ const (
 })()`
 )
 
+// Typed-hook script fragments. Used for a hook bound to one source
+// (RenderHookDefinition.source): instead of wrapping the whole bundle
+// in an FS, the parsed object for that one source is spliced in
+// directly and handed to `render`/`validate` as the second argument.
+// No __veilMakeFS involved — the object crosses the boundary as plain
+// JSON, and the result comes back the same way for the Go side to
+// re-serialize into the bundle entry it belongs to.
+const (
+	renderHookTypedScriptPrefix = `await (async () => {
+  __veilLogs.length = 0;
+  if (!__veilMod || !__veilMod.default || typeof __veilMod.default.render !== 'function') {
+    return JSON.stringify({ logs: __veilLogs });
+  }
+  const __ctx = `
+	renderHookTypedScriptMiddle = `;
+  __ctx.std = globalThis.__veilHost.std;
+  __ctx.os = globalThis.__veilHost.os;
+  __ctx.fetch = globalThis.__veilHost.fetch;
+  __ctx.env = globalThis.__veilHost.env;
+  const __obj = `
+	renderHookTypedScriptSuffix = `;
+  let __res = __veilMod.default.render(__ctx, __obj);
+  if (__res && typeof __res.then === 'function') __res = await __res;
+  const __final = __res === undefined ? __obj : __res;
+  return JSON.stringify({ value: __final, logs: __veilLogs });
+})()`
+)
+
+// Typed validate-hook script fragments. Same obj-in-place-of-fs
+// substitution as the typed render script; issue normalization is
+// identical to the untyped validate script.
+const (
+	validateHookTypedScriptPrefix = `await (async () => {
+  __veilLogs.length = 0;
+  if (!__veilMod || !__veilMod.default || typeof __veilMod.default.validate !== 'function') {
+    return JSON.stringify({ issues: [], logs: __veilLogs });
+  }
+  const __ctx = `
+	validateHookTypedScriptMiddle = `;
+  __ctx.std = globalThis.__veilHost.std;
+  __ctx.os = globalThis.__veilHost.os;
+  __ctx.fetch = globalThis.__veilHost.fetch;
+  __ctx.env = globalThis.__veilHost.env;
+  const __obj = `
+	validateHookTypedScriptSuffix = `;
+  let __res = __veilMod.default.validate(__ctx, __obj);
+  if (__res && typeof __res.then === 'function') __res = await __res;
+  function __veilNormIssue(x) {
+    if (x == null) return null;
+    if (typeof x === 'string') return { message: x };
+    if (typeof x === 'object') {
+      var msg = x.message == null ? '' : String(x.message);
+      var out = { message: msg };
+      if (x.path != null) out.path = String(x.path);
+      if (x.severity != null) out.severity = String(x.severity);
+      return out;
+    }
+    return { message: String(x) };
+  }
+  var __issues = [];
+  if (Array.isArray(__res)) {
+    for (var i = 0; i < __res.length; i++) {
+      var n = __veilNormIssue(__res[i]);
+      if (n) __issues.push(n);
+    }
+  } else {
+    var n = __veilNormIssue(__res);
+    if (n) __issues.push(n);
+  }
+  return JSON.stringify({ issues: __issues, logs: __veilLogs });
+})()`
+)
+
 // Option configures a Hook.
 type Option func(*options)
 
@@ -365,6 +438,22 @@ type Hook interface {
 	// Any mutations the hook makes to ctx or fs are discarded — the
 	// only observable output is the issues slice.
 	ValidateHook(ctx any, bundle Bundle) ([]ValidationIssue, error)
+
+	// RenderHookTyped runs the hook's `render(ctx, obj)` function for a
+	// hook bound to one source (RenderHookDefinition.source): obj is
+	// that source's already-parsed content, not the whole-bundle FS.
+	// If the JS module has no `render` defined, obj is returned
+	// unchanged. The caller is responsible for parsing obj out of (and
+	// the result back into) the bundle entry — this method only
+	// speaks JSON.
+	RenderHookTyped(ctx any, obj json.RawMessage) (json.RawMessage, error)
+
+	// ValidateHookTyped runs the hook's `validate(ctx, obj)` function
+	// with the bound source's parsed content in place of the FS.
+	// Return contract is identical to ValidateHook — an issue list,
+	// not the object — since validate mutations are discarded either
+	// way.
+	ValidateHookTyped(ctx any, obj json.RawMessage) ([]ValidationIssue, error)
 
 	// Close releases the underlying runtime resources. Safe to call more
 	// than once.
@@ -915,6 +1004,140 @@ func (h *jsHook) ValidateHook(ctx any, bundle Bundle) ([]ValidationIssue, error)
 	b.WriteString(validateHookScriptMiddle)
 	b.Write(bundleJSON)
 	b.WriteString(validateHookScriptSuffix)
+	script := b.String()
+
+	type outcome struct {
+		raw string
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		val, err := h.rt.Eval("validate.js", qjs.Code(script), qjs.FlagAsync())
+		if err != nil {
+			done <- outcome{err: err}
+			return
+		}
+		raw := val.String()
+		val.Free()
+		done <- outcome{raw: raw}
+	}()
+
+	var res outcome
+	select {
+	case res = <-done:
+	case <-time.After(h.cfg.timeout):
+		h.stuck = true
+		return nil, fmt.Errorf("hook exceeded %s timeout", h.cfg.timeout)
+	}
+
+	if res.err != nil {
+		return nil, fmt.Errorf("invoking validate: %w", rewriteErr(res.err, h.sourcemap))
+	}
+
+	var result validateHookResult
+	if err := json.Unmarshal([]byte(res.raw), &result); err != nil {
+		return nil, fmt.Errorf("parsing validate result: %w (raw: %s)", err, res.raw)
+	}
+
+	h.emitLogs(result.Logs)
+	return result.Issues, nil
+}
+
+type typedHookResult struct {
+	Value json.RawMessage `json:"value,omitempty"`
+	Logs  []logEntry      `json:"logs,omitempty"`
+}
+
+// RenderHookTyped runs the compiled module's `render(ctx, obj)` with obj
+// substituted directly for the whole-bundle FS. Mirrors RenderHook's
+// timeout/stuck-runtime handling exactly; the only difference is what
+// crosses the JS boundary in place of the FS wrapper.
+func (h *jsHook) RenderHookTyped(ctx any, obj json.RawMessage) (json.RawMessage, error) {
+	if h.closed {
+		return nil, errors.New("hook: RenderHookTyped called after Close")
+	}
+	if h.stuck {
+		return nil, errors.New("hook: runtime abandoned after prior timeout")
+	}
+
+	ctxJSON, err := json.Marshal(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling ctx: %w", err)
+	}
+
+	var b strings.Builder
+	b.Grow(len(renderHookTypedScriptPrefix) + len(ctxJSON) + len(renderHookTypedScriptMiddle) + len(obj) + len(renderHookTypedScriptSuffix))
+	b.WriteString(renderHookTypedScriptPrefix)
+	b.Write(ctxJSON)
+	b.WriteString(renderHookTypedScriptMiddle)
+	b.Write(obj)
+	b.WriteString(renderHookTypedScriptSuffix)
+	script := b.String()
+
+	type outcome struct {
+		raw string
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		val, err := h.rt.Eval("render.js", qjs.Code(script), qjs.FlagAsync())
+		if err != nil {
+			done <- outcome{err: err}
+			return
+		}
+		raw := val.String()
+		val.Free()
+		done <- outcome{raw: raw}
+	}()
+
+	var res outcome
+	select {
+	case res = <-done:
+	case <-time.After(h.cfg.timeout):
+		h.stuck = true
+		return nil, fmt.Errorf("hook exceeded %s timeout", h.cfg.timeout)
+	}
+
+	if res.err != nil {
+		return nil, fmt.Errorf("invoking renderHook: %w", rewriteErr(res.err, h.sourcemap))
+	}
+
+	var result typedHookResult
+	if err := json.Unmarshal([]byte(res.raw), &result); err != nil {
+		return nil, fmt.Errorf("parsing hook result: %w (raw: %s)", err, res.raw)
+	}
+
+	h.emitLogs(result.Logs)
+
+	if result.Value == nil {
+		return obj, nil
+	}
+	return result.Value, nil
+}
+
+// ValidateHookTyped runs the compiled module's `validate(ctx, obj)` with
+// obj substituted directly for the whole-bundle FS. Return contract
+// and timeout handling are identical to ValidateHook.
+func (h *jsHook) ValidateHookTyped(ctx any, obj json.RawMessage) ([]ValidationIssue, error) {
+	if h.closed {
+		return nil, errors.New("hook: ValidateHookTyped called after Close")
+	}
+	if h.stuck {
+		return nil, errors.New("hook: runtime abandoned after prior timeout")
+	}
+
+	ctxJSON, err := json.Marshal(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling ctx: %w", err)
+	}
+
+	var b strings.Builder
+	b.Grow(len(validateHookTypedScriptPrefix) + len(ctxJSON) + len(validateHookTypedScriptMiddle) + len(obj) + len(validateHookTypedScriptSuffix))
+	b.WriteString(validateHookTypedScriptPrefix)
+	b.Write(ctxJSON)
+	b.WriteString(validateHookTypedScriptMiddle)
+	b.Write(obj)
+	b.WriteString(validateHookTypedScriptSuffix)
 	script := b.String()
 
 	type outcome struct {

@@ -21,6 +21,7 @@ import (
 	"github.com/goccy/go-json"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
+	yaml "gopkg.in/yaml.v3"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/bundle"
@@ -177,6 +178,17 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		return nil, fmt.Errorf("applying overrides: %w", err)
 	}
 
+	// Pre-render schema gate: every schema-declared source's initial
+	// content must parse and validate before any hook runs — a typed
+	// hook can't meaningfully execute on input that doesn't conform to
+	// the type it's bound to. Checks every schema-declared source in
+	// one pass and reports them all together (same aggregated-report
+	// channel as the validate lifecycle) rather than failing on the
+	// first one found.
+	if report := formatValidationReport(kindName, resourceName, validateSchemaSources(loaded, bundle)); report != "" {
+		return nil, errors.New(report)
+	}
+
 	ctx := map[string]any{
 		"resource": resourceMap,
 		"path":     r.Path,
@@ -186,7 +198,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	renderHooks := kind.GetHooks().GetRender()
 	logger.Info("running render hooks", "count", len(renderHooks))
 	for _, h := range renderHooks {
-		newBundle, err := invokeHook(logger, h, kindName, resourceName, ctx, bundle)
+		newBundle, err := invokeRenderOrTyped(logger, h, kindName, resourceName, ctx, bundle, loaded)
 		if err != nil {
 			return nil, fmt.Errorf("hook %s: %w", h.GetName(), err)
 		}
@@ -212,11 +224,11 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		logger.Info("running resource hooks", "count", len(resourceHooks))
 		resourceDir := path.Dir(r.Path)
 		for _, def := range resourceHooks {
-			compiled, err := compileResourceHook(opts.FS, resourceDir, def.GetPath(), def.GetAccess())
+			compiled, err := compileResourceHook(opts.FS, resourceDir, def.GetPath(), def.GetAccess(), def.GetSource())
 			if err != nil {
 				return nil, fmt.Errorf("resource hook %s: %w", def.GetPath(), err)
 			}
-			newBundle, err := invokeHook(logger, compiled, kindName, resourceName, ctx, bundle)
+			newBundle, err := invokeRenderOrTyped(logger, compiled, kindName, resourceName, ctx, bundle, loaded)
 			if err != nil {
 				return nil, fmt.Errorf("resource hook %s: %w", def.GetPath(), err)
 			}
@@ -234,7 +246,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	if len(postRenderHooks) > 0 {
 		logger.Info("running post_render hooks", "count", len(postRenderHooks))
 		for _, h := range postRenderHooks {
-			newBundle, err := invokeHook(logger, h, kindName, resourceName, ctx, bundle)
+			newBundle, err := invokeRenderOrTyped(logger, h, kindName, resourceName, ctx, bundle, loaded)
 			if err != nil {
 				return nil, fmt.Errorf("post_render hook %s: %w", h.GetName(), err)
 			}
@@ -242,19 +254,24 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		}
 	}
 
-	// Validation hooks: run after every other lifecycle point. Every
-	// hook runs regardless of failures, the runner snapshots away its
-	// FS/ctx mutations, and the aggregated issue list fails the
-	// render at the end if any error-severity issues come back.
-	validateHooks := kind.GetHooks().GetValidate()
-	if len(validateHooks) > 0 {
-		issues, err := runValidateHooks(logger, validateHooks, kindName, resourceName, ctx, bundle)
+	// Validation: the kind's custom validate hooks, plus a final
+	// schema-source check that catches an untyped hook corrupting a
+	// schema-declared source's content anywhere after the pre-render
+	// gate ran (a typed hook's own violations are already caught at
+	// its own call boundary in invokeTypedHook). Every check runs
+	// regardless of failures; the aggregated issue list fails the
+	// render at the end if any error-severity issues came back.
+	var issues []hook.ValidationIssue
+	if validateHooks := kind.GetHooks().GetValidate(); len(validateHooks) > 0 {
+		hookIssues, err := runValidateHooks(logger, validateHooks, kindName, resourceName, ctx, bundle, loaded)
 		if err != nil {
 			return nil, fmt.Errorf("validate: %w", err)
 		}
-		if report := formatValidationReport(kindName, resourceName, issues); report != "" {
-			return nil, errors.New(report)
-		}
+		issues = append(issues, hookIssues...)
+	}
+	issues = append(issues, validateSchemaSources(loaded, bundle)...)
+	if report := formatValidationReport(kindName, resourceName, issues); report != "" {
+		return nil, errors.New(report)
 	}
 
 	// Re-stamp every skip_hooks override so the rendered output is the
@@ -519,12 +536,196 @@ func resolveTargetResource(r *resource.Resource, opts *Options) (*veilv1.Resourc
 	return resolveResource(r.Resource, mergedSpec)
 }
 
+// isYAMLSourcePath reports whether path's extension marks it as
+// YAML-encoded (vs. JSON), the same detection applyOverlays already
+// uses for overlay files.
+func isYAMLSourcePath(p string) bool {
+	return strings.HasSuffix(p, ".yaml") || strings.HasSuffix(p, ".yml")
+}
+
+// parseSourceContent decodes a bundle entry's raw content into a
+// generic value, choosing YAML or JSON by path extension. Used
+// wherever a schema-declared source's content needs to become an
+// object: the validation gates and the typed-hook marshal boundary.
+func parseSourceContent(p, content string) (any, error) {
+	var v any
+	if isYAMLSourcePath(p) {
+		if err := yaml.Unmarshal([]byte(content), &v); err != nil {
+			return nil, err
+		}
+		return v, nil
+	}
+	if err := json.Unmarshal([]byte(content), &v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// serializeSourceContent is parseSourceContent's inverse: encodes obj
+// back to the format path's extension implies.
+func serializeSourceContent(p string, obj any) (string, error) {
+	if isYAMLSourcePath(p) {
+		data, err := yaml.Marshal(obj)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+	data, err := json.Marshal(obj)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// validateSchemaSources parses and validates every schema-declared
+// source's current bundle content against its declared schema,
+// returning one error-severity ValidationIssue per source that fails
+// to parse or doesn't conform. A source with no declared schema is
+// never checked (LoadedKind.SchemaSources only lists ones that
+// declared one). Used both as the pre-render gate (checked against
+// the initial bundle, before any hook runs) and the final
+// post-post_render check (checked against the ending bundle, right
+// before validate hooks run) — same check, two different points in
+// the pipeline, because an untyped hook can corrupt a schema-declared
+// source's content at any point in between.
+func validateSchemaSources(loaded *registry.LoadedKind, bdl hook.Bundle) []hook.ValidationIssue {
+	var issues []hook.ValidationIssue
+	for _, p := range loaded.SchemaSources() {
+		file, ok := bdl[p]
+		if !ok {
+			continue
+		}
+		obj, err := parseSourceContent(p, file.Content)
+		if err != nil {
+			issues = append(issues, hook.ValidationIssue{Path: p, Message: fmt.Sprintf("parsing: %s", err), Severity: "error"})
+			continue
+		}
+		if err := loaded.ValidateSource(p, obj); err != nil {
+			issues = append(issues, hook.ValidationIssue{Path: p, Message: err.Error(), Severity: "error"})
+		}
+	}
+	return issues
+}
+
+// invokeRenderOrTyped dispatches to invokeTypedHook when h is bound to
+// a source (Hook.source set), or invokeHook otherwise. Every render/
+// post_render/resource-hook call site in this package goes through
+// this instead of calling invokeHook directly, so typed and untyped
+// entries interleave freely in the same declaration-ordered list.
+func invokeRenderOrTyped(logger *slog.Logger, h *veilv1.Hook, kindName, resourceName string, ctx any, bdl hook.Bundle, loaded *registry.LoadedKind) (hook.Bundle, error) {
+	if h.GetSource() != "" {
+		return invokeTypedHook(logger, h, kindName, resourceName, ctx, bdl, loaded)
+	}
+	return invokeHook(logger, h, kindName, resourceName, ctx, bdl)
+}
+
+// invokeTypedHook is invokeHook's counterpart for a hook bound to one
+// schema-declared source: obj replaces the whole-bundle FS at the JS
+// boundary. The source's current content is validated immediately
+// before the call (catches an untyped hook's corruption between the
+// pre-render gate and this call, attributed at the point of
+// consumption) and the hook's returned object immediately after
+// (attributes a bad return to this specific hook) — either failure is
+// a hard error, same as any other hook failing today. Only the bound
+// source's bundle entry changes; every other entry passes through
+// unchanged.
+func invokeTypedHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceName string, ctx any, bdl hook.Bundle, loaded *registry.LoadedKind) (hook.Bundle, error) {
+	source := h.GetSource()
+	file, ok := bdl[source]
+	if !ok {
+		return nil, fmt.Errorf("source %q not found in bundle", source)
+	}
+
+	obj, err := parseSourceContent(source, file.Content)
+	if err != nil {
+		return nil, fmt.Errorf("source %q: parsing: %w", source, err)
+	}
+	if err := loaded.ValidateSource(source, obj); err != nil {
+		return nil, fmt.Errorf("source %q: %w", source, err)
+	}
+	objJSON, err := json.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("source %q: %w", source, err)
+	}
+
+	hookName := h.GetName()
+	logger := parent.With("hook", hookName)
+
+	env, err := resolveHookEnv(h, kindName, resourceName, hookName)
+	if err != nil {
+		return nil, err
+	}
+	if len(env) > 0 {
+		names := make([]string, 0, len(env))
+		for k := range env {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		logger.Info("granting env access", "vars", names)
+	}
+
+	logger.Info("running typed hook", "source", source)
+	start := time.Now()
+
+	display := func(level, msg string) {
+		p := interact.Default()
+		switch level {
+		case "warn":
+			p.Warnf("WARN [%s/%s/%s] %s", kindName, resourceName, hookName, msg)
+		case "error":
+			p.Errorf("ERROR [%s/%s/%s] %s", kindName, resourceName, hookName, msg)
+		}
+	}
+
+	hk, err := hook.New(
+		h.GetContent(),
+		hook.WithLogger(logger),
+		hook.WithDisplay(display),
+		hook.WithEnv(env),
+		hook.WithCwd(cwdFromCtx(ctx)),
+	)
+	if err != nil {
+		logger.Error("hook failed", "stage", "init", "duration", time.Since(start).String(), "err", err.Error())
+		return nil, err
+	}
+	defer hk.Close()
+
+	resultJSON, err := hk.RenderHookTyped(ctx, objJSON)
+	if err != nil {
+		logger.Error("hook failed", "stage", "render", "duration", time.Since(start).String(), "err", err.Error())
+		return nil, err
+	}
+
+	var resultObj any
+	if err := json.Unmarshal(resultJSON, &resultObj); err != nil {
+		return nil, fmt.Errorf("source %q: parsing returned object: %w", source, err)
+	}
+	if err := loaded.ValidateSource(source, resultObj); err != nil {
+		return nil, fmt.Errorf("source %q: returned object: %w", source, err)
+	}
+	content, err := serializeSourceContent(source, resultObj)
+	if err != nil {
+		return nil, fmt.Errorf("source %q: serializing: %w", source, err)
+	}
+
+	newBundle := make(hook.Bundle, len(bdl))
+	for k, v := range bdl {
+		newBundle[k] = v
+	}
+	file.Content = content
+	newBundle[source] = file
+
+	logger.Info("hook completed", "duration", time.Since(start).String())
+	return newBundle, nil
+}
+
 // compileResourceHook bundles a resource-level hook on the fly. Paths
 // are resolved relative to the resource file's directory (resourceDir).
 // The compiled Hook carries the access info copied from the
 // definition so the runner can pre-flight env access the same way it
 // does for kind-bundled hooks.
-func compileResourceHook(fsys fs.FS, resourceDir, hookPath string, access *veilv1.HookAccess) (*veilv1.Hook, error) {
+func compileResourceHook(fsys fs.FS, resourceDir, hookPath string, access *veilv1.HookAccess, source string) (*veilv1.Hook, error) {
 	entrypoint := hookPath
 	if !path.IsAbs(entrypoint) {
 		entrypoint = path.Join(resourceDir, entrypoint)
@@ -541,6 +742,7 @@ func compileResourceHook(fsys fs.FS, resourceDir, hookPath string, access *veilv
 		Name:    hookPath,
 		Content: code,
 		Access:  access,
+		Source:  source,
 	}, nil
 }
 
@@ -549,11 +751,17 @@ func compileResourceHook(fsys fs.FS, resourceDir, hookPath string, access *veilv
 // hook does not abort the loop — the runner records it as an
 // error-severity issue and keeps going so the user sees every problem
 // at once.
-func runValidateHooks(parent *slog.Logger, hooks []*veilv1.Hook, kindName, resourceName string, ctx any, bdl hook.Bundle) ([]hook.ValidationIssue, error) {
+func runValidateHooks(parent *slog.Logger, hooks []*veilv1.Hook, kindName, resourceName string, ctx any, bdl hook.Bundle, loaded *registry.LoadedKind) ([]hook.ValidationIssue, error) {
 	parent.Info("running validate hooks", "count", len(hooks))
 	var issues []hook.ValidationIssue
 	for _, h := range hooks {
-		hookIssues, err := invokeValidateHook(parent, h, kindName, resourceName, ctx, bdl)
+		var hookIssues []hook.ValidationIssue
+		var err error
+		if h.GetSource() != "" {
+			hookIssues, err = invokeTypedValidateHook(parent, h, kindName, resourceName, ctx, bdl, loaded)
+		} else {
+			hookIssues, err = invokeValidateHook(parent, h, kindName, resourceName, ctx, bdl)
+		}
 		if err != nil {
 			// Aggregate the throw as a single error-severity issue,
 			// then keep iterating so subsequent hooks still get a
@@ -672,6 +880,83 @@ func invokeValidateHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceN
 	defer hk.Close()
 
 	issues, err := hk.ValidateHook(ctx, bdl)
+	if err != nil {
+		logger.Error("validate hook failed", "stage", "validate", "duration", time.Since(start).String(), "err", err.Error())
+		return nil, err
+	}
+	logger.Info("validate hook completed", "duration", time.Since(start).String(), "issues", len(issues))
+	return issues, nil
+}
+
+// invokeTypedValidateHook is invokeValidateHook's counterpart for a
+// validate hook bound to one schema-declared source: obj replaces the
+// whole-bundle fs, but the return contract (an issue list, not the
+// object) is unchanged. Any error here — parse failure, schema
+// violation, or a thrown error from the hook itself — is returned to
+// the caller, which (mirroring invokeValidateHook) converts it into a
+// single error-severity issue rather than aborting the validate loop.
+func invokeTypedValidateHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceName string, ctx any, bdl hook.Bundle, loaded *registry.LoadedKind) ([]hook.ValidationIssue, error) {
+	source := h.GetSource()
+	file, ok := bdl[source]
+	if !ok {
+		return nil, fmt.Errorf("source %q not found in bundle", source)
+	}
+
+	obj, err := parseSourceContent(source, file.Content)
+	if err != nil {
+		return nil, fmt.Errorf("source %q: parsing: %w", source, err)
+	}
+	if err := loaded.ValidateSource(source, obj); err != nil {
+		return nil, fmt.Errorf("source %q: %w", source, err)
+	}
+	objJSON, err := json.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("source %q: %w", source, err)
+	}
+
+	hookName := h.GetName()
+	logger := parent.With("hook", hookName)
+
+	env, err := resolveHookEnv(h, kindName, resourceName, hookName)
+	if err != nil {
+		return nil, err
+	}
+	if len(env) > 0 {
+		names := make([]string, 0, len(env))
+		for k := range env {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		logger.Info("granting env access", "vars", names)
+	}
+
+	logger.Info("running typed validate hook", "source", source)
+	start := time.Now()
+
+	display := func(level, msg string) {
+		p := interact.Default()
+		switch level {
+		case "warn":
+			p.Warnf("WARN [%s/%s/%s] %s", kindName, resourceName, hookName, msg)
+		case "error":
+			p.Errorf("ERROR [%s/%s/%s] %s", kindName, resourceName, hookName, msg)
+		}
+	}
+
+	hk, err := hook.New(
+		h.GetContent(),
+		hook.WithLogger(logger),
+		hook.WithDisplay(display),
+		hook.WithEnv(env),
+		hook.WithCwd(cwdFromCtx(ctx)),
+	)
+	if err != nil {
+		logger.Error("validate hook failed", "stage", "init", "duration", time.Since(start).String(), "err", err.Error())
+		return nil, err
+	}
+	defer hk.Close()
+
+	issues, err := hk.ValidateHookTyped(ctx, objJSON)
 	if err != nil {
 		logger.Error("validate hook failed", "stage", "validate", "duration", time.Since(start).String(), "err", err.Error())
 		return nil, err

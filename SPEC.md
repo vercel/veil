@@ -180,12 +180,13 @@ A resource definition is a JSON file at `.veil/kinds/<name>/kind.json` with the 
 {
   "name": "service",
   "sources": [
-    "./sources/service/deployment.yaml",
-    "./sources/service/hpa.yaml"
+    "./sources/service/hpa.yaml",
+    { "path": "./sources/service/deployment.yaml", "schema": "./schemas/deployment.schema.json" }
   ],
   "hooks": {
     "render": [
-      { "path": "./hooks/src/inject-env-var.ts" }
+      { "path": "./hooks/src/inject-env-var.ts" },
+      { "path": "./hooks/src/bump-replicas.ts", "source": "./sources/service/deployment.yaml" }
     ],
     "dependents": [
       {
@@ -207,8 +208,16 @@ both Go code and JSON Schemas. The JSON schemas are embedded in the CLI binary v
 A set of source configuration files that make up the resource. These are the raw config files — Kubernetes manifests,
 Terraform HCL, Envoy configs, etc. They are the starting point that hooks operate on.
 
-Sources are format-agnostic. Veil does not parse or understand their contents; it treats them as opaque files that
-are passed through the hook pipeline and ultimately rendered to disk.
+Each entry is either a bare path string, or an object with `path` plus an optional `schema` — a JSON Schema
+file (resolved relative to `kind.json`, same convention as the kind-level `schema` field) describing that one
+source's shape. The string short-form (`["./sources/hpa.yaml"]`) is equivalent to `{path: "./sources/hpa.yaml"}`
+with no declared schema, and is the only form that existed before `schema` was added — every kind.json written
+against the older shape keeps working unchanged.
+
+A source with no `schema` is exactly what it always was: veil does not parse or understand its contents, and
+passes it through the hook pipeline as an opaque string. Declaring `schema` changes that: from then on, that
+source's content is a contract the runner enforces at render time — see [Typed hooks](#typed-hooks) for what
+that buys a hook author, and [Schema enforcement](#schema-enforcement) for exactly when and how it's checked.
 
 ### `hooks`
 
@@ -219,22 +228,24 @@ Four lifecycles exist today:
 
 - **`render`** — runs during the consumer's own `veil render`. Each entry is an object with a
   required `path` (TS/JS file that exports a `RenderHook`) plus optional `access` declaring host
-  resources the hook needs (env vars today; filesystem / network later). The string short-form is
-  also accepted (`["./hooks/foo.ts"]`) and gets expanded to `{path: "./hooks/foo.ts"}` at load time.
+  resources the hook needs (env vars today; filesystem / network later), and optional `source`
+  binding the hook to one entry in this kind's `sources` — see [Typed hooks](#typed-hooks). The
+  string short-form is also accepted (`["./hooks/foo.ts"]`) and gets expanded to
+  `{path: "./hooks/foo.ts"}` (untyped, no access) at load time.
 - **`dependents`** — per-consumer hooks that fire when *another* kind declares a dependency on this
   one. Each entry binds a consumer kind to one or more hook file paths and a JSON Schema for the
   params the consumer must supply. See [Dependencies](#dependencies) for the full design.
-- **`post_render`** — the kind's final normalization pass. Same `{path, access?}` shape and same
-  `RenderHook(ctx, fs)` contract as `render` (mutating, declaration-ordered). Runs after every
+- **`post_render`** — the kind's final normalization pass. Same `{path, access?, source?}` shape and
+  same `RenderHook(ctx, fs)` contract as `render` (mutating, declaration-ordered). Runs after every
   resource-level render hook so the kind can react to whatever resource customizations produced —
   consistent formatting, deterministic key ordering, banner stamping, etc. Kind-scoped only;
   resources cannot declare `metadata.hooks.post_render`.
 - **`validate`** — read-only checks that run *after* every other lifecycle point on a resource
   (kind `render`, dependents, resource hooks, and `post_render`) has finished. Each entry has the
-  same `{path, access?}` shape as `render`. Mutations a validate hook makes to the FS or ctx are
-  discarded by the runner; the only observable output is the array of `ValidationIssue` entries
-  the hook returns. **Every validate hook runs regardless of failures** so the author sees every
-  issue at once; the render fails at the end with an aggregated report if any error-severity
+  same `{path, access?, source?}` shape as `render`. Mutations a validate hook makes to the FS or
+  ctx are discarded by the runner; the only observable output is the array of `ValidationIssue`
+  entries the hook returns. **Every validate hook runs regardless of failures** so the author sees
+  every issue at once; the render fails at the end with an aggregated report if any error-severity
   issues come back. A throw from one hook is treated as a single error-severity issue and does
   not abort the loop. See [Validation hooks](#validation-hooks) for the full design.
 
@@ -348,6 +359,92 @@ return a replacement FS, return nothing (implicit passthrough), or `throw` to ab
 
 At final write time, veil walks the bundle and writes each entry's contents to `<outDir>/<instance>/<file.path>`.
 If two entries resolve to the same destination path, that's a hard error.
+
+#### Typed hooks
+
+A hook entry's optional `source` field binds it to exactly one entry in the kind's `sources` list
+(matched by path). Instead of the whole-bundle `FS`, a typed hook receives — and must return — the
+bound source's content parsed into a plain object: no manual `fs.get(...).getContent()` /
+`JSON.parse` / `setContent` boilerplate, and (when that source declared a `schema`) the object is
+guaranteed valid on the way in and checked again on the way out.
+
+```ts
+export interface TypedRenderHook<T> {
+  render(ctx: RenderHookContext, obj: T): T | Promise<T>;
+}
+```
+
+`veil build` generates one TS interface per unique schema file a kind's sources reference — named
+after the schema file (`kubernetes-deployment.schema.json` → `KubernetesDeployment`; two sources
+sharing a schema share the interface) — into the same `veil-types.ts` as `RenderHookContext`, `FS`,
+etc. A typed hook imports it and writes ordinary object code:
+
+```ts
+import type { TypedRenderHook, KubernetesDeployment } from './veil-types';
+
+const bumpReplicas: TypedRenderHook<KubernetesDeployment> = {
+  render(ctx, obj) {
+    obj.spec.replicas = (obj.spec.replicas ?? 1) + 1;
+    return obj;
+  },
+};
+
+export default bumpReplicas;
+```
+
+Compare with the pre-typed-hooks way to get the same effect — parse the raw FS content by hand,
+with no host-enforced guarantee the cast is actually true:
+
+```ts
+// Same effect, no typed binding: manual parse/serialize, and the `as`
+// cast is trusted, not verified.
+import { load, dump } from 'js-yaml';
+import type { Deployment } from 'kubernetes-types/apps/v1';
+
+const bumpReplicas: RenderHook = {
+  render(ctx, fs) {
+    const file = fs.getSourcesDeploymentYaml();
+    const app = load(file.getContent()) as Deployment;
+    app.spec!.replicas = (app.spec!.replicas ?? 1) + 1;
+    file.setContent(dump(app));
+    return fs;
+  },
+};
+```
+
+`TypedValidateHook<T>` is the `source`-bound counterpart to `ValidateHook`: it receives the parsed
+object as a read-only convenience input, but its return contract is unchanged — a `ValidationResult`,
+not the object — since validate mutations are discarded either way.
+
+`source` is orthogonal to lifecycle: it works the same way on `render`, `post_render`, and
+`validate` entries, and a typed and an untyped hook can sit next to each other in the same
+declaration-ordered list — only the JS boundary differs per entry, so ordering and interleaving
+work exactly as they do today.
+
+#### Schema enforcement
+
+Declaring `schema` on a source is a contract on that *source*, independent of whether any hook
+ever binds to it as typed — an untyped hook can still corrupt a schema-declared source's content,
+and the runner still catches it. Three checks cover the source's content end to end:
+
+1. **Pre-render gate.** Before any hook runs, every schema-declared source's initial content is
+   parsed and validated, all in one pass. A typed hook can't meaningfully run on input that
+   doesn't conform to its bound type, so this has to happen before the render/post_render/validate
+   lifecycles start at all. Every violation across every schema-declared source is collected and
+   reported together — through the same aggregated report `hooks.validate` issues use — rather
+   than failing on the first one found.
+2. **Typed-hook boundary.** Immediately before a typed hook is called, its bound source's current
+   content is re-validated (catches an untyped hook's corruption that happened between the gate
+   and this call, attributed at the point of consumption); immediately after the call, the
+   returned object is validated the same way (attributes a bad return to that specific hook).
+   Either failure aborts the render immediately, same as any other hook throwing.
+3. **Final check.** After `post_render`, alongside `hooks.validate`, every schema-declared source's
+   *ending* content is checked once more — the backstop for a source an untyped hook corrupted
+   that no downstream typed hook ever re-validated. Reported through the same aggregated channel
+   as custom validate-hook issues.
+
+A source with no declared `schema` is never checked by any of the three — declaring `schema` is
+what opts a source into this contract.
 
 #### Validation hooks
 
@@ -696,6 +793,11 @@ const injectBucketEnv: DependentHook = {
 
 export default injectBucketEnv;
 ```
+
+Dependent hooks don't support [typed binding](#typed-hooks) — `dependents[].paths` are bare hook
+paths, not `{path, source?}` entries, and a dependent hook's job is reading/patching whatever the
+*consumer* declared, not one of the *target's* own schema-declared sources. The manual
+parse/cast/serialize pattern above is still the way to work with a specific file's shape here.
 
 ## Render-time execution
 

@@ -65,7 +65,7 @@ func (s *DiscoverSuite) TestFindsVeilJSONFromNestedDirectory() {
 	s.Require().Len(reg.Kinds, 1)
 	k := reg.Kinds[0]
 	s.Equal("service", k.Name)
-	s.Equal([]string{"./sources/deployment.yaml"}, k.Sources)
+	s.Equal([]string{"./sources/deployment.yaml"}, k.SourcePaths())
 	s.Equal(kindsDir, k.Dir)
 }
 
@@ -508,7 +508,7 @@ registries:
 
 	k := reg.Kinds[0]
 	s.Equal("service", k.Name)
-	s.Equal([]string{"./sources/deployment.yaml"}, k.Sources)
+	s.Equal([]string{"./sources/deployment.yaml"}, k.SourcePaths())
 	s.Equal(filepath.Join(kindsDir, "service.yaml"), k.Path)
 	s.Equal(kindsDir, k.Dir)
 	render := k.RenderHooks()
@@ -561,4 +561,100 @@ func (s *DiscoverSuite) TestAcceptsRenderHookObjectWithAccess() {
 	s.Require().Len(envs, 1)
 	s.Equal("API_KEY", envs[0].GetName())
 	s.Equal("auth token", envs[0].GetDescription())
+}
+
+func (s *DiscoverSuite) TestAcceptsSourceObjectWithSchema() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.MkdirAll(filepath.Join(kindsDir, "schemas"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "schemas", "deployment.schema.json"), []byte(`{"type": "object"}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": [
+			"./sources/plain.yaml",
+			{ "path": "./sources/deployment.yaml", "schema": "./schemas/deployment.schema.json" }
+		],
+		"schema": "./schemas/service.schema.json"
+	}`), 0644))
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
+
+	reg, err := Load(filepath.Join(root, "veil.json"))
+	s.Require().NoError(err)
+	s.Require().Len(reg.Kinds, 1)
+
+	k := reg.Kinds[0]
+	s.Equal([]string{"./sources/plain.yaml", "./sources/deployment.yaml"}, k.SourcePaths())
+	defs := k.SourceDefs()
+	s.Require().Len(defs, 2)
+	s.Equal("", defs[0].GetSchema())
+	s.Equal("./schemas/deployment.schema.json", defs[1].GetSchema())
+}
+
+func (s *DiscoverSuite) TestRejectsSourceWithMissingSchemaFile() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": [
+			{ "path": "./sources/deployment.yaml", "schema": "./schemas/missing.schema.json" }
+		],
+		"schema": "./schemas/service.schema.json"
+	}`), 0644))
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
+
+	_, err := Load(filepath.Join(root, "veil.json"))
+	s.Require().Error(err)
+	s.Contains(err.Error(), "missing.schema.json")
+}
+
+func (s *DiscoverSuite) TestAcceptsRenderHookWithSourceBinding() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.MkdirAll(filepath.Join(kindsDir, "schemas"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "schemas", "deployment.schema.json"), []byte(`{"type": "object"}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": [
+			{ "path": "./sources/deployment.yaml", "schema": "./schemas/deployment.schema.json" }
+		],
+		"hooks": {
+			"render": [
+				{ "path": "./hooks/patch-deployment.ts", "source": "./sources/deployment.yaml" }
+			]
+		},
+		"schema": "./schemas/service.schema.json"
+	}`), 0644))
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
+
+	reg, err := Load(filepath.Join(root, "veil.json"))
+	s.Require().NoError(err)
+
+	render := reg.Kinds[0].RenderHooks()
+	s.Require().Len(render, 1)
+	s.Equal("./sources/deployment.yaml", render[0].GetSource())
+}
+
+func (s *DiscoverSuite) TestRejectsHookSourceReferencingUnknownSource() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": ["./sources/deployment.yaml"],
+		"hooks": {
+			"render": [
+				{ "path": "./hooks/patch-deployment.ts", "source": "./sources/does-not-exist.yaml" }
+			]
+		},
+		"schema": "./schemas/service.schema.json"
+	}`), 0644))
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
+
+	_, err := Load(filepath.Join(root, "veil.json"))
+	s.Require().Error(err)
+	s.Contains(err.Error(), "does-not-exist.yaml")
+	s.Contains(err.Error(), "not declared")
 }

@@ -47,6 +47,11 @@
       "description": "Relative path from the kind directory (e.g. \"hooks/hello-world.ts\").",
       "minLength": 1,
       "type": "string"
+    },
+    "source": {
+      "default": "",
+      "description": "Path into the compiled Kind.sources/source_schemas maps this hook\n is bound to (copied from KindDefinition.RenderHookDefinition.source\n at compile time). Empty (the default) means this is a\n whole-bundle hook: RenderHook(ctx, fs). Non-empty means the\n runner invokes RenderHookTyped(ctx, obj) instead, parsing/\n re-serializing that one source around the call.",
+      "type": "string"
     }
   },
   "required": [

@@ -180,7 +180,11 @@ func loadKindFn(store Store, name, kindPath, schemaPath string) func() (*LoadedK
 		if err != nil {
 			return nil, fmt.Errorf("loading kind %s schema: %w", name, err)
 		}
-		return &LoadedKind{Kind: &ck, SpecSchema: spec, SchemaPath: store.Location(schemaPath), validator: validator}, nil
+		sourceValidators, err := compileSourceSchemas(ck.GetSourceSchemas())
+		if err != nil {
+			return nil, fmt.Errorf("loading kind %s source schemas: %w", name, err)
+		}
+		return &LoadedKind{Kind: &ck, SpecSchema: spec, SchemaPath: store.Location(schemaPath), validator: validator, sourceValidators: sourceValidators}, nil
 	}
 }
 

@@ -96,11 +96,11 @@
       "type": "string"
     },
     "sources": {
-      "description": "Source configuration files that make up the kind. May be empty —\n a kind with no sources is valid (it's the bare template plus\n whatever its hooks add at render time).",
+      "description": "Entries are typed as `google.protobuf.Value` so each one can be\n EITHER a bare string path (no declared schema) OR an object\n matching SourceDefinition (path plus optional `schema`) — the\n same polymorphism `hooks` already uses, for the same reason:\n protojson can't express \"string OR struct\" on a typed field. The\n build pipeline converts each Value into a SourceDefinition before\n compilation.",
       "items": {
-        "minLength": 1,
-        "type": "string"
+        "title": "Value"
       },
+      "title": "Source configuration files that make up the kind. May be empty —\n a kind with no sources is valid (it's the bare template plus\n whatever its hooks add at render time).",
       "type": "array"
     },
     "variables": {

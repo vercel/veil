@@ -10,6 +10,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/suite"
 
 	"github.com/vercel/veil/pkg/bundle"
@@ -759,6 +760,93 @@ export default h;
 
 	s.Equal(1, bytesCount(buf.String(), "call 1"), "first call's log should not replay on the second")
 	s.Equal(1, bytesCount(buf.String(), "call 2"))
+}
+
+func (s *HookSuite) TestRenderHookTypedRoundTrip() {
+	code := s.compile(`
+const h = {
+  render(ctx, obj) {
+    obj.replicas = obj.replicas + ctx.bump;
+    return obj;
+  }
+};
+export default h;
+`)
+	hk, err := New(code)
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	ctx := map[string]any{"bump": 2}
+	out, err := hk.RenderHookTyped(ctx, json.RawMessage(`{"replicas":3,"name":"app"}`))
+	s.Require().NoError(err)
+	s.JSONEq(`{"replicas":5,"name":"app"}`, string(out))
+}
+
+func (s *HookSuite) TestRenderHookTypedNoOpWhenUndefined() {
+	code := s.compile(`
+const h = {}; // no render
+export default h;
+`)
+	hk, err := New(code)
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	in := json.RawMessage(`{"replicas":3}`)
+	out, err := hk.RenderHookTyped(map[string]any{}, in)
+	s.Require().NoError(err)
+	s.JSONEq(string(in), string(out))
+}
+
+func (s *HookSuite) TestRenderHookTypedPropagatesThrow() {
+	code := s.compile(`
+const h = {
+  render(ctx, obj) {
+    throw new Error("bad object");
+  }
+};
+export default h;
+`)
+	hk, err := New(code)
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	_, err = hk.RenderHookTyped(map[string]any{}, json.RawMessage(`{}`))
+	s.Require().Error(err)
+	s.Contains(err.Error(), "bad object")
+}
+
+func (s *HookSuite) TestValidateHookTypedReturnsIssues() {
+	code := s.compile(`
+const h = {
+  validate(ctx, obj) {
+    if (obj.replicas > 10) return "too many replicas";
+    return [];
+  }
+};
+export default h;
+`)
+	hk, err := New(code)
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	issues, err := hk.ValidateHookTyped(map[string]any{}, json.RawMessage(`{"replicas":20}`))
+	s.Require().NoError(err)
+	s.Require().Len(issues, 1)
+	s.Equal("too many replicas", issues[0].Message)
+}
+
+func (s *HookSuite) TestValidateHookTypedNoOpWhenUndefined() {
+	code := s.compile(`
+const h = {}; // no validate
+export default h;
+`)
+	hk, err := New(code)
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	issues, err := hk.ValidateHookTyped(map[string]any{}, json.RawMessage(`{}`))
+	s.Require().NoError(err)
+	s.Empty(issues)
 }
 
 func bytesCount(s, sub string) int {
