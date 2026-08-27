@@ -701,24 +701,29 @@ export default injectBucketEnv;
 
 After a resource's render hooks finish, veil walks the *full* transitive dependency graph rooted
 at the resource — not just its own `dependencies` list. The walk is breadth-first, the same shape
-`veil graph` uses to visualize a resource's dependency graph: cycle-safe and visit-once, so a
-target reached through more than one path (or a cycle back to an already-visited resource)
-resolves once and the walk still terminates. Every kind's dependencies resolve this way — it's a
-global capability of the render pipeline, not something a kind opts into.
+`veil graph` uses to visualize a resource's dependency graph: cycle-safe and visit-once for node
+expansion, so a target reached through more than one path (or a cycle back to an already-visited
+resource) resolves once and the walk still terminates. Every kind's dependencies resolve this
+way — it's a global capability of the render pipeline, not something a kind opts into.
 
 Starting from the root resource's own `dependencies`, and then from each newly-reached target's
-`dependencies` in turn, every edge (declarer, target) is processed:
+`dependencies` in turn, the walk collects every edge (declarer, target) reachable from the root.
+Once the graph is fully explored, each distinct `(kind, name)` target is processed exactly once —
+not once per incoming edge:
 
 1. Resolve `(kind, name)` to a target resource in the catalog (built from
    `resource_discovery.paths`). Missing targets are a hard error.
 2. Apply the target's own overlays + spec defaults so `ctx.self` matches what the target would see
    at its own render. No schema validation: targets are inspected, not re-rendered. A target
    reached via more than one edge is resolved only once and reused.
-3. Find the target kind's `hooks.dependents` entry matching the *render root's* kind — never the
+3. Resolve the single `params` object the target's dependent hooks receive from every edge that
+   reaches it (see "Params across multiple edges" below).
+4. Find the target kind's `hooks.dependents` entry matching the *render root's* kind — never the
    declarer's kind, even when the declarer (the resource whose own `dependencies` list named this
    target) is several hops away from the root. A target that doesn't list the root's kind as
    allowed is a hard error.
-4. Run each registered dependent hook against the render root's FS, in declaration order.
+5. Run each registered dependent hook once against the render root's FS, in declaration order,
+   with the params resolved in step 3.
 
 Concretely: if a service depends on `package/api-rate-limits`, which itself depends on
 `dynamo-table/rate-limit-exceeded`, the dynamo-table's dependent hooks for consumer kind
@@ -728,6 +733,24 @@ always the render root, and the FS the hook mutates is always the render root's 
 stay consistent — a target's `dependents` entry never needs to name every pass-through kind that
 might sit between it and the root; dynamo-table's existing `[service, subscriber]` entries already
 cover it being reached through any number of intermediate packages.
+
+### Params across multiple edges
+
+A target can be reached by more than one edge — the root's own direct declaration plus a
+transitive path through another dependency, or two unrelated dependencies that both happen to
+depend on it. Because the target's dependent hooks run once per target rather than once per edge,
+veil needs a single `params` object to hand them, resolved by:
+
+1. If the render root directly declares the target in its own `dependencies` list, that
+   declaration's `params` wins outright — no transitive path needs to agree with it, and it
+   doesn't need to agree with them either. A service that both names
+   `dynamo-table/rate-limit-exceeded` directly and reaches it again through
+   `package/api-rate-limits` gets to say exactly how it depends on it; the package's own params
+   for the same target are ignored.
+2. Otherwise, every indirect edge into the target must agree on `params` (a nil `params` is
+   treated the same as an explicit empty object). Two unrelated dependencies disagreeing about how
+   the shared target should be depended on have no arbiter, so this is a hard render-time error
+   rather than a silent last-edge-wins or two independent hook firings.
 
 Render hooks cannot observe state injected by dependent hooks — the lifecycles are strictly ordered
 (overrides → render → dependents → re-stamp `skip_hooks` overrides → write).
@@ -953,10 +976,12 @@ catalog and walks outward from.
    success, log the granted vars and pass them to the hook on `ctx.env`.
 8. Apply `hooks.render` in order (calling each `RenderHook.render`), threading the FS through the pipeline
 9. Walk the full transitive dependency graph rooted at this resource (breadth-first, cycle-safe,
-   visit-once) — for every edge, look up the target via the catalog, find the target kind's
-   matching `hooks.dependents` entry for *this resource's own* kind (the render root, never the
-   declarer at that hop), and run those hooks against the render root's FS. See
-   [Dependencies](#dependencies).
+   visit-once for node expansion), collecting every edge into every reachable target. For each
+   distinct target, resolve a single `params` object across all its edges (the render root's own
+   direct declaration wins; disagreeing indirect-only edges are a hard error — see "Params across
+   multiple edges" below), look up the target kind's matching `hooks.dependents` entry for *this
+   resource's own* kind (the render root, never the declarer at that hop), and run those hooks
+   once against the render root's FS. See [Dependencies](#dependencies).
 10. Re-stamp every `skip_hooks: true` override's bytes onto the bundle, discarding any in-flight hook
     mutations to those files.
 11. Write the final files to disk
