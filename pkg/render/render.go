@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -379,6 +380,15 @@ type depNode struct {
 
 func depNodeID(kind, name string) string { return kind + "/" + name }
 
+// depEdge is one (declarer, target) edge discovered during the walk —
+// declarer is the node whose own `dependencies` list named dep. A
+// declarer equal to the render root marks the edge as direct; every
+// other declarer is a pass-through resource reached transitively.
+type depEdge struct {
+	dep      *veilv1.Dependency
+	declarer *depNode
+}
+
 // applyDependencies walks the full transitive dependency graph reachable
 // from the root resource — breadth-first, cycle-safe, visit-once, the
 // same shape commands.buildResourceGraph uses for `veil graph` — and
@@ -399,6 +409,14 @@ func depNodeID(kind, name string) string { return kind + "/" + name }
 // already covers a service reaching it through any number of
 // intermediate packages, with no new entry required per pass-through
 // kind.
+//
+// A target reached by more than one edge fires its dependent hooks
+// exactly once, not once per edge: the walk first collects every edge
+// into every target across the whole graph, then resolves a single
+// params object per target (see resolveDependencyParams), and only
+// then applies that target's hooks. This is what lets the render
+// root's own direct declaration of a target override whatever params a
+// deeper, indirect path supplies for the same target.
 func applyDependencies(parent *slog.Logger, bundle hook.Bundle, rootKind, rootName, rootPath string, rootResource *veilv1.Resource, rootMap map[string]any, root string, opts *Options) (hook.Bundle, error) {
 	if opts.Catalog == nil {
 		return nil, fmt.Errorf("no catalog configured")
@@ -407,7 +425,9 @@ func applyDependencies(parent *slog.Logger, bundle hook.Bundle, rootKind, rootNa
 	rootNode := &depNode{kind: rootKind, name: rootName, path: rootPath, resource: rootResource, resourceMap: rootMap}
 	visited := map[string]*depNode{depNodeID(rootKind, rootName): rootNode}
 	queue := []*depNode{rootNode}
-	edges := 0
+
+	var order []string
+	edgesByTarget := map[string][]depEdge{}
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
@@ -435,19 +455,95 @@ func applyDependencies(parent *slog.Logger, bundle hook.Bundle, rootKind, rootNa
 				visited[id] = node
 				queue = append(queue, node)
 			}
-
-			newBundle, err := applyDependentHooks(logger, bundle, dep, node, rootNode, root, opts)
-			if err != nil {
-				return nil, fmt.Errorf("dependency %s/%s: %w", targetKind, targetName, err)
+			if _, exists := edgesByTarget[id]; !exists {
+				order = append(order, id)
 			}
-			bundle = newBundle
-			edges++
+			edgesByTarget[id] = append(edgesByTarget[id], depEdge{dep: dep, declarer: cur})
 		}
 	}
-	if edges > 0 {
-		parent.Info("applied dependency graph", "nodes", len(visited)-1, "edges", edges)
+
+	for _, id := range order {
+		target := visited[id]
+		logger := parent.With("dep_kind", target.kind, "dep_name", target.name)
+		params, err := resolveDependencyParams(rootNode, target, edgesByTarget[id])
+		if err != nil {
+			return nil, err
+		}
+		newBundle, err := applyDependentHooks(logger, bundle, params, target, rootNode, root, opts)
+		if err != nil {
+			return nil, fmt.Errorf("dependency %s/%s: %w", target.kind, target.name, err)
+		}
+		bundle = newBundle
+	}
+	if len(order) > 0 {
+		parent.Info("applied dependency graph", "nodes", len(visited)-1, "targets", len(order))
 	}
 	return bundle, nil
+}
+
+// resolveDependencyParams picks the single params object a target's
+// dependent hooks run with when the transitive walk reaches it through
+// more than one edge. The render root's own direct declaration always
+// wins when present — a service that both names dynamo-table directly
+// and reaches it again through a package it depends on gets to say
+// exactly how it wants to be dependent on it, with no need for the
+// package to agree. Absent a direct declaration, every indirect edge
+// into the target must agree on params: two unrelated packages
+// disagreeing about how a service should depend on a target they both
+// happen to reach has no arbiter, so that's a hard render-time error
+// rather than a silent last-write-wins.
+func resolveDependencyParams(root, target *depNode, edges []depEdge) (*structpb.Struct, error) {
+	var direct, indirect []depEdge
+	for _, e := range edges {
+		if e.declarer == root {
+			direct = append(direct, e)
+		} else {
+			indirect = append(indirect, e)
+		}
+	}
+	if len(direct) > 0 {
+		return agreeingParams(target, root, direct)
+	}
+	return agreeingParams(target, nil, indirect)
+}
+
+// agreeingParams returns the params object shared by every edge in
+// edges, erroring the first time two disagree. declarer is nil when
+// edges are all indirect (used only to phrase the error message);
+// when non-nil, every edge in edges was declared directly by declarer.
+func agreeingParams(target, declarer *depNode, edges []depEdge) (*structpb.Struct, error) {
+	first := edges[0]
+	for _, e := range edges[1:] {
+		if paramsEqual(first.dep.GetParams(), e.dep.GetParams()) {
+			continue
+		}
+		if declarer != nil {
+			return nil, fmt.Errorf(
+				"%s/%s declares dependency %s/%s more than once with conflicting params",
+				declarer.kind, declarer.name, target.kind, target.name,
+			)
+		}
+		return nil, fmt.Errorf(
+			"dependency %s/%s is reached via multiple indirect paths with conflicting params (declared by %s/%s and %s/%s) — the render root must declare it directly to resolve the conflict",
+			target.kind, target.name, first.declarer.kind, first.declarer.name, e.declarer.kind, e.declarer.name,
+		)
+	}
+	return first.dep.GetParams(), nil
+}
+
+// paramsEqual reports whether two dependency params structs describe
+// the same data, treating a nil struct the same as an empty one so a
+// dependency declared with no params agrees with another declared with
+// an explicit empty params object.
+func paramsEqual(a, b *structpb.Struct) bool {
+	return reflect.DeepEqual(normalizeParams(a), normalizeParams(b))
+}
+
+func normalizeParams(p *structpb.Struct) map[string]any {
+	if m := p.AsMap(); m != nil {
+		return m
+	}
+	return map[string]any{}
 }
 
 // applyDependentHooks runs every dependent hook target's kind registers
@@ -458,9 +554,11 @@ func applyDependencies(parent *slog.Logger, bundle hook.Bundle, rootKind, rootNa
 // came from. target is already resolved (overlays + schema defaults
 // applied) by the caller — reused across every edge that reaches it
 // during the walk so a many-times-depended-on resource is only
-// resolved once; params are read fresh per edge below, so two edges
-// into the same target with different params still apply independently.
-func applyDependentHooks(parent *slog.Logger, bundle hook.Bundle, dep *veilv1.Dependency, target, consumer *depNode, root string, opts *Options) (hook.Bundle, error) {
+// resolved once. params has already been resolved to the single value
+// every edge into target agreed on, or the render root's own override
+// (see resolveDependencyParams), so it applies once regardless of how
+// many edges reached target.
+func applyDependentHooks(parent *slog.Logger, bundle hook.Bundle, params *structpb.Struct, target, consumer *depNode, root string, opts *Options) (hook.Bundle, error) {
 	loadedKind, err := opts.Registry.LoadKind(target.kind)
 	if err != nil {
 		return nil, fmt.Errorf("loading target kind: %w", err)
@@ -478,8 +576,8 @@ func applyDependentHooks(parent *slog.Logger, bundle hook.Bundle, dep *veilv1.De
 	}
 
 	var paramsMap map[string]any
-	if p := dep.GetParams(); p != nil {
-		paramsMap = p.AsMap()
+	if params != nil {
+		paramsMap = params.AsMap()
 	}
 	depCtx := map[string]any{
 		"self":     target.resourceMap,

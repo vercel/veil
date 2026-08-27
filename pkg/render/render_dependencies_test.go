@@ -223,19 +223,69 @@ func (s *RenderSuite) TestDependencyCycleAppliesEachEdgeOnceWithoutInfiniteLoop(
 	s.Equal("target=a1 consumer=a1", string(fromAlpha))
 }
 
-// TestDiamondDependencyFiresTargetHookOncePerIncomingEdge covers the
-// other half of the multi-hop semantic the cycle test doesn't reach:
-// a target with two independent incoming edges (root depends on both
+// TestDiamondDependencyWithAgreeingIndirectParamsAppliesHookOnce covers
+// the half of PLAT-8324's policy that isn't a conflict at all: a target
+// with two independent indirect edges (root depends on both
 // branch/b1 and branch/c1; both branches depend on the same
-// leaf/d1). leaf/d1 is resolved once (the walk is visit-once for node
-// expansion), but its dependent hook must still fire once per
-// incoming edge — the visited-set dedup is about not re-expanding a
-// node's own dependencies, not about suppressing repeat edges into
-// it. ctx.consumer is always the render root (diamond-root/r1) for
-// both firings, identical either way, so the two edges are
-// distinguished by their own params instead — the one thing that
-// still varies per edge.
-func (s *RenderSuite) TestDiamondDependencyFiresTargetHookOncePerIncomingEdge() {
+// leaf/d1) that happen to agree on params. leaf/d1 is visited exactly
+// once for the whole walk — both for node expansion and for dependent
+// hook application — so agreeing params never need arbitration and the
+// hook fires once, not once per incoming edge.
+func (s *RenderSuite) TestDiamondDependencyWithAgreeingIndirectParamsAppliesHookOnce() {
+	s.writeSimpleKind("diamond-root")
+	s.writeDependentKind("diamond-branch", "diamond-root", noopDependentHookIIFE)
+	s.writeDependentKind("diamond-leaf", "diamond-root", dependentHookIIFEKeyedByParam("from-leaf", "tag"))
+	s.reloadRegistryWithKinds("diamond-root", "diamond-branch", "diamond-leaf")
+
+	dir := filepath.Join(s.root, "dmd")
+	s.Require().NoError(os.MkdirAll(dir, 0755))
+	s.writeJSON(filepath.Join(dir, "r1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "diamond-root", "name": "r1"},
+		"spec":     map[string]any{},
+		"dependencies": []map[string]any{
+			{"kind": "diamond-branch", "name": "b1", "params": map[string]any{}},
+			{"kind": "diamond-branch", "name": "c1", "params": map[string]any{}},
+		},
+	})
+	s.writeJSON(filepath.Join(dir, "b1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "diamond-branch", "name": "b1"},
+		"spec":     map[string]any{},
+		"dependencies": []map[string]any{
+			{"kind": "diamond-leaf", "name": "d1", "params": map[string]any{"tag": "shared"}},
+		},
+	})
+	s.writeJSON(filepath.Join(dir, "c1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "diamond-branch", "name": "c1"},
+		"spec":     map[string]any{},
+		"dependencies": []map[string]any{
+			{"kind": "diamond-leaf", "name": "d1", "params": map[string]any{"tag": "shared"}},
+		},
+	})
+	s.writeJSON(filepath.Join(dir, "d1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "diamond-leaf", "name": "d1"},
+		"spec":     map[string]any{},
+	})
+
+	out := filepath.Join(s.root, "out")
+	rendered, err := s.renderKind("diamond-root", "r1", dir, out)
+	s.Require().NoError(err)
+	s.Equal("r1", rendered.Name)
+
+	viaShared, err := os.ReadFile(filepath.Join(out, "r1", "from-leaf-via-shared.txt"))
+	s.Require().NoError(err)
+	s.Equal("target=d1 consumer=r1 param=shared", string(viaShared))
+}
+
+// TestConflictingIndirectDependencyParamsIsHardError covers the other
+// half of PLAT-8324's policy: two indirect edges into the same target
+// (root depends on both branch/b1 and branch/c1; both branches depend
+// on the same leaf/d1) disagreeing on params, with no direct
+// declaration from the root to arbitrate. There's no arbiter for two
+// unrelated packages disagreeing about how a shared target should be
+// depended on, so this is a hard render-time error rather than
+// silently firing the hook twice or picking one edge's params over the
+// other's.
+func (s *RenderSuite) TestConflictingIndirectDependencyParamsIsHardError() {
 	s.writeSimpleKind("diamond-root")
 	s.writeDependentKind("diamond-branch", "diamond-root", noopDependentHookIIFE)
 	s.writeDependentKind("diamond-leaf", "diamond-root", dependentHookIIFEKeyedByParam("from-leaf", "tag"))
@@ -271,17 +321,59 @@ func (s *RenderSuite) TestDiamondDependencyFiresTargetHookOncePerIncomingEdge() 
 	})
 
 	out := filepath.Join(s.root, "out")
-	rendered, err := s.renderKind("diamond-root", "r1", dir, out)
+	_, err := s.renderKind("diamond-root", "r1", dir, out)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "diamond-leaf/d1")
+	s.Contains(err.Error(), "conflicting params")
+
+	s.NoFileExists(filepath.Join(out, "r1", "from-leaf-via-b1.txt"))
+	s.NoFileExists(filepath.Join(out, "r1", "from-leaf-via-c1.txt"))
+}
+
+// TestRootDirectDependencyOverridesConflictingTransitiveParams is the
+// direct regression test for PLAT-8324's "root wins" half: the render
+// root declares override-target directly with its own params, and also
+// reaches the same target transitively through override-package with
+// different params. The root's own direct declaration is authoritative
+// — the target's dependent hook fires once, with the root's params,
+// and the package's conflicting indirect params never take effect (and
+// never need to agree with the root's).
+func (s *RenderSuite) TestRootDirectDependencyOverridesConflictingTransitiveParams() {
+	s.writeSimpleKind("override-root")
+	s.writeDependentKind("override-package", "override-root", noopDependentHookIIFE)
+	s.writeDependentKind("override-target", "override-root", dependentHookIIFEKeyedByParam("from-target", "tag"))
+	s.reloadRegistryWithKinds("override-root", "override-package", "override-target")
+
+	dir := filepath.Join(s.root, "ovr")
+	s.Require().NoError(os.MkdirAll(dir, 0755))
+	s.writeJSON(filepath.Join(dir, "r1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "override-root", "name": "r1"},
+		"spec":     map[string]any{},
+		"dependencies": []map[string]any{
+			{"kind": "override-package", "name": "p1", "params": map[string]any{}},
+			{"kind": "override-target", "name": "t1", "params": map[string]any{"tag": "root"}},
+		},
+	})
+	s.writeJSON(filepath.Join(dir, "p1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "override-package", "name": "p1"},
+		"spec":     map[string]any{},
+		"dependencies": []map[string]any{
+			{"kind": "override-target", "name": "t1", "params": map[string]any{"tag": "indirect"}},
+		},
+	})
+	s.writeJSON(filepath.Join(dir, "t1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "override-target", "name": "t1"},
+		"spec":     map[string]any{},
+	})
+
+	out := filepath.Join(s.root, "out")
+	rendered, err := s.renderKind("override-root", "r1", dir, out)
 	s.Require().NoError(err)
 	s.Equal("r1", rendered.Name)
 
-	// Both edges into d1 must have run: one marker file per incoming
-	// edge, not one shared file the second firing silently overwrote.
-	viaB, err := os.ReadFile(filepath.Join(out, "r1", "from-leaf-via-b1.txt"))
+	viaRoot, err := os.ReadFile(filepath.Join(out, "r1", "from-target-via-root.txt"))
 	s.Require().NoError(err)
-	s.Equal("target=d1 consumer=r1 param=b1", string(viaB))
+	s.Equal("target=t1 consumer=r1 param=root", string(viaRoot))
 
-	viaC, err := os.ReadFile(filepath.Join(out, "r1", "from-leaf-via-c1.txt"))
-	s.Require().NoError(err)
-	s.Equal("target=d1 consumer=r1 param=c1", string(viaC))
+	s.NoFileExists(filepath.Join(out, "r1", "from-target-via-indirect.txt"))
 }
