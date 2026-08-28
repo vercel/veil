@@ -75,6 +75,8 @@ type Options struct {
 	// name. Each variable's stringified value is what an overlay's `if`
 	// regex matches against; hooks receive the same map as `ctx.vars`.
 	Variables map[string]any
+
+	Header string
 }
 
 // RenderedResource describes one successfully rendered resource.
@@ -166,7 +168,11 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	// without changing identity.
 	bundle := make(hook.Bundle, len(kind.Sources))
 	for k, v := range kind.Sources {
-		bundle[k] = hook.File{Path: k, Content: v}
+		path := k
+		if (v.GetOutPath() != "") {
+			path = v.GetOutPath()
+		}
+		bundle[k] = hook.File{Path: path, Content: v.GetContent()}
 	}
 
 	// Apply local overrides before any hook runs so hooks see the
@@ -268,6 +274,8 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		return nil, errors.New(report)
 	}
 
+	applyHeader(opts.Header, bundle)
+
 	// Re-stamp every skip_hooks override so the rendered output is the
 	// user's bytes verbatim, regardless of what the pipeline did to the
 	// in-memory copy.
@@ -296,6 +304,17 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		OutDir: outDir,
 		Files:  files,
 	}, nil
+}
+
+func applyHeader(header string, bundle hook.Bundle) {
+	if (header == "") {
+		return
+        } 
+	
+	for path, f := range bundle {
+		f.Content = header + f.Content
+		bundle[path] = f
+	}
 }
 
 // applyOverrides resolves every metadata.overrides entry on r against

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "content": {
+      "default": "",
+      "description": "raw file contents",
+      "type": "string"
+    },
+    "outPath": {
+      "default": "",
+      "description": "render will write the source file to this path by default, unless\n overridden by hooks",
+      "type": "string"
+    },
+    "schema": {
+      "default": "",
+      "description": "Raw JSON Schema text per schema-declared source",
+      "type": "string"
+    }
+  },
+  "title": "Source",
+  "type": "object"
+}

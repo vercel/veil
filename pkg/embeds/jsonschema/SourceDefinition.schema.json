@@ -3,6 +3,10 @@
   "additionalProperties": false,
   "description": "SourceDefinition is one kind.json source entry: a path plus optional\n `schema` — a JSON Schema file describing the source's shape. No\n `schema` means raw content, as before. Declaring one makes the\n source's content a contract the runner enforces at render time: reads\n and writes go through the parsed value, not the raw string.",
   "properties": {
+    "outPath": {
+      "default": "",
+      "type": "string"
+    },
     "path": {
       "description": "Resolved relative to the enclosing kind.json.",
       "minLength": 1,

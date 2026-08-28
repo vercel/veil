@@ -54,6 +54,8 @@ message VeilConfigDefinition {
   // version isn't a comparable release (dev / edge) skip the check; unset
   // means no minimum is enforced.
   string cli_version = 6;
+
+  string header = 7;
 }
 
 // KindRef is the narrowed form of a `kinds` entry: a path plus optional
@@ -233,6 +235,8 @@ message SourceDefinition {
   // JSON Schema file for this source's shape, resolved relative to the
   // enclosing kind.json. Omit for no declared shape.
   string schema = 2;
+
+  string outPath = 3;
 }
 
 // HooksDefinition groups a kind's hook files by lifecycle point. Each

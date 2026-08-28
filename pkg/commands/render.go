@@ -279,6 +279,7 @@ func renderEntry(reg *config.Registry, kindReg registry.Registry, catalog resour
 		Kind:      entry.GetMetadata().GetKind(),
 		Name:      entry.GetMetadata().GetName(),
 		OutDir:    outDir,
+		Header:    reg.Header,
 		Root:      reg.Root,
 		FS:        projectFS,
 		Registry:  kindReg,

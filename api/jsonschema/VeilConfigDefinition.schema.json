@@ -71,6 +71,10 @@
       "title": "Generators",
       "type": "object"
     },
+    "header": {
+      "default": "",
+      "type": "string"
+    },
     "kinds": {
       "description": "Kind references — each a bare path string or a {path, import?} object\n that the config loader narrows into a KindRef. May be empty — a project\n with no kinds is valid (it can still depend on kinds published by aliased\n registries). The {path, import} object form opts the kind's generated\n types into the shared types package (generators.types).",
       "items": {

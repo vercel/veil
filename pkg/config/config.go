@@ -102,6 +102,7 @@ type Registry struct {
 	// (semver, leading "v" optional), or "" when unset. Enforced by
 	// `veil render`. See VeilConfigDefinition.cli_version.
 	CliVersion string
+	Header string
 }
 
 // DefaultKindsDir is the path (relative to the project root) where
@@ -291,6 +292,7 @@ func Load(configPath string) (*Registry, error) {
 		ResourceDiscovery: cfg.ResourceDiscovery,
 		Generators:        cfg.Generators,
 		CliVersion:        cfg.GetCliVersion(),
+		Header: cfg.GetHeader(),
 	}, nil
 }
 

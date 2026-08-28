@@ -132,6 +132,7 @@ type VeilConfigDefinition struct {
 	// version isn't a comparable release (dev / edge) skip the check; unset
 	// means no minimum is enforced.
 	CliVersion    string `protobuf:"bytes,6,opt,name=cli_version,json=cliVersion,proto3" json:"cli_version,omitempty"`
+	Header        string `protobuf:"bytes,7,opt,name=header,proto3" json:"header,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -204,6 +205,13 @@ func (x *VeilConfigDefinition) GetGenerators() *Generators {
 func (x *VeilConfigDefinition) GetCliVersion() string {
 	if x != nil {
 		return x.CliVersion
+	}
+	return ""
+}
+
+func (x *VeilConfigDefinition) GetHeader() string {
+	if x != nil {
+		return x.Header
 	}
 	return ""
 }
@@ -729,6 +737,7 @@ type SourceDefinition struct {
 	// JSON Schema file for this source's shape, resolved relative to the
 	// enclosing kind.json. Omit for no declared shape.
 	Schema        string `protobuf:"bytes,2,opt,name=schema,proto3" json:"schema,omitempty"`
+	OutPath       string `protobuf:"bytes,3,opt,name=outPath,proto3" json:"outPath,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -773,6 +782,13 @@ func (x *SourceDefinition) GetPath() string {
 func (x *SourceDefinition) GetSchema() string {
 	if x != nil {
 		return x.Schema
+	}
+	return ""
+}
+
+func (x *SourceDefinition) GetOutPath() string {
+	if x != nil {
+		return x.OutPath
 	}
 	return ""
 }
@@ -1125,7 +1141,7 @@ var File_veil_v1_config_proto protoreflect.FileDescriptor
 
 const file_veil_v1_config_proto_rawDesc = "" +
 	"\n" +
-	"\x14veil/v1/config.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xf6\x04\n" +
+	"\x14veil/v1/config.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\x8e\x05\n" +
 	"\x14VeilConfigDefinition\x12,\n" +
 	"\x05kinds\x18\x01 \x03(\v2\x16.google.protobuf.ValueR\x05kinds\x12p\n" +
 	"\tvariables\x18\x02 \x03(\v2,.veil.v1.VeilConfigDefinition.VariablesEntryB$\xbaH!\x9a\x01\x1e\"\x1cr\x1a2\x18^[a-zA-Z_][a-zA-Z0-9_]*$R\tvariables\x12\x8c\x01\n" +
@@ -1137,7 +1153,8 @@ const file_veil_v1_config_proto_rawDesc = "" +
 	"generators\x18\x05 \x01(\v2\x13.veil.v1.GeneratorsR\n" +
 	"generators\x12\x1f\n" +
 	"\vcli_version\x18\x06 \x01(\tR\n" +
-	"cliVersion\x1aO\n" +
+	"cliVersion\x12\x16\n" +
+	"\x06header\x18\a \x01(\tR\x06header\x1aO\n" +
 	"\x0eVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +
 	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\x1a=\n" +
@@ -1184,11 +1201,12 @@ const file_veil_v1_config_proto_rawDesc = "" +
 	"\tvariables\x18\x06 \x03(\v2&.veil.v1.KindDefinition.VariablesEntryB$\xbaH!\x9a\x01\x1e\"\x1cr\x1a2\x18^[a-zA-Z_][a-zA-Z0-9_]*$R\tvariables\x1aO\n" +
 	"\x0eVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +
-	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\"J\n" +
+	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\"d\n" +
 	"\x10SourceDefinition\x12\x1e\n" +
 	"\x04path\x18\x01 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04path\x12\x16\n" +
-	"\x06schema\x18\x02 \x01(\tR\x06schema\"\xec\x01\n" +
+	"\x06schema\x18\x02 \x01(\tR\x06schema\x12\x18\n" +
+	"\aoutPath\x18\x03 \x01(\tR\aoutPath\"\xec\x01\n" +
 	"\x0fHooksDefinition\x12.\n" +
 	"\x06render\x18\x01 \x03(\v2\x16.google.protobuf.ValueR\x06render\x12<\n" +
 	"\n" +

@@ -166,7 +166,7 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 
 	resp := &overrideResponse{Kind: kindName, SkipHooks: skipHooks}
 	for _, sourceName := range sourceArgs {
-		sourceContent := sources[sourceName]
+		sourceContent := sources[sourceName].GetContent()
 
 		// Default output path: same basename as the source, dropped
 		// alongside the resource file. With --out the file lands under
@@ -220,7 +220,7 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 }
 
 // discoveryResponse builds the JSON payload for override discovery mode.
-func discoveryResponse(kindName string, existing []*veilv1.Override, sources map[string]string) *overrideResponse {
+func discoveryResponse(kindName string, existing []*veilv1.Override, sources map[string]*veilv1.Source) *overrideResponse {
 	taken := make(map[string]bool, len(existing))
 	for _, ov := range existing {
 		taken[ov.GetSource()] = true
@@ -236,7 +236,7 @@ func discoveryResponse(kindName string, existing []*veilv1.Override, sources map
 // when the override command is invoked without a source. Already-
 // overridden entries are flagged so the user knows what's already
 // taken without re-reading the resource JSON.
-func listOverridableSources(kindName, resourceArg string, existing []*veilv1.Override, sources map[string]string) {
+func listOverridableSources(kindName, resourceArg string, existing []*veilv1.Override, sources map[string]*veilv1.Source) {
 	p := interact.Default()
 	taken := make(map[string]bool, len(existing))
 	for _, ov := range existing {
@@ -262,7 +262,7 @@ func listOverridableSources(kindName, resourceArg string, existing []*veilv1.Ove
 
 // sortedKeys returns the map's keys in lexical order. Used so the
 // override listing is stable across runs.
-func sortedKeys(m map[string]string) []string {
+func sortedKeys(m map[string]*veilv1.Source) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

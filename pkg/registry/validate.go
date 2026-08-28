@@ -124,7 +124,13 @@ func stripSchemaURL(msg string) string {
 // under a shared compiler instance (one URI per source), rather than a
 // separate jsonschema.Compiler each. nil when there are no
 // schema-declared sources.
-func compileSourceSchemas(schemas map[string]string) (map[string]*jsonschema.Schema, error) {
+func compileSourceSchemas(k *veilv1.Kind) (map[string]*jsonschema.Schema, error) {
+	schemas := make(map[string]string, len(k.Sources))
+	for path, source := range(k.Sources) {
+		if schema := source.GetSchema(); schema != "" {
+			schemas[path] = schema
+		}
+	}
 	if len(schemas) == 0 {
 		return nil, nil
 	}

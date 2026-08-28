@@ -371,8 +371,7 @@ func cwdRel(abs string) string {
 // plus every kind's kind.json), copied verbatim so the compiled document
 // is self-contained at render time.
 func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectRoot string, fsys fs.FS) (*veilv1.Kind, error) {
-	sources := make(map[string]string, len(k.SourceDefs()))
-	sourceSchemas := make(map[string]string)
+	sources := make(map[string]*veilv1.Source, len(k.SourceDefs()))
 	for _, def := range k.SourceDefs() {
 		src := def.GetPath()
 		abs := src
@@ -387,8 +386,8 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 		if err != nil {
 			return nil, err
 		}
-		sources[key] = string(data)
 
+		var schemaContent string
 		if schema := def.GetSchema(); schema != "" {
 			schemaAbs := schema
 			if !filepath.IsAbs(schemaAbs) {
@@ -402,13 +401,16 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 			if err := json.Unmarshal(schemaData, &probe); err != nil {
 				return nil, fmt.Errorf("source %s: schema %s: invalid JSON: %w", src, schema, err)
 			}
-			sourceSchemas[key] = string(schemaData)
+			schemaContent = string(schemaData)
 		}
-	}
-	if len(sourceSchemas) == 0 {
-		sourceSchemas = nil
-	}
 
+		sources[key] = &veilv1.Source{
+			Content: string(data),
+			Schema: schemaContent,
+			OutPath: def.GetOutPath(),
+		}
+		
+	}
 	render, err := compileRenderHookDefs(k, projectRoot, fsys, k.RenderHooks())
 	if err != nil {
 		return nil, fmt.Errorf("render hooks: %w", err)
@@ -432,7 +434,6 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 	return &veilv1.Kind{
 		Name:          k.Name,
 		Sources:       sources,
-		SourceSchemas: sourceSchemas,
 		Hooks: &veilv1.Hooks{
 			Render:     render,
 			Dependents: dependents,
