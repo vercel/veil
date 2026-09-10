@@ -23,7 +23,7 @@
             "description": "DependentDefinition declares a consumer kind that may depend on this\n kind, the hook file path(s) that run when such a dependency is\n rendered, and the JSON Schema describing the `params` the consumer\n must supply.",
             "patternProperties": {
               "^(paramsPath)$": {
-                "description": "Path to the JSON Schema describing the `params` object that the\n consumer must supply when declaring this dependency. Resolved\n relative to the enclosing kind.json file.",
+                "description": "Local path (relative to kind.json) or HTTP(S) URL to the dependency\n params' JSON Schema.",
                 "minLength": 1,
                 "type": "string"
               }
@@ -36,7 +36,7 @@
                 "type": "string"
               },
               "params_path": {
-                "description": "Path to the JSON Schema describing the `params` object that the\n consumer must supply when declaring this dependency. Resolved\n relative to the enclosing kind.json file.",
+                "description": "Local path (relative to kind.json) or HTTP(S) URL to the dependency\n params' JSON Schema.",
                 "minLength": 1,
                 "type": "string"
               },
@@ -92,15 +92,15 @@
     },
     "schema": {
       "default": "",
-      "description": "Path to the JSON Schema that defines the spec shape.",
+      "description": "Local path or HTTP(S) URL to the spec's JSON Schema.",
       "type": "string"
     },
     "sources": {
-      "description": "Source configuration files that make up the kind. May be empty —\n a kind with no sources is valid (it's the bare template plus\n whatever its hooks add at render time).",
+      "description": "google.protobuf.Value so an entry can be a bare string path (no\n schema) or a SourceDefinition object (path + optional schema) —\n same polymorphism as `hooks`, same reason: protojson can't type\n \"string OR struct\". The build pipeline narrows each Value into a\n SourceDefinition at load time.",
       "items": {
-        "minLength": 1,
-        "type": "string"
+        "title": "Value"
       },
+      "title": "Source configuration files that make up the kind. May be empty.",
       "type": "array"
     },
     "variables": {

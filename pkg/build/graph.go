@@ -1,8 +1,8 @@
 package build
 
 import (
+	"bytes"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -31,10 +31,17 @@ type KindGraph struct {
 
 // KindNode is one kind in the graph: its name, parsed spec schema,
 // declared source paths, and the dependency edges it participates in.
+// SourceTypes/SourceTypeNames are this kind's schema-derived TS
+// interfaces and source-path -> type-name map, generated with a
+// PascalCase(Name) prefix — only used when a dependent hook replicates
+// this kind's FS inline (see dependentInterfaces); a kind's own
+// veil-types.ts recomputes these unprefixed via SourceSchemaTypes(k, "").
 type KindNode struct {
-	Name    string
-	Spec    map[string]any
-	Sources []string
+	Name            string
+	Spec            map[string]any
+	Sources         []string
+	SourceTypes     string
+	SourceTypeNames map[string]string
 
 	dependencies []*DependencyEdge // outgoing — what this kind may depend on
 	dependents   []*DependencyEdge // incoming — who may depend on this kind
@@ -64,10 +71,16 @@ func BuildGraph(kinds []*config.Kind) (*KindGraph, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: spec: %w", k.Name, err)
 		}
+		sourceTypes, sourceTypeNames, err := SourceSchemaTypes(k, PascalCase(k.Name))
+		if err != nil {
+			return nil, fmt.Errorf("%s: source schema types: %w", k.Name, err)
+		}
 		g.nodes[k.Name] = &KindNode{
-			Name:    k.Name,
-			Spec:    spec,
-			Sources: append([]string(nil), k.Sources...),
+			Name:            k.Name,
+			Spec:            spec,
+			Sources:         append([]string(nil), k.SourcePaths()...),
+			SourceTypes:     sourceTypes,
+			SourceTypeNames: sourceTypeNames,
 		}
 		g.nodesOrder = append(g.nodesOrder, k.Name)
 	}
@@ -149,17 +162,14 @@ func (n *KindNode) Dependents() []*DependencyEdge {
 	return n.dependents
 }
 
-// loadParamsSchema reads the params_path JSON Schema for a dependent
-// declaration, resolving relative paths against the kind directory.
-// The schema may be authored in JSON or YAML — extension decides how
-// the bytes are parsed.
+// loadParamsSchema reads a dependent's local or remote JSON/YAML schema.
 func loadParamsSchema(k *config.Kind, p string) (map[string]any, error) {
-	abs := p
-	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(k.Dir, p)
+	data, err := k.ReadSchema(p)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", p, err)
 	}
 	var s map[string]any
-	if err := protoencode.ReadFile(abs, &s); err != nil {
+	if err := protoencode.Decode(bytes.NewReader(data), &s); err != nil {
 		return nil, fmt.Errorf("reading %s: %w", p, err)
 	}
 	return s, nil
@@ -271,7 +281,7 @@ func dependentInterfaces(n *KindNode, packageMode bool) (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("consumer %q spec: %w", consumer.Name, err)
 			}
-			consumerFS, err := fsInterfaceNamed(consumerFSName, consumer.Sources)
+			consumerFS, err := fsInterfaceNamed(consumerFSName, consumer.Sources, consumer.SourceTypeNames)
 			if err != nil {
 				return "", fmt.Errorf("consumer %q fs: %w", consumer.Name, err)
 			}
@@ -279,6 +289,7 @@ func dependentInterfaces(n *KindNode, packageMode bool) (string, error) {
 			b.WriteString("\n")
 			b.WriteString(consumerFS)
 			b.WriteString("\n")
+			b.WriteString(consumer.SourceTypes)
 		}
 
 		paramsIface, err := interfaceFromSchemaMap(paramsName, edge.ParamsSchema)

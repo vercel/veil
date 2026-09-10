@@ -9,7 +9,9 @@
 package build
 
 import (
+	"bytes"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,6 +24,7 @@ import (
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/config"
 	"github.com/vercel/veil/pkg/protoencode"
+	"github.com/vercel/veil/pkg/schemaload"
 	"github.com/vercel/veil/pkg/typegen"
 )
 
@@ -45,6 +48,11 @@ func VeilTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph *Kin
 	specTypeName := PascalCase(k.Name) + "Spec"
 
 	fsIface, err := fsInterface(k)
+	if err != nil {
+		return "", err
+	}
+
+	sourceTypes, _, err := SourceSchemaTypes(k, "")
 	if err != nil {
 		return "", err
 	}
@@ -82,6 +90,7 @@ func VeilTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph *Kin
 		b.WriteString("\n")
 		b.WriteString(fsIface)
 		b.WriteString("\n")
+		b.WriteString(sourceTypes)
 		b.WriteString(depTypes)
 		if depTypes != "" {
 			b.WriteString("\n")
@@ -112,6 +121,7 @@ func VeilTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph *Kin
 	b.WriteString("\n")
 	b.WriteString(fsIface)
 	b.WriteString("\n")
+	b.WriteString(sourceTypes)
 	b.WriteString(depTypes)
 	if depTypes != "" {
 		b.WriteString("\n")
@@ -299,10 +309,8 @@ func ResourceSchemaBytes(k *config.Kind, metadataSchema map[string]any, graph *K
 	return data, nil
 }
 
-// LoadSpecSchema reads and parses the kind's schema file. Schema files
-// may be authored in JSON or YAML — the extension on k.Schema decides
-// how the bytes are parsed. If no schema is defined, returns a
-// permissive object schema.
+// LoadSpecSchema reads a kind's local or remote JSON/YAML schema.
+// If no schema is defined, it returns a permissive object schema.
 func LoadSpecSchema(k *config.Kind) (map[string]any, error) {
 	if k.Schema == "" {
 		return map[string]any{
@@ -311,16 +319,101 @@ func LoadSpecSchema(k *config.Kind) (map[string]any, error) {
 		}, nil
 	}
 
-	schemaPath := k.Schema
-	if !filepath.IsAbs(schemaPath) {
-		schemaPath = filepath.Join(k.Dir, schemaPath)
+	data, err := k.ReadSchema(k.Schema)
+	if err != nil {
+		return nil, fmt.Errorf("reading schema %s: %w", k.Schema, err)
 	}
-
 	var spec map[string]any
-	if err := protoencode.ReadFile(schemaPath, &spec); err != nil {
-		return nil, fmt.Errorf("reading schema %s: %w", schemaPath, err)
+	if err := protoencode.Decode(bytes.NewReader(data), &spec); err != nil {
+		return nil, fmt.Errorf("reading schema %s: %w", k.Schema, err)
 	}
 	return spec, nil
+}
+
+// typeNameForSchemaPath derives a TS interface name from a schema file
+// path: strip the extension and a trailing `.schema`, then PascalCase
+// and prepend prefix (empty for a kind's own types; a consumer's
+// PascalCase name when replicating cross-kind, so a dependent hook's
+// replicated schema types can't collide with the target's own or
+// another consumer's). "kubernetes_deployment.schema.json" with
+// prefix "" -> "KubernetesDeployment"; with prefix "Service" ->
+// "ServiceKubernetesDeployment".
+func typeNameForSchemaPath(prefix, p string) (string, error) {
+	_, remote, err := schemaload.Resolve("", p)
+	if err != nil {
+		return "", err
+	}
+	schemaPath := p
+	if remote {
+		u, err := url.Parse(p)
+		if err != nil {
+			return "", err
+		}
+		schemaPath = u.Path
+		if schemaPath == "" || strings.HasSuffix(schemaPath, "/") {
+			return "", fmt.Errorf("schema URL %q has no usable filename for a type name", p)
+		}
+	}
+	base := filepath.Base(schemaPath)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	base = strings.TrimSuffix(base, ".schema")
+	name := PascalCase(base)
+	if remote && (name == "" || name == "." || name == "..") {
+		return "", fmt.Errorf("schema URL %q has no usable filename for a type name", p)
+	}
+	return prefix + name, nil
+}
+
+// SourceSchemaTypes generates one TS interface per unique schema file a
+// kind's sources reference (shared schemas share an interface), plus a
+// source-path -> type-name map for typed FS accessors. Sources with no
+// schema are absent from the map. Two schemas PascalCasing to the same
+// name is a build-time error, same as fsInterfaceNamed's accessor guard.
+func SourceSchemaTypes(k *config.Kind, prefix string) (string, map[string]string, error) {
+	var b strings.Builder
+	typeNameBySchema := make(map[string]string) // schema path -> type name
+	nameOwner := make(map[string]string)        // type name -> first schema path that claimed it
+	sourceTypeNames := make(map[string]string)  // source path -> type name
+
+	defs := append([]*veilv1.SourceDefinition(nil), k.SourceDefs()...)
+	sort.Slice(defs, func(i, j int) bool { return defs[i].GetPath() < defs[j].GetPath() })
+
+	for _, def := range defs {
+		schema := def.GetSchema()
+		if schema == "" {
+			continue
+		}
+		name, ok := typeNameBySchema[schema]
+		if !ok {
+			var err error
+			name, err = typeNameForSchemaPath(prefix, schema)
+			if err != nil {
+				return "", nil, err
+			}
+			if owner, taken := nameOwner[name]; taken && owner != schema {
+				return "", nil, fmt.Errorf("schemas %q and %q both generate type name %q; rename one to disambiguate", owner, schema, name)
+			}
+			nameOwner[name] = schema
+			typeNameBySchema[schema] = name
+
+			data, err := k.ReadSchema(schema)
+			if err != nil {
+				return "", nil, fmt.Errorf("reading schema %s: %w", schema, err)
+			}
+			var raw map[string]any
+			if err := protoencode.Decode(bytes.NewReader(data), &raw); err != nil {
+				return "", nil, fmt.Errorf("reading schema %s: %w", schema, err)
+			}
+			iface, err := interfaceFromSchemaMap(name, raw)
+			if err != nil {
+				return "", nil, fmt.Errorf("generating type for schema %s: %w", schema, err)
+			}
+			b.WriteString(iface)
+			b.WriteString("\n")
+		}
+		sourceTypeNames[def.GetPath()] = name
+	}
+	return b.String(), sourceTypeNames, nil
 }
 
 // MethodSuffixForPath converts a declared source path into the PascalCase
@@ -422,24 +515,32 @@ func specInterface(k *config.Kind) (string, error) {
 	return interfaceFromSchemaMap(PascalCase(k.Name)+"Spec", specSchemaRaw)
 }
 
-// fsInterface emits the FS interface for a kind. One typed accessor per
-// declared source plus generic escape hatches.
+// fsInterface emits the kind's FS interface: one typed accessor per
+// declared source (File<T> for a schema-declared one, via
+// SourceSchemaTypes; plain File otherwise) plus the generic escape
+// hatches.
 func fsInterface(k *config.Kind) (string, error) {
-	return fsInterfaceNamed("FS", k.Sources)
+	_, typeNameByPath, err := SourceSchemaTypes(k, "")
+	if err != nil {
+		return "", err
+	}
+	return fsInterfaceNamed("FS", k.SourcePaths(), typeNameByPath)
 }
 
-// fsInterfaceNamed emits an FS-shaped interface under an arbitrary name,
-// with one typed accessor per declared source. Used for `FS` (the
-// kind's own) and for cross-kind types like `<Consumer>FS` that a
-// dependent hook in the target's veil-types.ts uses to type the bundle
-// it receives. Accessor-name collisions surface as errors at build time.
-func fsInterfaceNamed(name string, sources []string) (string, error) {
+// fsInterfaceNamed emits an FS-shaped interface under an arbitrary
+// name — used for the kind's own `FS` and for `<Consumer>FS` replicated
+// into a dependent hook's inline-mode types (typeNameByPath there is
+// consumer.SourceTypeNames — see KindNode — so the replicated FS is
+// typed to the consumer's schemas exactly like the consumer's own FS
+// is). Accessor-name collisions are a build error.
+func fsInterfaceNamed(name string, sources []string, typeNameByPath map[string]string) (string, error) {
 	srcs := append([]string(nil), sources...)
 	sort.Strings(srcs)
 
 	type accessor struct {
-		method string
-		source string
+		method   string
+		source   string
+		typeName string
 	}
 	accessors := make([]accessor, 0, len(srcs))
 	seen := map[string]string{}
@@ -453,19 +554,25 @@ func fsInterfaceNamed(name string, sources []string) (string, error) {
 			return "", fmt.Errorf("sources %q and %q both map to accessor %s; rename one to disambiguate", prev, src, method)
 		}
 		seen[method] = src
-		accessors = append(accessors, accessor{method: method, source: src})
+		accessors = append(accessors, accessor{method: method, source: src, typeName: typeNameByPath[src]})
 	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "export interface %s {\n", name)
 	for _, a := range accessors {
 		b.WriteString(fmt.Sprintf("  /** Handle for the declared source %q. */\n", a.source))
-		b.WriteString(fmt.Sprintf("  %s(): File;\n", a.method))
+		if a.typeName != "" {
+			b.WriteString(fmt.Sprintf("  %s(): File<%s>;\n", a.method, a.typeName))
+		} else {
+			b.WriteString(fmt.Sprintf("  %s(): File;\n", a.method))
+		}
 	}
 	if len(accessors) > 0 {
 		b.WriteString("\n")
 	}
-	b.WriteString("  /** Look up a file handle by its path. Returns undefined if absent. */\n")
+	b.WriteString("  /** Look up a file handle by its path. Returns undefined if absent.\n")
+	b.WriteString("   *  Always File<string> — still schema-enforced, just doesn't parse\n")
+	b.WriteString("   *  for you. */\n")
 	b.WriteString("  get(path: string): File | undefined;\n")
 	b.WriteString("  /** Every file handle currently present (including tombstoned ones —\n")
 	b.WriteString("   *  filter via `file.isDeleted()` if you only want live files). */\n")
@@ -670,11 +777,14 @@ export type Fetch = (
 ) => Promise<FetchResponse>;
 `
 
-const fileInterface = `export interface File {
-  /** Current contents. */
-  getContent(): string;
-  /** Overwrite the contents. */
-  setContent(content: string): void;
+const fileInterface = `export interface File<T = string> {
+  /** Current contents. For a schema-declared source, validated against
+   *  the schema on every call — a violation throws. The typed accessor
+   *  hands back the parsed object; the plain File / escape hatch hands
+   *  back the raw string (still validated underneath). */
+  getContent(): T;
+  /** Overwrite the contents. Same split and validation as getContent. */
+  setContent(content: T): void;
   /** Current destination path, relative to the render output directory. */
   getPath(): string;
   /** Override the destination path. Identity (the FS key) is unchanged, so
@@ -698,7 +808,9 @@ const hookInterface = `export interface RenderHook {
    * fetch) and the current FS; return the (optionally mutated) FS to flow
    * it into the next hook in the pipeline.
    *
-   * Read declared sources via typed accessors (e.g. ` + "`fs.getSourcesDeploymentYaml()`" + `).
+   * Read declared sources via typed accessors (e.g. ` + "`fs.getSourcesDeploymentYaml()`" + `)
+   * — for a schema-declared source, getContent()/setContent() traffic in
+   * the parsed, schema-validated object directly rather than a raw string.
    * Modify a file with ` + "`setContent`, `setOutputPath`, or `setDeleted`" + `. Create
    * new files with ` + "`fs.add(path, content)`" + `. Soft-delete with ` + "`fs.delete(path)`" + ` —
    * tombstoned files persist so downstream hooks can observe them via

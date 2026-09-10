@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/vercel/veil/pkg/interact"
 	"github.com/vercel/veil/pkg/protoencode"
 	"github.com/vercel/veil/pkg/resource"
+	"github.com/vercel/veil/pkg/schemaload"
 	"github.com/vercel/veil/pkg/tsc"
 	"github.com/vercel/veil/pkg/vfs"
 )
@@ -146,6 +148,18 @@ type buildPipelineOpts struct {
 // kind|hook` (so scaffolding leaves a buildable state), and `veil render
 // --build` (into an in-memory FS the registry then reads via FSStore).
 func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opts buildPipelineOpts) (*buildResponse, error) {
+	loader := schemaload.New(ctx)
+	previous := make([]*schemaload.Loader, len(reg.Kinds))
+	for i, k := range reg.Kinds {
+		previous[i] = k.SchemaLoader
+		k.SchemaLoader = loader
+	}
+	defer func() {
+		for i, k := range reg.Kinds {
+			k.SchemaLoader = previous[i]
+		}
+	}()
+
 	p := interact.Default()
 	resp := &buildResponse{Kinds: []builtKind{}}
 
@@ -371,8 +385,10 @@ func cwdRel(abs string) string {
 // plus every kind's kind.json), copied verbatim so the compiled document
 // is self-contained at render time.
 func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectRoot string, fsys fs.FS) (*veilv1.Kind, error) {
-	sources := make(map[string]string, len(k.Sources))
-	for _, src := range k.Sources {
+	sources := make(map[string]string, len(k.SourceDefs()))
+	sourceSchemas := make(map[string]string)
+	for _, def := range k.SourceDefs() {
+		src := def.GetPath()
 		abs := src
 		if !filepath.IsAbs(abs) {
 			abs = filepath.Join(k.Dir, src)
@@ -381,11 +397,26 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 		if err != nil {
 			return nil, fmt.Errorf("reading source %s: %w", src, err)
 		}
-		key, err := filepath.Rel(k.Dir, abs)
+		key, err := sourceKey(k, src)
 		if err != nil {
-			return nil, fmt.Errorf("resolving source key for %s: %w", src, err)
+			return nil, err
 		}
-		sources[filepath.ToSlash(key)] = string(data)
+		sources[key] = string(data)
+
+		if schema := def.GetSchema(); schema != "" {
+			schemaData, err := k.ReadSchema(schema)
+			if err != nil {
+				return nil, fmt.Errorf("reading schema for source %s: %w", src, err)
+			}
+			var probe map[string]any
+			if err := json.Unmarshal(schemaData, &probe); err != nil {
+				return nil, fmt.Errorf("source %s: schema %s: invalid JSON: %w", src, schema, err)
+			}
+			sourceSchemas[key] = string(schemaData)
+		}
+	}
+	if len(sourceSchemas) == 0 {
+		sourceSchemas = nil
 	}
 
 	render, err := compileRenderHookDefs(k, projectRoot, fsys, k.RenderHooks())
@@ -409,8 +440,9 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 	}
 
 	return &veilv1.Kind{
-		Name:    k.Name,
-		Sources: sources,
+		Name:          k.Name,
+		Sources:       sources,
+		SourceSchemas: sourceSchemas,
 		Hooks: &veilv1.Hooks{
 			Render:     render,
 			Dependents: dependents,
@@ -419,6 +451,21 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 		},
 		Variables: variables,
 	}, nil
+}
+
+// sourceKey resolves a source path to the kind-dir-relative key used
+// by Kind.sources/Kind.source_schemas — mirrors compileHook's Name
+// normalization so the two stay in lockstep.
+func sourceKey(k *config.Kind, p string) (string, error) {
+	abs := p
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(k.Dir, p)
+	}
+	key, err := filepath.Rel(k.Dir, abs)
+	if err != nil {
+		return "", fmt.Errorf("resolving source key for %s: %w", p, err)
+	}
+	return filepath.ToSlash(key), nil
 }
 
 // compileHookList bundles+minifies every hook path in paths, resolving
@@ -494,16 +541,13 @@ func compileDependents(k *config.Kind, projectRoot string, fsys fs.FS) ([]*veilv
 		if err != nil {
 			return nil, fmt.Errorf("dependents[%q]: %w", d.Kind, err)
 		}
-		paramsAbs := d.ParamsPath
-		if !filepath.IsAbs(paramsAbs) {
-			paramsAbs = filepath.Join(k.Dir, d.ParamsPath)
+		data, err := k.ReadSchema(d.ParamsPath)
+		if err != nil {
+			return nil, fmt.Errorf("dependents[%q]: reading params_path %s: %w", d.Kind, d.ParamsPath, err)
 		}
-		// Source may be authored in JSON or YAML; the compiled
-		// kind.json always embeds JSON-encoded params so downstream
-		// consumers (render, hook bundler) don't need a YAML parser
-		// to interpret it.
+		// Normalize JSON/YAML params to embedded JSON for offline consumers.
 		var probe map[string]any
-		if err := protoencode.ReadFile(paramsAbs, &probe); err != nil {
+		if err := protoencode.Decode(bytes.NewReader(data), &probe); err != nil {
 			return nil, fmt.Errorf("dependents[%q]: reading params_path %s: %w", d.Kind, d.ParamsPath, err)
 		}
 		paramsJSON, err := json.Marshal(probe)
@@ -683,8 +727,7 @@ func hookFiles(k *config.Kind) []string {
 	return files
 }
 
-// validateKind checks that a kind's referenced files exist and that its
-// spec schema parses as JSON.
+// validateKind checks local sources/hooks and parses local or remote schemas.
 func validateKind(k *config.Kind) error {
 	var errs []error
 
@@ -705,7 +748,22 @@ func validateKind(k *config.Kind) error {
 			}
 		}
 	}
-	check("source", k.Sources)
+	checkSchema := func(label, ref string) {
+		data, err := k.ReadSchema(ref)
+		if err == nil {
+			var schema map[string]any
+			err = protoencode.Decode(bytes.NewReader(data), &schema)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s %q: %w", label, ref, err))
+		}
+	}
+	check("source", k.SourcePaths())
+	for _, def := range k.SourceDefs() {
+		if schema := def.GetSchema(); schema != "" {
+			checkSchema(fmt.Sprintf("source %q schema", def.GetPath()), schema)
+		}
+	}
 	for _, d := range k.RenderHooks() {
 		check("render hook", []string{d.GetPath()})
 	}
@@ -718,7 +776,7 @@ func validateKind(k *config.Kind) error {
 
 	for _, d := range k.GetHooks().GetDependents() {
 		check(fmt.Sprintf("dependent[%q] path", d.Kind), d.Paths)
-		check(fmt.Sprintf("dependent[%q] params_path", d.Kind), []string{d.ParamsPath})
+		checkSchema(fmt.Sprintf("dependent[%q] params_path", d.Kind), d.ParamsPath)
 	}
 
 	return errors.Join(errs...)

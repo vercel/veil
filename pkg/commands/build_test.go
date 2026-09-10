@@ -100,6 +100,75 @@ func (s *BuildSuite) TestBuildEmitsCompiledKindAndSchema() {
 	s.NotContains(content, "// TODO") // comment stripped
 }
 
+// TestBuildEmbedsSourceSchemas proves the compiled kind.json carries a
+// schema-declared source's raw schema text under source_schemas (keyed
+// the same way sources is), and veil-types.ts gets a generated
+// interface for the schema plus a File<T> accessor for it — no hook
+// binding needed; any hook touching the source via its generated
+// accessor gets the typed object.
+func (s *BuildSuite) TestBuildEmbedsSourceSchemas() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	kindDir := filepath.Join(s.root, ".veil", "kinds", "worker")
+	const schemaJSON = `{"type":"object","properties":{"replicas":{"type":"integer"}},"required":["replicas"]}`
+	s.Require().NoError(os.MkdirAll(filepath.Join(kindDir, "schemas"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "schemas", "deployment.schema.json"), []byte(schemaJSON), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "sources", "deployment.json"), []byte(`{"replicas":1}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "hooks", "src", "bump.ts"), []byte(`import type { FS, RenderHook, RenderHookContext } from './veil-types';
+
+const bump: RenderHook = {
+  render(ctx: RenderHookContext, fs: FS): FS {
+    const file = fs.getSourcesDeploymentJson();
+    const obj = file.getContent();
+    obj.replicas = obj.replicas + 1;
+    file.setContent(obj);
+    return fs;
+  }
+};
+export default bump;
+`), 0644))
+
+	kindPath := filepath.Join(kindDir, "kind.json")
+	raw := s.readJSON(kindPath)
+	sourcesArr, _ := raw["sources"].([]any)
+	sourcesArr = append(sourcesArr, map[string]any{"path": "./sources/deployment.json", "schema": "./schemas/deployment.schema.json"})
+	raw["sources"] = sourcesArr
+	hooksObj, _ := raw["hooks"].(map[string]any)
+	if hooksObj == nil {
+		hooksObj = map[string]any{}
+	}
+	renderArr, _ := hooksObj["render"].([]any)
+	renderArr = append(renderArr, map[string]any{"path": "./hooks/src/bump.ts"})
+	hooksObj["render"] = renderArr
+	raw["hooks"] = hooksObj
+	data, err := json.MarshalIndent(raw, "", "  ")
+	s.Require().NoError(err)
+	s.Require().NoError(os.WriteFile(kindPath, data, 0644))
+
+	outDir := filepath.Join(s.root, "public", "r")
+	s.Require().NoError(os.RemoveAll(outDir))
+
+	_, err = s.run("build")
+	s.Require().NoError(err)
+
+	compiled := s.readJSON(filepath.Join(outDir, "worker", "kind.json"))
+
+	sources, ok := compiled["sources"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal(`{"replicas":1}`, sources["sources/deployment.json"])
+
+	sourceSchemas, ok := compiled["source_schemas"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal(schemaJSON, sourceSchemas["sources/deployment.json"])
+
+	types, err := os.ReadFile(filepath.Join(kindDir, "hooks", "src", "veil-types.ts"))
+	s.Require().NoError(err)
+	s.Contains(string(types), "export interface Deployment {")
+	s.Contains(string(types), "export interface File<T = string>")
+	s.Contains(string(types), "getSourcesDeploymentJson(): File<Deployment>;")
+}
+
 func (s *BuildSuite) TestBuildSchemasOnlyEmitsSchemaWithoutRegistry() {
 	_, err := s.run("new", "kind", "worker")
 	s.Require().NoError(err)

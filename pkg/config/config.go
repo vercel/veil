@@ -1,8 +1,11 @@
 package config
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -10,6 +13,7 @@ import (
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/fsutil"
 	"github.com/vercel/veil/pkg/protoencode"
+	"github.com/vercel/veil/pkg/schemaload"
 )
 
 const (
@@ -51,10 +55,36 @@ type Kind struct {
 	// `kinds` entry used the {path, import} object form. nil for a bare
 	// path string — in which case the kind's types are inlined per hook.
 	Import *veilv1.KindImport
+	// SchemaLoader shares schema reads within a build.
+	SchemaLoader *schemaload.Loader
 
+	sources         []*veilv1.SourceDefinition
 	renderHooks     []*veilv1.RenderHookDefinition
 	validateHooks   []*veilv1.RenderHookDefinition
 	postRenderHooks []*veilv1.RenderHookDefinition
+}
+
+// ReadSchema reads a schema relative to the kind, or from an HTTP(S) URL.
+func (k *Kind) ReadSchema(ref string) ([]byte, error) {
+	if k.SchemaLoader == nil {
+		k.SchemaLoader = schemaload.New(context.Background())
+	}
+	return k.SchemaLoader.Read(k.Dir, ref)
+}
+
+// SourceDefs returns the parsed `sources` entries — path plus optional
+// `schema`.
+func (k *Kind) SourceDefs() []*veilv1.SourceDefinition { return k.sources }
+
+// SourcePaths returns just the declared paths, in order — for call
+// sites that don't need per-source schema info (FS accessor gen,
+// dependency graph, override discovery).
+func (k *Kind) SourcePaths() []string {
+	paths := make([]string, len(k.sources))
+	for i, s := range k.sources {
+		paths[i] = s.GetPath()
+	}
+	return paths
 }
 
 // RenderHooks returns the parsed render-lifecycle entries.
@@ -406,6 +436,26 @@ func loadKind(path string) (*Kind, error) {
 		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
 	k := &Kind{KindDefinition: pk, Path: path, Dir: filepath.Dir(path)}
+	if pk.GetSchema() != "" {
+		if _, _, err := schemaload.Resolve(k.Dir, pk.GetSchema()); err != nil {
+			return nil, fmt.Errorf("kind at %s: schema: %w", path, err)
+		}
+	}
+	for _, dep := range pk.GetHooks().GetDependents() {
+		if _, _, err := schemaload.Resolve(k.Dir, dep.GetParamsPath()); err != nil {
+			return nil, fmt.Errorf("kind at %s: dependent %q: params_path: %w", path, dep.GetKind(), err)
+		}
+	}
+
+	sources, err := parseSourceEntries(pk.GetSources())
+	if err != nil {
+		return nil, fmt.Errorf("kind at %s: sources: %w", path, err)
+	}
+	k.sources = sources
+	if err := validateSourceSchemas(k); err != nil {
+		return nil, fmt.Errorf("kind at %s: %w", path, err)
+	}
+
 	for _, lc := range []struct {
 		label   string
 		entries []*structpb.Value
@@ -422,6 +472,77 @@ func loadKind(path string) (*Kind, error) {
 		*lc.dest = parsed
 	}
 	return k, nil
+}
+
+// validateSourceSchemas checks schema references without fetching URLs and
+// preserves the supported extensions for typed source accessors.
+func validateSourceSchemas(k *Kind) error {
+	for _, s := range k.sources {
+		schema := s.GetSchema()
+		if schema == "" {
+			continue
+		}
+		path := s.GetPath()
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".json", ".yaml", ".yml":
+		default:
+			return fmt.Errorf("source %q: schema-declared sources must have a .json, .yaml, or .yml extension", path)
+		}
+		location, remote, err := schemaload.Resolve(k.Dir, schema)
+		if err != nil {
+			return fmt.Errorf("source %q: %w", path, err)
+		}
+		if remote {
+			continue
+		}
+		if _, err := os.Stat(location); err != nil {
+			return fmt.Errorf("source %q: schema %q: %w", path, schema, err)
+		}
+	}
+	return nil
+}
+
+// parseSourceEntries narrows each on-wire google.protobuf.Value into a
+// SourceDefinition — a bare string path or a {path, schema?} object,
+// same polymorphism as parseHookEntries.
+func parseSourceEntries(entries []*structpb.Value) ([]*veilv1.SourceDefinition, error) {
+	out := make([]*veilv1.SourceDefinition, 0, len(entries))
+	for i, v := range entries {
+		def, err := parseSourceEntry(v)
+		if err != nil {
+			return nil, fmt.Errorf("[%d]: %w", i, err)
+		}
+		out = append(out, def)
+	}
+	return out, nil
+}
+
+func parseSourceEntry(v *structpb.Value) (*veilv1.SourceDefinition, error) {
+	if v == nil {
+		return nil, fmt.Errorf("source entry is nil")
+	}
+	switch kind := v.Kind.(type) {
+	case *structpb.Value_StringValue:
+		if kind.StringValue == "" {
+			return nil, fmt.Errorf("source entry path is empty")
+		}
+		return &veilv1.SourceDefinition{Path: kind.StringValue}, nil
+	case *structpb.Value_StructValue:
+		raw, err := protojson.Marshal(kind.StructValue)
+		if err != nil {
+			return nil, fmt.Errorf("marshalling source entry: %w", err)
+		}
+		def := &veilv1.SourceDefinition{}
+		if err := protoencode.Unmarshal.Unmarshal(raw, def); err != nil {
+			return nil, fmt.Errorf("unmarshalling source entry: %w", err)
+		}
+		if def.GetPath() == "" {
+			return nil, fmt.Errorf("source entry object missing required `path` field")
+		}
+		return def, nil
+	default:
+		return nil, fmt.Errorf("source entry must be a string path or {path, schema?} object, got %T", v.Kind)
+	}
 }
 
 // parseHookEntries narrows each on-wire google.protobuf.Value into a

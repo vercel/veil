@@ -1,8 +1,12 @@
 package config
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
@@ -65,7 +69,7 @@ func (s *DiscoverSuite) TestFindsVeilJSONFromNestedDirectory() {
 	s.Require().Len(reg.Kinds, 1)
 	k := reg.Kinds[0]
 	s.Equal("service", k.Name)
-	s.Equal([]string{"./sources/deployment.yaml"}, k.Sources)
+	s.Equal([]string{"./sources/deployment.yaml"}, k.SourcePaths())
 	s.Equal(kindsDir, k.Dir)
 }
 
@@ -508,7 +512,7 @@ registries:
 
 	k := reg.Kinds[0]
 	s.Equal("service", k.Name)
-	s.Equal([]string{"./sources/deployment.yaml"}, k.Sources)
+	s.Equal([]string{"./sources/deployment.yaml"}, k.SourcePaths())
 	s.Equal(filepath.Join(kindsDir, "service.yaml"), k.Path)
 	s.Equal(kindsDir, k.Dir)
 	render := k.RenderHooks()
@@ -561,4 +565,163 @@ func (s *DiscoverSuite) TestAcceptsRenderHookObjectWithAccess() {
 	s.Require().Len(envs, 1)
 	s.Equal("API_KEY", envs[0].GetName())
 	s.Equal("auth token", envs[0].GetDescription())
+}
+
+func (s *DiscoverSuite) TestAcceptsSourceObjectWithSchema() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.MkdirAll(filepath.Join(kindsDir, "schemas"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "schemas", "deployment.schema.json"), []byte(`{"type": "object"}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": [
+			"./sources/plain.yaml",
+			{ "path": "./sources/deployment.yaml", "schema": "./schemas/deployment.schema.json" }
+		],
+		"schema": "./schemas/service.schema.json"
+	}`), 0644))
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
+
+	reg, err := Load(filepath.Join(root, "veil.json"))
+	s.Require().NoError(err)
+	s.Require().Len(reg.Kinds, 1)
+
+	k := reg.Kinds[0]
+	s.Equal([]string{"./sources/plain.yaml", "./sources/deployment.yaml"}, k.SourcePaths())
+	defs := k.SourceDefs()
+	s.Require().Len(defs, 2)
+	s.Equal("", defs[0].GetSchema())
+	s.Equal("./schemas/deployment.schema.json", defs[1].GetSchema())
+}
+
+func (s *DiscoverSuite) TestRejectsSourceWithMissingSchemaFile() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": [
+			{ "path": "./sources/deployment.yaml", "schema": "./schemas/missing.schema.json" }
+		],
+		"schema": "./schemas/service.schema.json"
+	}`), 0644))
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
+
+	_, err := Load(filepath.Join(root, "veil.json"))
+	s.Require().Error(err)
+	s.Contains(err.Error(), "missing.schema.json")
+}
+
+func (s *DiscoverSuite) TestRejectsSchemaDeclaredSourceWithUnsupportedExtension() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.MkdirAll(filepath.Join(kindsDir, "schemas"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "schemas", "deployment.schema.json"), []byte(`{"type":"object"}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": [
+			{ "path": "./sources/deployment.conf", "schema": "./schemas/deployment.schema.json" }
+		],
+		"schema": "./schemas/service.schema.json"
+	}`), 0644))
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
+
+	_, err := Load(filepath.Join(root, "veil.json"))
+	s.Require().Error(err)
+	s.Contains(err.Error(), "deployment.conf")
+	s.Contains(err.Error(), ".json, .yaml, or .yml")
+}
+
+func (s *DiscoverSuite) TestAcceptsSchemaDeclaredSourceWithSupportedExtensions() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.MkdirAll(filepath.Join(kindsDir, "schemas"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "schemas", "deployment.schema.json"), []byte(`{"type":"object"}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": [
+			{ "path": "./sources/a.json", "schema": "./schemas/deployment.schema.json" },
+			{ "path": "./sources/b.yaml", "schema": "./schemas/deployment.schema.json" },
+			{ "path": "./sources/c.yml", "schema": "./schemas/deployment.schema.json" }
+		],
+		"schema": "./schemas/service.schema.json"
+	}`), 0644))
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
+
+	reg, err := Load(filepath.Join(root, "veil.json"))
+	s.Require().NoError(err)
+	s.Require().Len(reg.Kinds, 1)
+}
+
+func (s *DiscoverSuite) TestLoadsRemoteSchemasWithoutNetwork() {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	root := s.T().TempDir()
+	ref := server.URL + "/schema.json?version=1"
+	s.Require().NoError(os.WriteFile(filepath.Join(root, "kind.json"), []byte(`{
+		"name": "service",
+		"schema": "`+ref+`",
+		"sources": [{"path": "source.yaml", "schema": "`+ref+`"}],
+		"hooks": {"dependents": [{"kind": "consumer", "paths": ["hook.ts"], "params_path": "`+ref+`"}]}
+	}`), 0644))
+	configPath := s.writeVeilJSON(root, `{"kinds": ["kind.json"], `+stockRegistries+`}`)
+	reg, err := Load(configPath)
+	s.Require().NoError(err)
+	s.Require().Len(reg.Kinds, 1)
+	s.Equal(ref, reg.Kinds[0].GetSchema())
+	s.Equal(ref, reg.Kinds[0].SourceDefs()[0].GetSchema())
+	s.Equal(ref, reg.Kinds[0].GetHooks().GetDependents()[0].GetParamsPath())
+	s.Nil(reg.Kinds[0].SchemaLoader)
+	s.Equal(int32(0), requests.Load())
+}
+
+func (s *DiscoverSuite) TestRejectsInvalidSchemaURLsInAllFields() {
+	for _, ref := range []string{"ftp://example.com/schema.json", "https:///schema.json", "https://example.com/schema.json#fragment"} {
+		for _, field := range []string{"schema", "source", "params_path"} {
+			s.Run(field+"/"+ref, func() {
+				kind := map[string]any{"name": "service"}
+				switch field {
+				case "schema":
+					kind["schema"] = ref
+				case "source":
+					kind["sources"] = []any{map[string]any{"path": "source.yaml", "schema": ref}}
+				case "params_path":
+					kind["hooks"] = map[string]any{"dependents": []any{map[string]any{
+						"kind": "consumer", "paths": []string{"hook.ts"}, "params_path": ref,
+					}}}
+				}
+				data, err := json.Marshal(kind)
+				s.Require().NoError(err)
+				root := s.T().TempDir()
+				s.Require().NoError(os.WriteFile(filepath.Join(root, "kind.json"), data, 0644))
+				_, err = Load(s.writeVeilJSON(root, `{"kinds": ["kind.json"], `+stockRegistries+`}`))
+				s.Require().Error(err)
+				s.Contains(err.Error(), field)
+			})
+		}
+	}
+}
+
+func (s *DiscoverSuite) TestReadSchemaLazilySharesReads() {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte(`{"type":"object"}`))
+	}))
+	defer server.Close()
+	k := &Kind{Dir: s.T().TempDir()}
+	for range 2 {
+		data, err := k.ReadSchema(server.URL + "/schema.json")
+		s.Require().NoError(err)
+		s.Equal(`{"type":"object"}`, string(data))
+	}
+	s.NotNil(k.SchemaLoader)
+	s.Equal(int32(1), requests.Load())
 }
