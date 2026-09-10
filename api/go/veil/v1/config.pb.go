@@ -640,7 +640,7 @@ type KindDefinition struct {
 	// dependency on this one — also lives under `hooks`, since it is
 	// ultimately just another hook lifecycle.
 	Hooks *HooksDefinition `protobuf:"bytes,3,opt,name=hooks,proto3" json:"hooks,omitempty"`
-	// Path to the JSON Schema that defines the spec shape.
+	// Local path or HTTP(S) URL to the spec's JSON Schema.
 	Schema string `protobuf:"bytes,5,opt,name=schema,proto3" json:"schema,omitempty"`
 	// Kind-scoped input variable declarations, keyed by name. Merged with
 	// the project-level variables from veil.json at config-load time;
@@ -726,8 +726,8 @@ type SourceDefinition struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Resolved relative to the enclosing kind.json.
 	Path string `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
-	// JSON Schema file for this source's shape, resolved relative to the
-	// enclosing kind.json. Omit for no declared shape.
+	// Local path (relative to kind.json) or HTTP(S) URL to this source's
+	// JSON Schema. Omit for no declared shape.
 	Schema        string `protobuf:"bytes,2,opt,name=schema,proto3" json:"schema,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1062,9 +1062,8 @@ type DependentDefinition struct {
 	// run in declaration order. Paths are resolved relative to the
 	// enclosing kind.json file.
 	Paths []string `protobuf:"bytes,2,rep,name=paths,proto3" json:"paths,omitempty"`
-	// Path to the JSON Schema describing the `params` object that the
-	// consumer must supply when declaring this dependency. Resolved
-	// relative to the enclosing kind.json file.
+	// Local path (relative to kind.json) or HTTP(S) URL to the dependency
+	// params' JSON Schema.
 	ParamsPath    string `protobuf:"bytes,3,opt,name=params_path,json=paramsPath,proto3" json:"params_path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

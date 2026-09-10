@@ -209,7 +209,7 @@ A set of source configuration files that make up the resource. These are the raw
 Terraform HCL, Envoy configs, etc. They are the starting point that hooks operate on.
 
 Each entry is either a bare path string, or an object with `path` plus an optional `schema` — a JSON Schema
-file (resolved relative to `kind.json`, same convention as the kind-level `schema` field) describing that one
+file (relative to `kind.json`) or HTTP(S) URL describing that one
 source's shape. The string short-form (`["./sources/hpa.yaml"]`) is equivalent to `{path: "./sources/hpa.yaml"}`
 with no declared schema, and is the only form that existed before `schema` was added — every kind.json written
 against the older shape keeps working unchanged.
@@ -221,9 +221,32 @@ for what that buys a hook author, and [Schema enforcement](#schema-enforcement) 
 
 A schema-declared source's own path must end in `.json`, `.yaml`, or `.yml` — the only formats a
 typed `File<T>` accessor knows how to parse and re-serialize. Anything else is rejected at kind-load
-time, alongside the check that `schema` itself resolves to a file that exists. This restriction
+time. Local schema paths must exist; URL syntax is checked without fetching. This restriction
 doesn't apply to a source with no `schema`: its content stays an opaque string regardless of
 extension, same as before `schema` existed at all.
+
+### Schema locations
+
+The kind's `schema`, `sources[].schema`, and `hooks.dependents[].params_path` accept local paths
+or HTTP(S) URLs. Relative paths resolve against the kind definition's directory.
+
+```yaml
+sources:
+  - path: ./sources/app.yaml
+    schema: https://example.com/v1/deployment.schema.json
+```
+
+Builds fetch each URL once, sharing the response across validation, type generation, and compilation.
+Requests have a 30-second timeout; non-200 responses fail the build. Compiled schemas are embedded,
+so rendering a compiled registry needs no schema server. `render --build` fetches because it builds.
+Commands that generate types, such as `new hook`, also load the schemas they need; config discovery
+alone never fetches. There is no persistent cache: use versioned URLs for reproducible builds.
+
+Source-schema type names come from the URL's filename, ignoring its query string. Use a filename
+such as `deployment.schema.json`; filename-less source-schema URLs are rejected. The source file's
+extension restriction is unchanged. URL credentials and fragments are unsupported. External `$ref`
+fetching/bundling is not added; use self-contained schemas. Source schemas must contain JSON, as
+with local source schemas.
 
 ### `hooks`
 

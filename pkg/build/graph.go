@@ -1,8 +1,8 @@
 package build
 
 import (
+	"bytes"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -162,17 +162,14 @@ func (n *KindNode) Dependents() []*DependencyEdge {
 	return n.dependents
 }
 
-// loadParamsSchema reads the params_path JSON Schema for a dependent
-// declaration, resolving relative paths against the kind directory.
-// The schema may be authored in JSON or YAML — extension decides how
-// the bytes are parsed.
+// loadParamsSchema reads a dependent's local or remote JSON/YAML schema.
 func loadParamsSchema(k *config.Kind, p string) (map[string]any, error) {
-	abs := p
-	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(k.Dir, p)
+	data, err := k.ReadSchema(p)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", p, err)
 	}
 	var s map[string]any
-	if err := protoencode.ReadFile(abs, &s); err != nil {
+	if err := protoencode.Decode(bytes.NewReader(data), &s); err != nil {
 		return nil, fmt.Errorf("reading %s: %w", p, err)
 	}
 	return s, nil

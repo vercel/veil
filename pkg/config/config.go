@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/fsutil"
 	"github.com/vercel/veil/pkg/protoencode"
+	"github.com/vercel/veil/pkg/schemaload"
 )
 
 const (
@@ -53,11 +55,21 @@ type Kind struct {
 	// `kinds` entry used the {path, import} object form. nil for a bare
 	// path string — in which case the kind's types are inlined per hook.
 	Import *veilv1.KindImport
+	// SchemaLoader shares schema reads within a build.
+	SchemaLoader *schemaload.Loader
 
 	sources         []*veilv1.SourceDefinition
 	renderHooks     []*veilv1.RenderHookDefinition
 	validateHooks   []*veilv1.RenderHookDefinition
 	postRenderHooks []*veilv1.RenderHookDefinition
+}
+
+// ReadSchema reads a schema relative to the kind, or from an HTTP(S) URL.
+func (k *Kind) ReadSchema(ref string) ([]byte, error) {
+	if k.SchemaLoader == nil {
+		k.SchemaLoader = schemaload.New(context.Background())
+	}
+	return k.SchemaLoader.Read(k.Dir, ref)
 }
 
 // SourceDefs returns the parsed `sources` entries — path plus optional
@@ -424,6 +436,16 @@ func loadKind(path string) (*Kind, error) {
 		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
 	k := &Kind{KindDefinition: pk, Path: path, Dir: filepath.Dir(path)}
+	if pk.GetSchema() != "" {
+		if _, _, err := schemaload.Resolve(k.Dir, pk.GetSchema()); err != nil {
+			return nil, fmt.Errorf("kind at %s: schema: %w", path, err)
+		}
+	}
+	for _, dep := range pk.GetHooks().GetDependents() {
+		if _, _, err := schemaload.Resolve(k.Dir, dep.GetParamsPath()); err != nil {
+			return nil, fmt.Errorf("kind at %s: dependent %q: params_path: %w", path, dep.GetKind(), err)
+		}
+	}
 
 	sources, err := parseSourceEntries(pk.GetSources())
 	if err != nil {
@@ -452,13 +474,8 @@ func loadKind(path string) (*Kind, error) {
 	return k, nil
 }
 
-// validateSourceSchemas checks every schema-declared source: its
-// `schema` resolves to a file that exists, and its own path has a
-// supported extension (.json, .yaml, or .yml) — the only formats the
-// typed File<T> accessor knows how to parse/serialize. Both caught at
-// load time instead of a confusing error deep in the build pipeline.
-// A source with no schema is untouched: its content stays an opaque
-// string regardless of extension.
+// validateSourceSchemas checks schema references without fetching URLs and
+// preserves the supported extensions for typed source accessors.
 func validateSourceSchemas(k *Kind) error {
 	for _, s := range k.sources {
 		schema := s.GetSchema()
@@ -471,11 +488,14 @@ func validateSourceSchemas(k *Kind) error {
 		default:
 			return fmt.Errorf("source %q: schema-declared sources must have a .json, .yaml, or .yml extension", path)
 		}
-		abs := schema
-		if !filepath.IsAbs(abs) {
-			abs = filepath.Join(k.Dir, schema)
+		location, remote, err := schemaload.Resolve(k.Dir, schema)
+		if err != nil {
+			return fmt.Errorf("source %q: %w", path, err)
 		}
-		if _, err := os.Stat(abs); err != nil {
+		if remote {
+			continue
+		}
+		if _, err := os.Stat(location); err != nil {
 			return fmt.Errorf("source %q: schema %q: %w", path, schema, err)
 		}
 	}

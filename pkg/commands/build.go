@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/vercel/veil/pkg/interact"
 	"github.com/vercel/veil/pkg/protoencode"
 	"github.com/vercel/veil/pkg/resource"
+	"github.com/vercel/veil/pkg/schemaload"
 	"github.com/vercel/veil/pkg/tsc"
 	"github.com/vercel/veil/pkg/vfs"
 )
@@ -146,6 +148,18 @@ type buildPipelineOpts struct {
 // kind|hook` (so scaffolding leaves a buildable state), and `veil render
 // --build` (into an in-memory FS the registry then reads via FSStore).
 func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opts buildPipelineOpts) (*buildResponse, error) {
+	loader := schemaload.New(ctx)
+	previous := make([]*schemaload.Loader, len(reg.Kinds))
+	for i, k := range reg.Kinds {
+		previous[i] = k.SchemaLoader
+		k.SchemaLoader = loader
+	}
+	defer func() {
+		for i, k := range reg.Kinds {
+			k.SchemaLoader = previous[i]
+		}
+	}()
+
 	p := interact.Default()
 	resp := &buildResponse{Kinds: []builtKind{}}
 
@@ -390,11 +404,7 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 		sources[key] = string(data)
 
 		if schema := def.GetSchema(); schema != "" {
-			schemaAbs := schema
-			if !filepath.IsAbs(schemaAbs) {
-				schemaAbs = filepath.Join(k.Dir, schema)
-			}
-			schemaData, err := os.ReadFile(schemaAbs)
+			schemaData, err := k.ReadSchema(schema)
 			if err != nil {
 				return nil, fmt.Errorf("reading schema for source %s: %w", src, err)
 			}
@@ -531,16 +541,13 @@ func compileDependents(k *config.Kind, projectRoot string, fsys fs.FS) ([]*veilv
 		if err != nil {
 			return nil, fmt.Errorf("dependents[%q]: %w", d.Kind, err)
 		}
-		paramsAbs := d.ParamsPath
-		if !filepath.IsAbs(paramsAbs) {
-			paramsAbs = filepath.Join(k.Dir, d.ParamsPath)
+		data, err := k.ReadSchema(d.ParamsPath)
+		if err != nil {
+			return nil, fmt.Errorf("dependents[%q]: reading params_path %s: %w", d.Kind, d.ParamsPath, err)
 		}
-		// Source may be authored in JSON or YAML; the compiled
-		// kind.json always embeds JSON-encoded params so downstream
-		// consumers (render, hook bundler) don't need a YAML parser
-		// to interpret it.
+		// Normalize JSON/YAML params to embedded JSON for offline consumers.
 		var probe map[string]any
-		if err := protoencode.ReadFile(paramsAbs, &probe); err != nil {
+		if err := protoencode.Decode(bytes.NewReader(data), &probe); err != nil {
 			return nil, fmt.Errorf("dependents[%q]: reading params_path %s: %w", d.Kind, d.ParamsPath, err)
 		}
 		paramsJSON, err := json.Marshal(probe)
@@ -720,8 +727,7 @@ func hookFiles(k *config.Kind) []string {
 	return files
 }
 
-// validateKind checks that a kind's referenced files exist and that its
-// spec schema parses as JSON.
+// validateKind checks local sources/hooks and parses local or remote schemas.
 func validateKind(k *config.Kind) error {
 	var errs []error
 
@@ -742,10 +748,20 @@ func validateKind(k *config.Kind) error {
 			}
 		}
 	}
+	checkSchema := func(label, ref string) {
+		data, err := k.ReadSchema(ref)
+		if err == nil {
+			var schema map[string]any
+			err = protoencode.Decode(bytes.NewReader(data), &schema)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s %q: %w", label, ref, err))
+		}
+	}
 	check("source", k.SourcePaths())
 	for _, def := range k.SourceDefs() {
 		if schema := def.GetSchema(); schema != "" {
-			check(fmt.Sprintf("source %q schema", def.GetPath()), []string{schema})
+			checkSchema(fmt.Sprintf("source %q schema", def.GetPath()), schema)
 		}
 	}
 	for _, d := range k.RenderHooks() {
@@ -760,7 +776,7 @@ func validateKind(k *config.Kind) error {
 
 	for _, d := range k.GetHooks().GetDependents() {
 		check(fmt.Sprintf("dependent[%q] path", d.Kind), d.Paths)
-		check(fmt.Sprintf("dependent[%q] params_path", d.Kind), []string{d.ParamsPath})
+		checkSchema(fmt.Sprintf("dependent[%q] params_path", d.Kind), d.ParamsPath)
 	}
 
 	return errors.Join(errs...)

@@ -10,7 +10,7 @@
     },
     "schema": {
       "default": "",
-      "description": "JSON Schema file for this source's shape, resolved relative to the\n enclosing kind.json. Omit for no declared shape.",
+      "description": "Local path (relative to kind.json) or HTTP(S) URL to this source's\n JSON Schema. Omit for no declared shape.",
       "type": "string"
     }
   },

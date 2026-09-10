@@ -9,7 +9,9 @@
 package build
 
 import (
+	"bytes"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,6 +24,7 @@ import (
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/config"
 	"github.com/vercel/veil/pkg/protoencode"
+	"github.com/vercel/veil/pkg/schemaload"
 	"github.com/vercel/veil/pkg/typegen"
 )
 
@@ -306,10 +309,8 @@ func ResourceSchemaBytes(k *config.Kind, metadataSchema map[string]any, graph *K
 	return data, nil
 }
 
-// LoadSpecSchema reads and parses the kind's schema file. Schema files
-// may be authored in JSON or YAML — the extension on k.Schema decides
-// how the bytes are parsed. If no schema is defined, returns a
-// permissive object schema.
+// LoadSpecSchema reads a kind's local or remote JSON/YAML schema.
+// If no schema is defined, it returns a permissive object schema.
 func LoadSpecSchema(k *config.Kind) (map[string]any, error) {
 	if k.Schema == "" {
 		return map[string]any{
@@ -318,14 +319,13 @@ func LoadSpecSchema(k *config.Kind) (map[string]any, error) {
 		}, nil
 	}
 
-	schemaPath := k.Schema
-	if !filepath.IsAbs(schemaPath) {
-		schemaPath = filepath.Join(k.Dir, schemaPath)
+	data, err := k.ReadSchema(k.Schema)
+	if err != nil {
+		return nil, fmt.Errorf("reading schema %s: %w", k.Schema, err)
 	}
-
 	var spec map[string]any
-	if err := protoencode.ReadFile(schemaPath, &spec); err != nil {
-		return nil, fmt.Errorf("reading schema %s: %w", schemaPath, err)
+	if err := protoencode.Decode(bytes.NewReader(data), &spec); err != nil {
+		return nil, fmt.Errorf("reading schema %s: %w", k.Schema, err)
 	}
 	return spec, nil
 }
@@ -338,11 +338,30 @@ func LoadSpecSchema(k *config.Kind) (map[string]any, error) {
 // another consumer's). "kubernetes_deployment.schema.json" with
 // prefix "" -> "KubernetesDeployment"; with prefix "Service" ->
 // "ServiceKubernetesDeployment".
-func typeNameForSchemaPath(prefix, p string) string {
-	base := filepath.Base(p)
+func typeNameForSchemaPath(prefix, p string) (string, error) {
+	_, remote, err := schemaload.Resolve("", p)
+	if err != nil {
+		return "", err
+	}
+	schemaPath := p
+	if remote {
+		u, err := url.Parse(p)
+		if err != nil {
+			return "", err
+		}
+		schemaPath = u.Path
+		if schemaPath == "" || strings.HasSuffix(schemaPath, "/") {
+			return "", fmt.Errorf("schema URL %q has no usable filename for a type name", p)
+		}
+	}
+	base := filepath.Base(schemaPath)
 	base = strings.TrimSuffix(base, filepath.Ext(base))
 	base = strings.TrimSuffix(base, ".schema")
-	return prefix + PascalCase(base)
+	name := PascalCase(base)
+	if remote && (name == "" || name == "." || name == "..") {
+		return "", fmt.Errorf("schema URL %q has no usable filename for a type name", p)
+	}
+	return prefix + name, nil
 }
 
 // SourceSchemaTypes generates one TS interface per unique schema file a
@@ -366,20 +385,24 @@ func SourceSchemaTypes(k *config.Kind, prefix string) (string, map[string]string
 		}
 		name, ok := typeNameBySchema[schema]
 		if !ok {
-			name = typeNameForSchemaPath(prefix, schema)
+			var err error
+			name, err = typeNameForSchemaPath(prefix, schema)
+			if err != nil {
+				return "", nil, err
+			}
 			if owner, taken := nameOwner[name]; taken && owner != schema {
 				return "", nil, fmt.Errorf("schemas %q and %q both generate type name %q; rename one to disambiguate", owner, schema, name)
 			}
 			nameOwner[name] = schema
 			typeNameBySchema[schema] = name
 
-			schemaPath := schema
-			if !filepath.IsAbs(schemaPath) {
-				schemaPath = filepath.Join(k.Dir, schema)
+			data, err := k.ReadSchema(schema)
+			if err != nil {
+				return "", nil, fmt.Errorf("reading schema %s: %w", schema, err)
 			}
 			var raw map[string]any
-			if err := protoencode.ReadFile(schemaPath, &raw); err != nil {
-				return "", nil, fmt.Errorf("reading schema %s: %w", schemaPath, err)
+			if err := protoencode.Decode(bytes.NewReader(data), &raw); err != nil {
+				return "", nil, fmt.Errorf("reading schema %s: %w", schema, err)
 			}
 			iface, err := interfaceFromSchemaMap(name, raw)
 			if err != nil {
