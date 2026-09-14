@@ -1,4 +1,4 @@
-import type { FS, RenderHook, RenderHookContext } from './veil-types';
+import type {FS, RenderHook, RenderHookContext} from './veil-types';
 
 // Emits a file that exists in no kind's sources — created wholly by a
 // hook. Runs in post_render so it can summarize what the dependent hooks

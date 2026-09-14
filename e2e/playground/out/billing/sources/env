@@ -1,4 +1,0 @@
-ACME_SUBNET=private
-ACME_VPC=acme-global
-ACME_VPC_CIDR=10.0.0.0/16
-BILLING_DATABASE_URL=postgres://acme@billing-db.us-east-1.rds.acme.internal:5432/billing-db?pool=10
