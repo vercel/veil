@@ -16,6 +16,7 @@ import (
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/config"
 	"github.com/vercel/veil/pkg/embeds"
+	"github.com/vercel/veil/pkg/project"
 )
 
 type BuildSuite struct {
@@ -82,9 +83,7 @@ func (s *BuildSuite) TestBuildEmitsCompiledKindAndSchema() {
 	s.Equal(embeds.KindSchemaURL, compiled["$schema"])
 	s.Equal("worker", compiled["name"])
 
-	sources, ok := compiled["sources"].(map[string]any)
-	s.Require().True(ok)
-	s.Equal("This is a source file for worker.\n", sources["sources/source.txt"])
+	s.Equal("This is a source file for worker.\n", sourceContents(compiled)["sources/source.txt"])
 
 	hooksObj, ok := compiled["hooks"].(map[string]any)
 	s.Require().True(ok)
@@ -100,12 +99,11 @@ func (s *BuildSuite) TestBuildEmitsCompiledKindAndSchema() {
 	s.NotContains(content, "// TODO") // comment stripped
 }
 
-// TestBuildEmbedsSourceSchemas proves the compiled kind.json carries a
-// schema-declared source's raw schema text under source_schemas (keyed
-// the same way sources is), and veil-types.ts gets a generated
-// interface for the schema plus a File<T> accessor for it — no hook
-// binding needed; any hook touching the source via its generated
-// accessor gets the typed object.
+// TestBuildEmbedsSourceSchemas proves each compiled source carries its
+// own contents and raw schema text on one `sources` entry, and that
+// veil-types.ts gets a generated interface for the schema plus a
+// File<T> accessor for it — no hook binding needed; any hook touching
+// the source via its generated accessor gets the typed object.
 func (s *BuildSuite) TestBuildEmbedsSourceSchemas() {
 	_, err := s.run("new", "kind", "worker")
 	s.Require().NoError(err)
@@ -154,19 +152,64 @@ export default bump;
 
 	compiled := s.readJSON(filepath.Join(outDir, "worker", "kind.json"))
 
-	sources, ok := compiled["sources"].(map[string]any)
+	sources, ok := compiled["sources"].([]any)
 	s.Require().True(ok)
-	s.Equal(`{"replicas":1}`, sources["sources/deployment.json"])
+	byPath := map[string]map[string]any{}
+	for _, raw := range sources {
+		src, ok := raw.(map[string]any)
+		s.Require().True(ok)
+		byPath[src["path"].(string)] = src
+	}
+	declared := byPath["sources/deployment.json"]
+	s.Require().NotNil(declared)
+	s.Equal(`{"replicas":1}`, declared["contents"])
+	s.Equal(schemaJSON, declared["schema"])
 
-	sourceSchemas, ok := compiled["source_schemas"].(map[string]any)
-	s.Require().True(ok)
-	s.Equal(schemaJSON, sourceSchemas["sources/deployment.json"])
+	// A source with no declared schema carries contents only.
+	plain := byPath["sources/source.txt"]
+	s.Require().NotNil(plain)
+	s.NotContains(plain, "schema")
 
 	types, err := os.ReadFile(filepath.Join(kindDir, "hooks", "src", "veil-types.ts"))
 	s.Require().NoError(err)
 	s.Contains(string(types), "export interface Deployment {")
 	s.Contains(string(types), "export interface File<T = string>")
 	s.Contains(string(types), "getSourcesDeploymentJson(): File<Deployment>;")
+}
+
+// TestBuildFailsWhenSourceViolatesItsSchema pins the build-time gate: a
+// source whose contents don't satisfy its declared schema must fail
+// `veil build`, not compile cleanly and blow up later at render.
+func (s *BuildSuite) TestBuildFailsWhenSourceViolatesItsSchema() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	kindDir := filepath.Join(s.root, ".veil", "kinds", "worker")
+	const schemaJSON = `{"type":"object","properties":{"replicas":{"type":"integer"}},"required":["replicas"]}`
+	s.Require().NoError(os.MkdirAll(filepath.Join(kindDir, "schemas"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "schemas", "deployment.schema.json"), []byte(schemaJSON), 0644))
+	// replicas must be an integer — this source violates its own schema.
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "sources", "deployment.json"), []byte(`{"replicas":"three"}`), 0644))
+
+	kindPath := filepath.Join(kindDir, "kind.json")
+	raw := s.readJSON(kindPath)
+	sourcesArr, _ := raw["sources"].([]any)
+	raw["sources"] = append(sourcesArr, map[string]any{
+		"path": "./sources/deployment.json", "schema": "./schemas/deployment.schema.json",
+	})
+	data, err := json.MarshalIndent(raw, "", "  ")
+	s.Require().NoError(err)
+	s.Require().NoError(os.WriteFile(kindPath, data, 0644))
+
+	outDir := filepath.Join(s.root, "public", "r")
+	s.Require().NoError(os.RemoveAll(outDir))
+
+	_, err = s.run("build")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "sources/deployment.json")
+	s.Contains(err.Error(), "replicas")
+	// The broken kind must not have been emitted.
+	s.NoFileExists(filepath.Join(outDir, "worker", "kind.json"))
 }
 
 func (s *BuildSuite) TestBuildSchemasOnlyEmitsSchemaWithoutRegistry() {
@@ -479,7 +522,7 @@ func (s *BuildSuite) TestResolveTypesPackageValidation() {
 	withTypes := &veilv1.Generators{Types: &veilv1.Types{OutputDir: "./types"}}
 
 	// import set but output_dir unset -> error.
-	_, err := resolveTypesPackage(&config.Registry{
+	_, err := resolveTypesPackage(&project.Project{
 		Root:       s.root,
 		Generators: &veilv1.Generators{},
 		Kinds:      []*config.Kind{mk("a", &veilv1.KindImport{Name: "@p/veil-types/a", Value: "workspace:*"})},
@@ -488,7 +531,7 @@ func (s *BuildSuite) TestResolveTypesPackageValidation() {
 	s.Contains(err.Error(), "output_dir is unset")
 
 	// two kinds colliding on the same subpath -> error.
-	_, err = resolveTypesPackage(&config.Registry{
+	_, err = resolveTypesPackage(&project.Project{
 		Root:       s.root,
 		Generators: withTypes,
 		Kinds: []*config.Kind{
@@ -500,7 +543,7 @@ func (s *BuildSuite) TestResolveTypesPackageValidation() {
 	s.Contains(err.Error(), "subpath")
 
 	// distinct subpaths, but the repo-owned package.json is missing -> error.
-	distinct := &config.Registry{
+	distinct := &project.Project{
 		Root:       s.root,
 		Generators: withTypes,
 		Kinds: []*config.Kind{
@@ -805,8 +848,7 @@ func (s *BuildSuite) TestBuildHonorsConfigAndOutFlags() {
 	s.FileExists(filepath.Join(out, "registry.json"))
 
 	compiled := s.readJSON(filepath.Join(out, "svc", "kind.json"))
-	sources := compiled["sources"].(map[string]any)
-	s.Equal("kind: Deployment\n", sources["sources/deploy.yaml"])
+	s.Equal("kind: Deployment\n", sourceContents(compiled)["sources/deploy.yaml"])
 }
 
 func (s *BuildSuite) TestBuildFailsOnTypeError() {
@@ -881,4 +923,22 @@ func (s *BuildSuite) TestBuildFailsOnMissingSource() {
 	_, err := s.run("build")
 	s.Require().Error(err)
 	s.Contains(err.Error(), "missing.yaml")
+}
+
+// sourceContents indexes a compiled kind.json's `sources` list by path,
+// so a test can assert on one entry's contents without walking the
+// slice each time.
+func sourceContents(compiled map[string]any) map[string]string {
+	out := map[string]string{}
+	sources, _ := compiled["sources"].([]any)
+	for _, raw := range sources {
+		src, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		path, _ := src["path"].(string)
+		contents, _ := src["contents"].(string)
+		out[path] = contents
+	}
+	return out
 }

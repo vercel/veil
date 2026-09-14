@@ -4,6 +4,8 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/vercel/veil/pkg/vfs"
+
 	"github.com/stretchr/testify/suite"
 )
 
@@ -25,7 +27,7 @@ func (s *ResourceLoadSuite) TestLoadParsesMetadataHooksRenderShorthand() {
       - path: ./hook-b.ts
 spec: {}
 `
-	fsys := fstest.MapFS{"svc/foo.yaml": &fstest.MapFile{Data: []byte(yaml)}}
+	fsys := vfs.New(fstest.MapFS{"svc/foo.yaml": &fstest.MapFile{Data: []byte(yaml)}}, "")
 
 	r, err := Load(fsys, "svc/foo.yaml")
 	s.Require().NoError(err)
@@ -47,7 +49,7 @@ func (s *ResourceLoadSuite) TestLoadRejectsResourceLevelDependents() {
         paths: [./dep.ts]
 spec: {}
 `
-	fsys := fstest.MapFS{"svc/foo.yaml": &fstest.MapFile{Data: []byte(yaml)}}
+	fsys := vfs.New(fstest.MapFS{"svc/foo.yaml": &fstest.MapFile{Data: []byte(yaml)}}, "")
 
 	_, err := Load(fsys, "svc/foo.yaml")
 	s.Require().Error(err)
@@ -63,7 +65,7 @@ func (s *ResourceLoadSuite) TestLoadRejectsResourceLevelValidate() {
       - ./check.ts
 spec: {}
 `
-	fsys := fstest.MapFS{"svc/foo.yaml": &fstest.MapFile{Data: []byte(yaml)}}
+	fsys := vfs.New(fstest.MapFS{"svc/foo.yaml": &fstest.MapFile{Data: []byte(yaml)}}, "")
 
 	_, err := Load(fsys, "svc/foo.yaml")
 	s.Require().Error(err)
@@ -79,7 +81,7 @@ func (s *ResourceLoadSuite) TestLoadRejectsResourceLevelPostRender() {
       - ./post.ts
 spec: {}
 `
-	fsys := fstest.MapFS{"svc/foo.yaml": &fstest.MapFile{Data: []byte(yaml)}}
+	fsys := vfs.New(fstest.MapFS{"svc/foo.yaml": &fstest.MapFile{Data: []byte(yaml)}}, "")
 
 	_, err := Load(fsys, "svc/foo.yaml")
 	s.Require().Error(err)
@@ -92,7 +94,7 @@ func (s *ResourceLoadSuite) TestLoadIgnoresMissingHooks() {
   name: foo
 spec: {}
 `
-	fsys := fstest.MapFS{"svc/foo.yaml": &fstest.MapFile{Data: []byte(yaml)}}
+	fsys := vfs.New(fstest.MapFS{"svc/foo.yaml": &fstest.MapFile{Data: []byte(yaml)}}, "")
 
 	r, err := Load(fsys, "svc/foo.yaml")
 	s.Require().NoError(err)

@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["cidr", "region", "zones"],
+  "properties": {
+    "cidr": { "type": "string" },
+    "region": { "type": "string" },
+    "zones": { "type": "integer" }
+  }
+}

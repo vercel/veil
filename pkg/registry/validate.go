@@ -27,11 +27,46 @@ type LoadedKind struct {
 	// or URL — or "" for an in-memory registry. `veil new resource` uses
 	// it to write a relative `$schema` pointer.
 	SchemaPath string
+	// Sources are the kind's compiled sources in wire order, each paired
+	// with the validator built from its declared schema.
+	Sources []*LoadedSource
 	// validator is the composite kind.schema.json compiled once at load.
 	validator *jsonschema.Schema
-	// sourceValidators holds one compiled validator per schema-declared
-	// source, keyed like Kind.source_schemas (kind-dir-relative path).
-	sourceValidators map[string]*jsonschema.Schema
+	// sourceByPath indexes Sources for lookup by kind-dir-relative path.
+	sourceByPath map[string]*LoadedSource
+}
+
+// LoadedSource is one compiled source ready for render: the wire-shape
+// Source plus the validator compiled from its inlined schema. Pairing
+// them means a caller that has the source never has to go looking for
+// its schema, or re-compile one that was already built at load.
+type LoadedSource struct {
+	*veilv1.Source
+	// Validator checks this source's parsed content against the schema
+	// inlined in Source.schema. nil when the source declared none, in
+	// which case the source is never schema-checked.
+	Validator *jsonschema.Schema
+}
+
+// Source returns the compiled source at path, or nil when the kind
+// declares none.
+func (k *LoadedKind) Source(path string) *LoadedSource {
+	return k.sourceByPath[path]
+}
+
+// AcceptsDependent reports whether this kind registers dependent hooks
+// for consumers of the given kind — that is, whether a resource of that
+// kind is allowed to depend on one of these. Forwarding consults it
+// before handing an inherited edge to a consumer, and rejects the load
+// when the answer is no: a dependency the target would not accept
+// directly is not one it can be given indirectly either.
+func (k *LoadedKind) AcceptsDependent(kind string) bool {
+	for _, d := range k.GetHooks().GetDependents() {
+		if d.GetKind() == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // Validate checks a resource document — its spec already overlay-merged,
@@ -50,13 +85,13 @@ func (k *LoadedKind) Validate(doc map[string]any) error {
 
 // ValidateSource checks doc — a schema-declared source's parsed
 // content — against that source's compiled validator. A source with
-// no declared schema always passes.
+// no declared schema, or no such source at all, always passes.
 func (k *LoadedKind) ValidateSource(path string, doc any) error {
-	sch, ok := k.sourceValidators[path]
-	if !ok {
+	src := k.sourceByPath[path]
+	if src == nil || src.Validator == nil {
 		return nil
 	}
-	if err := sch.Validate(doc); err != nil {
+	if err := src.Validator.Validate(doc); err != nil {
 		return errors.New(stripSourceSchemaURL(path, err.Error()))
 	}
 	return nil
@@ -66,17 +101,19 @@ func (k *LoadedKind) ValidateSource(path string, doc any) error {
 // `schema` — i.e. whether ValidateSource actually checks anything for
 // it.
 func (k *LoadedKind) HasSourceSchema(path string) bool {
-	_, ok := k.sourceValidators[path]
-	return ok
+	src := k.sourceByPath[path]
+	return src != nil && src.Validator != nil
 }
 
 // SchemaSources returns every schema-declared source path, in
 // deterministic order — the set the render pipeline's pre-render gate
 // iterates.
 func (k *LoadedKind) SchemaSources() []string {
-	paths := make([]string, 0, len(k.sourceValidators))
-	for p := range k.sourceValidators {
-		paths = append(paths, p)
+	paths := make([]string, 0, len(k.Sources))
+	for _, src := range k.Sources {
+		if src.Validator != nil {
+			paths = append(paths, src.GetPath())
+		}
 	}
 	sort.Strings(paths)
 	return paths
@@ -120,32 +157,42 @@ func stripSchemaURL(msg string) string {
 	return strings.TrimPrefix(msg, "jsonschema validation failed with kind schema\n")
 }
 
-// compileSourceSchemas compiles one validator per source_schemas entry
-// under a shared compiler instance (one URI per source), rather than a
-// separate jsonschema.Compiler each. nil when there are no
-// schema-declared sources.
-func compileSourceSchemas(schemas map[string]string) (map[string]*jsonschema.Schema, error) {
-	if len(schemas) == 0 {
-		return nil, nil
+// loadSources pairs each wire-shape source with the validator compiled
+// from its inlined schema, and indexes the result by path. Every schema
+// is registered with one shared compiler (one URI per source) rather
+// than a jsonschema.Compiler each.
+func loadSources(sources []*veilv1.Source) ([]*LoadedSource, map[string]*LoadedSource, error) {
+	if len(sources) == 0 {
+		return nil, nil, nil
 	}
 	compiler := jsonschema.NewCompiler()
-	out := make(map[string]*jsonschema.Schema, len(schemas))
-	for path, raw := range schemas {
-		var doc any
-		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
-			return nil, fmt.Errorf("source %q: parsing schema: %w", path, err)
+	out := make([]*LoadedSource, 0, len(sources))
+	byPath := make(map[string]*LoadedSource, len(sources))
+	for _, src := range sources {
+		path := src.GetPath()
+		if _, dup := byPath[path]; dup {
+			return nil, nil, fmt.Errorf("source %q: declared more than once", path)
 		}
-		uri := "mem://source/" + path
-		if err := compiler.AddResource(uri, doc); err != nil {
-			return nil, fmt.Errorf("source %q: registering schema: %w", path, err)
+		loaded := &LoadedSource{Source: src}
+		if raw := src.GetSchema(); raw != "" {
+			var doc any
+			if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+				return nil, nil, fmt.Errorf("source %q: parsing schema: %w", path, err)
+			}
+			uri := "mem://source/" + path
+			if err := compiler.AddResource(uri, doc); err != nil {
+				return nil, nil, fmt.Errorf("source %q: registering schema: %w", path, err)
+			}
+			sch, err := compiler.Compile(uri)
+			if err != nil {
+				return nil, nil, fmt.Errorf("source %q: compiling schema: %w", path, err)
+			}
+			loaded.Validator = sch
 		}
-		sch, err := compiler.Compile(uri)
-		if err != nil {
-			return nil, fmt.Errorf("source %q: compiling schema: %w", path, err)
-		}
-		out[path] = sch
+		out = append(out, loaded)
+		byPath[path] = loaded
 	}
-	return out, nil
+	return out, byPath, nil
 }
 
 func stripSourceSchemaURL(path, msg string) string {

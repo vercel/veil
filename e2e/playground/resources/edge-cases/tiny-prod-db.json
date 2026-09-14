@@ -1,0 +1,5 @@
+{
+  "metadata": { "kind": "postgres", "name": "tiny-prod-db" },
+  "spec": { "size": "small", "multiAz": false },
+  "dependencies": [{ "kind": "vpc", "name": "acme-global" }]
+}

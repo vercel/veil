@@ -15,10 +15,8 @@ import (
 	"github.com/stretchr/testify/suite"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
-	"github.com/vercel/veil/pkg/config"
-	"github.com/vercel/veil/pkg/protoencode"
-	"github.com/vercel/veil/pkg/schemaload"
-	"github.com/vercel/veil/pkg/vfs"
+	"github.com/vercel/veil/pkg/codec"
+	"github.com/vercel/veil/pkg/project"
 )
 
 type URLSchemaBuildSuite struct {
@@ -94,32 +92,36 @@ export default { render(ctx, fs) {
 	s.writeFile("resources/beta.json", `{"metadata":{"kind":"beta","name":"backend"},"spec":{"replicas":2}}`)
 }
 
-func (s *URLSchemaBuildSuite) TestBuildDeduplicatesAllSchemaFieldsAndRendersOffline() {
+func (s *URLSchemaBuildSuite) TestBuildResolvesAllSchemaFieldsAndRendersOffline() {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"type":"object","properties":{"replicas":{"type":"integer"}},"required":["replicas"],"additionalProperties":false,"description":"fetch %d"}`, requests.Load())
+		fmt.Fprint(w, `{"type":"object","properties":{"replicas":{"type":"integer"}},"required":["replicas"],"additionalProperties":false,"description":"shared"}`)
 	}))
 	s.T().Cleanup(server.Close)
 	ref := server.URL + "/shared.schema.json?version=1"
 	s.fixture(ref)
 
-	_, err := config.Load(filepath.Join(s.root, "veil.json"))
+	_, err := project.Load(filepath.Join(s.root, "veil.json"))
 	s.Require().NoError(err)
-	_, err = config.Discover(filepath.Join(s.root, "alpha", "hooks"))
+	_, err = project.Discover(filepath.Join(s.root, "alpha", "hooks"))
 	s.Require().NoError(err)
 	_ = NewApp()
 	s.Equal(int32(0), requests.Load(), "config discovery and CLI setup must not fetch schemas")
 
-	for buildNumber := int32(1); buildNumber <= 2; buildNumber++ {
+	for range 2 {
 		s.Require().NoError(s.run("build"))
-		s.Equal(buildNumber, requests.Load(), "every schema consumer shares one fetch per build")
 		for _, name := range []string{"alpha", "beta"} {
 			var compiled veilv1.Kind
-			s.Require().NoError(protoencode.ReadFile(filepath.Join(s.root, "public", "r", name, "kind.json"), &compiled))
-			schema := compiled.SourceSchemas["sources/app.json"]
-			s.Contains(schema, fmt.Sprintf(`"description":"fetch %d"`, buildNumber))
+			s.Require().NoError(codec.ReadFile(filepath.Join(s.root, "public", "r", name, "kind.json"), &compiled))
+			var schema string
+			for _, src := range compiled.GetSources() {
+				if src.GetPath() == "sources/app.json" {
+					schema = src.GetSchema()
+				}
+			}
+			s.Contains(schema, `"description":"shared"`)
 			var raw map[string]any
 			s.Require().NoError(json.Unmarshal([]byte(schema), &raw))
 			s.Equal("object", raw["type"])
@@ -128,7 +130,7 @@ func (s *URLSchemaBuildSuite) TestBuildDeduplicatesAllSchemaFieldsAndRendersOffl
 				s.JSONEq(schema, compiled.GetHooks().GetDependents()[0].ParamsSchema)
 			}
 			var resourceSchema map[string]any
-			s.Require().NoError(protoencode.ReadFile(filepath.Join(s.root, "public", "r", name, "kind.schema.json"), &resourceSchema))
+			s.Require().NoError(codec.ReadFile(filepath.Join(s.root, "public", "r", name, "kind.schema.json"), &resourceSchema))
 			properties := resourceSchema["properties"].(map[string]any)
 			s.Equal(raw, properties["spec"])
 			types, err := os.ReadFile(filepath.Join(s.root, name, "hooks", "src", "veil-types.ts"))
@@ -143,38 +145,15 @@ func (s *URLSchemaBuildSuite) TestBuildDeduplicatesAllSchemaFieldsAndRendersOffl
 		}
 	}
 
+	// Everything the render needs was inlined at build time, so it works
+	// with the schema host gone.
+	before := requests.Load()
 	server.Close()
 	s.Require().NoError(s.run("render", "resources/alpha.json", "--out", "rendered"))
 	data, err := os.ReadFile(filepath.Join(s.root, "rendered", "app", "sources", "app.json"))
 	s.Require().NoError(err)
 	s.JSONEq(`{"replicas":7}`, string(data))
-	s.Equal(int32(2), requests.Load())
-}
-
-func (s *URLSchemaBuildSuite) TestPipelineRestoresLoadersAndRefetchesOnReuse() {
-	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		fmt.Fprint(w, `{"type":"object","properties":{"replicas":{"type":"integer"}},"required":["replicas"]}`)
-	}))
-	defer server.Close()
-	s.fixture(server.URL + "/shared.schema.json")
-	reg, err := config.Load(filepath.Join(s.root, "veil.json"))
-	s.Require().NoError(err)
-	previous := schemaload.New(context.Background())
-	reg.Kinds[0].SchemaLoader = previous
-	for i := int32(1); i <= 2; i++ {
-		_, err = runBuildPipeline(context.Background(), reg, vfs.NewMem(), buildPipelineOpts{})
-		s.Require().NoError(err)
-		s.Equal(i, requests.Load())
-		s.Same(previous, reg.Kinds[0].SchemaLoader)
-		s.Nil(reg.Kinds[1].SchemaLoader)
-	}
-	reg.Kinds[0].Schema = server.URL + "/missing.schema.json#fragment"
-	_, err = runBuildPipeline(context.Background(), reg, vfs.NewMem(), buildPipelineOpts{})
-	s.Require().Error(err)
-	s.Same(previous, reg.Kinds[0].SchemaLoader)
-	s.Nil(reg.Kinds[1].SchemaLoader)
+	s.Equal(before, requests.Load(), "render must not fetch schemas")
 }
 
 func (s *URLSchemaBuildSuite) TestSourceSchemaURLRequiresFilename() {

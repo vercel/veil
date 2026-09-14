@@ -210,6 +210,17 @@ message KindDefinition {
   // Local path or HTTP(S) URL to the spec's JSON Schema.
   string schema = 5;
 
+  // Whether every dependency a resource of this kind declares is
+  // forwarded to that resource's own consumers, as if each edge had set
+  // `forward: true`. A policy for the kind rather than a per-resource
+  // choice: a `package` that exists to bundle things up for whoever
+  // uses it sets this once, instead of every package resource
+  // repeating the flag on every edge.
+  //
+  // Union with the per-edge flag — an edge forwards when either says
+  // so — and forwarding chains either way.
+  bool forward_dependencies = 7;
+
   // Kind-scoped input variable declarations, keyed by name. Merged with
   // the project-level variables from veil.json at config-load time;
   // declaring a name that already exists in veil.json or in another

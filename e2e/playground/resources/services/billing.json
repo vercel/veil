@@ -1,0 +1,24 @@
+{
+  "metadata": {
+    "kind": "service",
+    "name": "billing"
+  },
+  "spec": {
+    "image": "acme/billing:0.9.0",
+    "replicas": 3
+  },
+  "dependencies": [
+    {
+      "kind": "postgres",
+      "name": "billing-db",
+      "params": {
+        "envVar": "BILLING_DATABASE_URL"
+      },
+      "forward": true
+    },
+    {
+      "kind": "vpc",
+      "name": "acme-global"
+    }
+  ]
+}

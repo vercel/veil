@@ -1,13 +1,11 @@
 package build
 
 import (
-	"bytes"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/vercel/veil/pkg/config"
-	"github.com/vercel/veil/pkg/protoencode"
 )
 
 // KindGraph is a directed graph of kinds and the dependency relationships
@@ -164,12 +162,8 @@ func (n *KindNode) Dependents() []*DependencyEdge {
 
 // loadParamsSchema reads a dependent's local or remote JSON/YAML schema.
 func loadParamsSchema(k *config.Kind, p string) (map[string]any, error) {
-	data, err := k.ReadSchema(p)
-	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", p, err)
-	}
 	var s map[string]any
-	if err := protoencode.Decode(bytes.NewReader(data), &s); err != nil {
+	if err := k.DecodeSchema(p, &s); err != nil {
 		return nil, fmt.Errorf("reading %s: %w", p, err)
 	}
 	return s, nil
@@ -190,11 +184,21 @@ func dependenciesProperty(n *KindNode) map[string]any {
 		branches = append(branches, map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"required":             []string{"kind", "name", "params"},
+			// params is optional: a target whose params schema requires
+			// nothing shouldn't force every consumer to write "params": {}.
+			"required": []string{"kind", "name"},
 			"properties": map[string]any{
 				"kind":   map[string]any{"const": edge.Target.Name},
 				"name":   map[string]any{"type": "string", "minLength": 1},
 				"params": edge.ParamsSchema,
+				// Whether this edge is part of the declaring resource's
+				// public surface. Optional: absent means private, the
+				// default. additionalProperties is false, so leaving it
+				// out of the branch would make the flag unusable.
+				"forward": map[string]any{
+					"type":        "boolean",
+					"description": "Forward this dependency to anything that depends on this resource.",
+				},
 			},
 		})
 	}

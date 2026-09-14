@@ -8,16 +8,18 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/bmatcuk/doublestar/v4"
+
 	"github.com/goccy/go-json"
 	"github.com/urfave/cli/v3"
 
 	"github.com/vercel/veil/pkg/build"
+	"github.com/vercel/veil/pkg/codec"
 	"github.com/vercel/veil/pkg/config"
 	"github.com/vercel/veil/pkg/embeds"
 	"github.com/vercel/veil/pkg/fsutil"
 	"github.com/vercel/veil/pkg/interact"
-	"github.com/vercel/veil/pkg/protoencode"
-	"github.com/vercel/veil/pkg/registry"
+	"github.com/vercel/veil/pkg/project"
 	"github.com/vercel/veil/pkg/vfs"
 )
 
@@ -138,7 +140,7 @@ func runNewKind(ctx context.Context, c *cli.Command) (*newResponse, error) {
 		p.Successf("Initialized %s", filepath.Join(cwd, "veil.json"))
 	}
 
-	reg, err := config.Discover(cwd)
+	reg, err := project.Discover(cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -254,11 +256,11 @@ func runNewKind(ctx context.Context, c *cli.Command) (*newResponse, error) {
 
 	p.Successf("Scaffolded kind %q at %s", name, kindDir)
 
-	reg, err = config.Discover(cwd)
+	reg, err = project.Discover(cwd)
 	if err != nil {
 		return nil, fmt.Errorf("re-discovering registry after scaffold: %w", err)
 	}
-	if _, err := runBuildPipeline(ctx, reg, vfs.NewDir(filepath.Join(reg.Root, config.PublicDir, "r")), buildPipelineOpts{typecheck: true, writeTypes: true}); err != nil {
+	if _, err := runBuildPipeline(ctx, reg, vfs.NewDir(filepath.Join(reg.Root, project.PublicDir, "r")), buildPipelineOpts{typecheck: true, writeTypes: true}); err != nil {
 		return nil, err
 	}
 	rb.commit()
@@ -306,7 +308,7 @@ func runNewHook(ctx context.Context, c *cli.Command) (*newResponse, error) {
 // hooks.render, and re-run the build pipeline.
 func runNewHookOnKind(ctx context.Context, cwd, name, kindName string) (*newResponse, error) {
 	p := interact.Default()
-	reg, err := config.Discover(cwd)
+	reg, err := project.Discover(cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -353,11 +355,11 @@ func runNewHookOnKind(ctx context.Context, cwd, name, kindName string) (*newResp
 
 	p.Successf("Scaffolded hook %s", outPath)
 
-	reg, err = config.Discover(cwd)
+	reg, err = project.Discover(cwd)
 	if err != nil {
 		return nil, fmt.Errorf("re-discovering registry after scaffold: %w", err)
 	}
-	if _, err := runBuildPipeline(ctx, reg, vfs.NewDir(filepath.Join(reg.Root, config.PublicDir, "r")), buildPipelineOpts{typecheck: true, writeTypes: true}); err != nil {
+	if _, err := runBuildPipeline(ctx, reg, vfs.NewDir(filepath.Join(reg.Root, project.PublicDir, "r")), buildPipelineOpts{typecheck: true, writeTypes: true}); err != nil {
 		return nil, err
 	}
 	rb.commit()
@@ -394,7 +396,7 @@ func runNewHookOnResource(cwd, name, resourcePath string) (*newResponse, error) 
 		return nil, err
 	}
 
-	reg, err := config.Discover(cwd)
+	reg, err := project.Discover(cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -500,7 +502,7 @@ func runNewHookOnResource(cwd, name, resourcePath string) (*newResponse, error) 
 // generate next to the hook.
 func resourceKindName(path string) (string, error) {
 	var raw map[string]any
-	if err := protoencode.ReadFile(path, &raw); err != nil {
+	if err := codec.ReadFile(path, &raw); err != nil {
 		return "", fmt.Errorf("reading %s: %w", path, err)
 	}
 	meta, _ := raw["metadata"].(map[string]any)
@@ -540,7 +542,7 @@ func detectHookParent(cwd string) (kindName, resourcePath string, err error) {
 	}
 	if len(kindFiles) == 1 {
 		var raw map[string]any
-		if err := protoencode.ReadFile(kindFiles[0], &raw); err != nil {
+		if err := codec.ReadFile(kindFiles[0], &raw); err != nil {
 			return "", "", fmt.Errorf("reading %s: %w", kindFiles[0], err)
 		}
 		n, _ := raw["name"].(string)
@@ -597,7 +599,7 @@ func findResourceFiles(dir string) ([]string, error) {
 // proto decode.
 func looksLikeResourceFile(path string) bool {
 	var raw map[string]any
-	if err := protoencode.ReadFile(path, &raw); err != nil {
+	if err := codec.ReadFile(path, &raw); err != nil {
 		return false
 	}
 	meta, _ := raw["metadata"].(map[string]any)
@@ -625,7 +627,7 @@ func runNewResource(ctx context.Context, c *cli.Command) (*newResponse, error) {
 		return nil, fmt.Errorf("getting working directory: %w", err)
 	}
 
-	reg, err := config.Discover(cwd)
+	reg, err := project.Discover(cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -635,11 +637,7 @@ func runNewResource(ctx context.Context, c *cli.Command) (*newResponse, error) {
 	// `veil new kind`, which builds automatically) at least once for
 	// local kinds; aliased external registries should already have a
 	// registry.json on disk wherever veil.json points to.
-	registries, err := resolveRegistries(nil, reg)
-	if err != nil {
-		return nil, err
-	}
-	kindReg, err := registry.Load(registries)
+	kindReg, err := loadKindRegistry(reg, nil, false)
 	if err != nil {
 		return nil, err
 	}
@@ -680,7 +678,58 @@ func runNewResource(ctx context.Context, c *cli.Command) (*newResponse, error) {
 	}
 
 	p.Successf("Scaffolded resource %q at %s", name, outPath)
+
+	// A resource nothing can discover is a resource nothing can render,
+	// so if the project's patterns don't already cover it, add it.
+	added, err := ensureDiscoverable(reg, outPath)
+	if err != nil {
+		return nil, err
+	}
+	if added != "" {
+		p.Infof("Added %q to resource_discovery.paths in %s", added, cwdRel(reg.ConfigPath))
+	}
 	return &newResponse{Kind: kindRef, Name: name, Path: outPath}, nil
+}
+
+// ensureDiscoverable makes sure the project discovers the resource at
+// path, returning the pattern it had to add or "" when the existing
+// patterns already matched.
+//
+// The pattern added is the resource's own path, not a glob: a glob
+// guesses at how the author wants to organize resources, and guessing
+// wrong is worse than an extra line per resource. Authors who want
+// "resources/**/*.json" can write it once and every later scaffold under
+// it stays quiet.
+func ensureDiscoverable(reg *project.Project, path string) (string, error) {
+	rel, err := filepath.Rel(reg.Root, path)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s against the project root: %w", path, err)
+	}
+	rel = filepath.ToSlash(rel)
+	if strings.HasPrefix(rel, "../") {
+		// Outside the project entirely — no pattern would help.
+		return "", nil
+	}
+
+	for _, pattern := range reg.ResourceDiscovery.GetPaths() {
+		if ok, err := doublestar.Match(pattern, rel); err == nil && ok {
+			return "", nil
+		}
+	}
+
+	if err := mutateGeneric(reg.ConfigPath, func(doc map[string]any) error {
+		discovery, _ := doc["resource_discovery"].(map[string]any)
+		if discovery == nil {
+			discovery = map[string]any{}
+			doc["resource_discovery"] = discovery
+		}
+		paths, _ := discovery["paths"].([]any)
+		discovery["paths"] = append(paths, rel)
+		return nil
+	}); err != nil {
+		return "", fmt.Errorf("adding %s to resource_discovery.paths: %w", rel, err)
+	}
+	return rel, nil
 }
 
 // rollback collects undo actions in order. If commit() is not called
@@ -732,7 +781,7 @@ func validateName(label, name string) error {
 // file by hand once it exists; subsequent mutations preserve whichever
 // format the file ends up in.
 func ensureVeilJSON(cwd string) (bool, error) {
-	if fsutil.FindAncestorAny(cwd, config.VeilFiles) != "" {
+	if fsutil.FindAncestorAny(cwd, project.VeilFiles) != "" {
 		return false, nil
 	}
 	if err := writeJSON(filepath.Join(cwd, "veil.json"), bareVeilJSON()); err != nil {
@@ -751,7 +800,7 @@ func bareVeilJSON() map[string]any {
 		"$schema": embeds.VeilConfigDefinitionSchemaURL,
 		"kinds":   []string{},
 		"registries": map[string]string{
-			"": "./" + filepath.ToSlash(filepath.Join(config.PublicDir, "r", "registry.json")),
+			"": "./" + filepath.ToSlash(filepath.Join(project.PublicDir, "r", "registry.json")),
 		},
 	}
 }
@@ -920,19 +969,19 @@ func appendHookToKind(kindPath, lifecycle, relHook string) error {
 
 // mutateGeneric reads a JSON or YAML file, calls fn on the parsed
 // top-level map, and writes the result back in the file's original
-// format. Format is detected by extension via protoencode's decoder
+// format. Format is detected by extension via codec's decoder
 // map — JSON files round-trip with two-space indent and a trailing
 // newline; YAML files round-trip via yaml.v3 (which sorts keys
 // alphabetically and strips comments).
 func mutateGeneric(path string, fn func(doc map[string]any) error) error {
 	var doc map[string]any
-	if err := protoencode.ReadFile(path, &doc); err != nil {
+	if err := codec.ReadFile(path, &doc); err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
 	if err := fn(doc); err != nil {
 		return err
 	}
-	if err := protoencode.WriteFileAny(path, doc); err != nil {
+	if err := codec.WriteFileAny(path, doc); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 	return nil

@@ -8,7 +8,7 @@ import (
 	yaml "gopkg.in/yaml.v3"
 )
 
-// replicasSchemaJSON is embedded in a compiled Kind's source_schemas
+// replicasSchemaJSON is embedded on a compiled Kind's source entry
 // map: an object with a required integer `replicas`.
 const replicasSchemaJSON = `{"type":"object","properties":{"replicas":{"type":"integer"}},"required":["replicas"],"additionalProperties":false}`
 
@@ -21,11 +21,21 @@ const bumpReplicasViaAccessorIIFE = `var __veilMod=(()=>{var h={render:function(
 // through the typed accessor — the write should be rejected synchronously.
 const badWriteViaAccessorIIFE = `var __veilMod=(()=>{var h={render:function(ctx,fs){var f=fs.getAppJson();var o=f.getContent();o.replicas="not-a-number";f.setContent(o);return fs;}};return{default:h};})();`
 
-// corruptViaEscapeHatchIIFE reaches app.json through the fs.get()
-// escape hatch (not the typed accessor) and writes content that
-// violates replicasSchemaJSON — proves the escape hatch is validated
-// too, synchronously.
-const corruptViaEscapeHatchIIFE = `var __veilMod=(()=>{var h={render:function(ctx,fs){fs.get("app.json").setContent('{"replicas":"broken"}');return fs;}};return{default:h};})();`
+// corruptViaGetIIFE reaches app.json through fs.get() rather than the
+// generated accessor and writes an object that violates
+// replicasSchemaJSON. Both routes hand back the same SourceFile, so
+// this proves validation is a property of the source, not of how the
+// hook happened to reach it.
+const corruptViaGetIIFE = `var __veilMod=(()=>{var h={render:function(ctx,fs){fs.get("app.json").setContent({replicas:"broken"});return fs;}};return{default:h};})();`
+
+// corruptWithAStringIIFE writes a raw string to a typed source. Strings
+// are not a way around the schema: the string is parsed and checked
+// exactly as an object would be.
+const corruptWithAStringIIFE = `var __veilMod=(()=>{var h={render:function(ctx,fs){fs.get("app.json").setContent('{"replicas":"broken"}');return fs;}};return{default:h};})();`
+
+// validStringWriteIIFE is the other half — a raw string that satisfies
+// the schema is stored, parsed, and visible to the next read.
+const validStringWriteIIFE = `var __veilMod=(()=>{var h={render:function(ctx,fs){var f=fs.get("app.json");f.setContent('{"replicas":9}');if(f.getContent().replicas!==9){throw new Error("stale");}return fs;}};return{default:h};})();`
 
 // markerHookIIFE adds a marker file so a test can prove a later stage
 // never ran (its absence in the output is the proof).
@@ -40,11 +50,10 @@ func (s *RenderSuite) writeTypedWorkerKind(schemaForApp string, hookEntries []ma
 	}
 	compiled := map[string]any{
 		"name": "worker",
-		"sources": map[string]string{
+		"sources": compiledSources(map[string]string{
 			"app.json":   `{"replicas":3}`,
 			"config.txt": "base",
-		},
-		"source_schemas": sourceSchemas,
+		}, sourceSchemas),
 		"hooks": map[string]any{
 			"render": hookEntries,
 		},
@@ -90,10 +99,9 @@ func (s *RenderSuite) TestSchemaTypedAccessorRoundTripYAML() {
 	sourceSchemas := map[string]string{"app.yaml": replicasSchemaJSON}
 	compiled := map[string]any{
 		"name": "worker",
-		"sources": map[string]string{
+		"sources": compiledSources(map[string]string{
 			"app.yaml": "replicas: 3\n",
-		},
-		"source_schemas": sourceSchemas,
+		}, sourceSchemas),
 		"hooks": map[string]any{
 			"render": []map[string]any{
 				{"name": "hooks/bump.ts", "content": `var __veilMod=(()=>{var h={render:function(ctx,fs){var f=fs.getAppYaml();var o=f.getContent();o.replicas=o.replicas+1;f.setContent(o);return fs;}};return{default:h};})();`},
@@ -137,10 +145,10 @@ func (s *RenderSuite) TestPreRenderGateRejectsInvalidInitialSource() {
 	// absence from the output proves it never ran.
 	compiled := map[string]any{
 		"name": "worker",
-		"sources": map[string]string{
-			"app.json": `{"replicas":"not-a-number"}`,
-		},
-		"source_schemas": map[string]string{"app.json": replicasSchemaJSON},
+		"sources": compiledSources(
+			map[string]string{"app.json": `{"replicas":"not-a-number"}`},
+			map[string]string{"app.json": replicasSchemaJSON},
+		),
 		"hooks": map[string]any{
 			"render": []map[string]any{
 				{"name": "hooks/marker.ts", "content": markerHookIIFE},
@@ -159,13 +167,46 @@ func (s *RenderSuite) TestPreRenderGateRejectsInvalidInitialSource() {
 	s.NoDirExists(filepath.Join(out, "my-worker"))
 }
 
-// TestEscapeHatchCorruptionCaughtImmediately proves enforcement isn't
-// limited to the typed accessor — a bad fs.get() write fails the
+// TestInvalidStringWriteIsRejected pins that a raw string write is
+// checked against the source's schema like any other: there is no route
+// to a schema-declared source that skips validation.
+func (s *RenderSuite) TestInvalidStringWriteIsRejected() {
+	s.writeTypedWorkerKind(replicasSchemaJSON, []map[string]any{
+		{"name": "hooks/corrupt.ts", "content": corruptWithAStringIIFE},
+	})
+	dir := filepath.Join(s.root, "svc")
+	s.writeTypedWorkerResource(dir)
+
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderWorker(dir, out, nil)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "replicas")
+	s.NoDirExists(filepath.Join(out, "my-worker"))
+}
+
+// TestValidStringWriteIsStoredAndCached is the passing side: a raw
+// string that satisfies the schema lands, and the next read through the
+// same handle sees it parsed rather than the value it replaced.
+func (s *RenderSuite) TestValidStringWriteIsStoredAndCached() {
+	s.writeTypedWorkerKind(replicasSchemaJSON, []map[string]any{
+		{"name": "hooks/write.ts", "content": validStringWriteIIFE},
+	})
+	dir := filepath.Join(s.root, "svc")
+	s.writeTypedWorkerResource(dir)
+
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderWorker(dir, out, nil)
+	s.Require().NoError(err)
+	s.Equal(float64(9), s.readOutputJSON(out, "my-worker", "app.json")["replicas"])
+}
+
+// TestCorruptionThroughGetCaughtImmediately proves enforcement isn't
+// limited to the generated accessor — a bad fs.get() write fails the
 // render right at that hook, with no deferred checkpoint.
-func (s *RenderSuite) TestEscapeHatchCorruptionCaughtImmediately() {
+func (s *RenderSuite) TestCorruptionThroughGetCaughtImmediately() {
 	s.writeTypedWorkerKind(replicasSchemaJSON, []map[string]any{
 		{"name": "hooks/marker.ts", "content": markerHookIIFE},
-		{"name": "hooks/corrupt.ts", "content": corruptViaEscapeHatchIIFE},
+		{"name": "hooks/corrupt.ts", "content": corruptViaGetIIFE},
 	})
 	dir := filepath.Join(s.root, "svc")
 	s.writeTypedWorkerResource(dir)

@@ -11,7 +11,8 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/goccy/go-json"
+	yaml "gopkg.in/yaml.v3"
+
 	"github.com/stretchr/testify/suite"
 
 	"github.com/vercel/veil/pkg/bundle"
@@ -763,7 +764,30 @@ export default h;
 	s.Equal(1, bytesCount(buf.String(), "call 2"))
 }
 
-func (s *HookSuite) TestRenderHookTypedAccessorRoundTrip() {
+// typedBundle is a one-entry bundle for a schema-declared source: the
+// encoding drives whether hooks see an object, mustValidate drives
+// whether writes are checked.
+func typedBundle(path, content string, ct ContentType) Bundle {
+	return Bundle{path: File{Path: path, Content: content, Type: ct, MustValidate: true}}
+}
+
+// numericReplicas is the stand-in for a real JSON Schema. Contents
+// arrive in the source's own encoding, not normalized to JSON, so it
+// parses with yaml — a superset that reads both. pkg/render's real
+// validator picks the codec from the path instead.
+func numericReplicas(kind, resource, path, contents string) error {
+	var v map[string]any
+	if err := yaml.Unmarshal([]byte(contents), &v); err != nil {
+		return err
+	}
+	switch v["replicas"].(type) {
+	case int, float64:
+		return nil
+	}
+	return fmt.Errorf("replicas must be a number")
+}
+
+func (s *HookSuite) TestSourceFileRoundTripsAnObject() {
 	code := s.compile(`
 const h = {
   render(ctx, fs) {
@@ -776,27 +800,16 @@ const h = {
 };
 export default h;
 `)
-	validate := func(path, jsonText string) error {
-		var v map[string]any
-		if err := json.Unmarshal([]byte(jsonText), &v); err != nil {
-			return err
-		}
-		if _, ok := v["replicas"].(float64); !ok {
-			return fmt.Errorf("replicas must be a number")
-		}
-		return nil
-	}
-	hk, err := New(code, WithTypedSources(map[string]string{"app.json": "json"}), WithSchemaValidate(validate))
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(numericReplicas))
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"app.json": File{Path: "app.json", Content: `{"replicas":3}`}}
-	out, err := hk.RenderHook(map[string]any{}, bundle)
+	out, err := hk.RenderHook(map[string]any{}, typedBundle("app.json", `{"replicas":3}`, ContentJSON))
 	s.Require().NoError(err)
 	s.JSONEq(`{"replicas":4}`, out["app.json"].Content)
 }
 
-func (s *HookSuite) TestRenderHookTypedAccessorRejectsInvalidWrite() {
+func (s *HookSuite) TestSourceFileRejectsInvalidWrite() {
 	code := s.compile(`
 const h = {
   render(ctx, fs) {
@@ -806,25 +819,38 @@ const h = {
 };
 export default h;
 `)
-	validate := func(path, jsonText string) error {
-		var v map[string]any
-		_ = json.Unmarshal([]byte(jsonText), &v)
-		if _, ok := v["replicas"].(float64); !ok {
-			return fmt.Errorf("replicas must be a number")
-		}
-		return nil
-	}
-	hk, err := New(code, WithTypedSources(map[string]string{"app.json": "json"}), WithSchemaValidate(validate))
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(numericReplicas))
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"app.json": File{Path: "app.json", Content: `{"replicas":3}`}}
-	_, err = hk.RenderHook(map[string]any{}, bundle)
+	_, err = hk.RenderHook(map[string]any{}, typedBundle("app.json", `{"replicas":3}`, ContentJSON))
 	s.Require().Error(err)
 	s.Contains(err.Error(), "replicas must be a number")
 }
 
-func (s *HookSuite) TestRenderHookTypedAccessorYAMLCodec() {
+// TestSourceFileRejectedWriteLeavesContentIntact pins that validation
+// gates the store: a throw must not leave the entry half-written.
+func (s *HookSuite) TestSourceFileRejectedWriteLeavesContentIntact() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    const file = fs.getAppJson();
+    try { file.setContent({ replicas: "oops" }); } catch (e) { /* swallowed */ }
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(numericReplicas))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	out, err := hk.RenderHook(map[string]any{}, typedBundle("app.json", `{"replicas":3}`, ContentJSON))
+	s.Require().NoError(err)
+	s.JSONEq(`{"replicas":3}`, out["app.json"].Content)
+}
+
+func (s *HookSuite) TestSourceFileYAMLRoundTrip() {
 	code := s.compile(`
 const h = {
   render(ctx, fs) {
@@ -837,105 +863,150 @@ const h = {
 };
 export default h;
 `)
-	validate := func(path, jsonText string) error { return nil }
-	hk, err := New(code, WithTypedSources(map[string]string{"app.yaml": "yaml"}), WithSchemaValidate(validate))
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(numericReplicas))
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"app.yaml": File{Path: "app.yaml", Content: "replicas: 3\n"}}
-	out, err := hk.RenderHook(map[string]any{}, bundle)
+	out, err := hk.RenderHook(map[string]any{}, typedBundle("app.yaml", "replicas: 3\n", ContentYAML))
 	s.Require().NoError(err)
 	s.Equal("replicas: 4\n", out["app.yaml"].Content)
 }
 
-// TestFileEscapeHatchValidatesButStaysString proves fs.get() validates
-// a schema-declared source on every access but never parses it.
-func (s *HookSuite) TestFileEscapeHatchValidatesButStaysString() {
+// TestSourceFileIsSharedAcrossAccessors is the parse cache: fs.get and
+// the generated accessor are one object, so a write through either is
+// visible to the next read through the other without re-parsing.
+func (s *HookSuite) TestSourceFileIsSharedAcrossAccessors() {
 	code := s.compile(`
 const h = {
   render(ctx, fs) {
-    const file = fs.get("app.json");
-    const content = file.getContent();
-    file.setContent(content);
+    const viaAccessor = fs.getAppJson();
+    const viaGet = fs.get("app.json");
+    if (viaAccessor !== viaGet) throw new Error("expected one SourceFile per path");
+    viaAccessor.setContent({ replicas: 9 });
+    const after = viaGet.getContent();
+    if (after.replicas !== 9) throw new Error("stale read: " + JSON.stringify(after));
+    fs.add("seen.txt", String(after.replicas));
     return fs;
   }
 };
 export default h;
 `)
-	var sawJSON string
-	validate := func(path, jsonText string) error {
-		sawJSON = jsonText
-		return nil
-	}
-	hk, err := New(code, WithTypedSources(map[string]string{"app.json": "json"}), WithSchemaValidate(validate))
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(numericReplicas))
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"app.json": File{Path: "app.json", Content: `{"replicas":3}`}}
-	out, err := hk.RenderHook(map[string]any{}, bundle)
+	out, err := hk.RenderHook(map[string]any{}, typedBundle("app.json", `{"replicas":3}`, ContentJSON))
 	s.Require().NoError(err)
-	s.Equal(`{"replicas":3}`, out["app.json"].Content)
-	s.JSONEq(`{"replicas":3}`, sawJSON)
+	s.Equal("9", out["seen.txt"].Content)
 }
 
-// TestFileEscapeHatchGetContentReturnsRawString strengthens
-// TestFileEscapeHatchValidatesButStaysString with a direct type
-// check: fs.get() on a schema-declared source must hand back a real
-// JS string, not a parsed object that happens to round-trip through
-// setContent unchanged. typeof plus a String.prototype method
-// (toUpperCase) rules out anything but a genuine string.
-func (s *HookSuite) TestFileEscapeHatchGetContentReturnsRawString() {
+// TestSourceFileParsesOnceAcrossReads covers the cachedObject field:
+// mutating what getContent returned is visible to the next getContent,
+// which can only be true if the second read did not re-parse.
+func (s *HookSuite) TestSourceFileParsesOnceAcrossReads() {
 	code := s.compile(`
 const h = {
   render(ctx, fs) {
-    const file = fs.get("app.json");
-    const content = file.getContent();
-    if (typeof content !== "string") {
-      throw new Error("expected string, got " + typeof content);
-    }
-    fs.add("check.txt", content.toUpperCase());
+    const file = fs.getAppJson();
+    file.getContent().marker = "set";
+    const again = file.getContent();
+    if (again.marker !== "set") throw new Error("re-parsed between reads");
     return fs;
   }
 };
 export default h;
 `)
-	validate := func(path, jsonText string) error { return nil }
-	hk, err := New(code, WithTypedSources(map[string]string{"app.json": "json"}), WithSchemaValidate(validate))
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(numericReplicas))
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"app.json": File{Path: "app.json", Content: `{"replicas":3}`}}
-	out, err := hk.RenderHook(map[string]any{}, bundle)
+	_, err = hk.RenderHook(map[string]any{}, typedBundle("app.json", `{"replicas":3}`, ContentJSON))
 	s.Require().NoError(err)
-	s.Equal(`{"REPLICAS":3}`, out["check.txt"].Content)
 }
 
-func (s *HookSuite) TestFileEscapeHatchRejectsInvalidWrite() {
+// TestPlaintextSourceStaysAString is the other half of the type enum: no
+// parsing, no validation, no object — whatever the hook writes is what
+// lands.
+func (s *HookSuite) TestPlaintextSourceStaysAString() {
 	code := s.compile(`
 const h = {
   render(ctx, fs) {
-    fs.get("app.json").setContent('{"replicas":"oops"}');
+    const file = fs.get("notes.txt");
+    const content = file.getContent();
+    if (typeof content !== "string") throw new Error("expected string, got " + typeof content);
+    file.setContent(content.toUpperCase());
     return fs;
   }
 };
 export default h;
 `)
-	validate := func(path, jsonText string) error {
-		var v map[string]any
-		_ = json.Unmarshal([]byte(jsonText), &v)
-		if _, ok := v["replicas"].(float64); !ok {
-			return fmt.Errorf("replicas must be a number")
-		}
-		return nil
-	}
-	hk, err := New(code, WithTypedSources(map[string]string{"app.json": "json"}), WithSchemaValidate(validate))
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(func(kind, resource, path, contents string) error {
+		return fmt.Errorf("plaintext must never be validated")
+	}))
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"app.json": File{Path: "app.json", Content: `{"replicas":3}`}}
-	_, err = hk.RenderHook(map[string]any{}, bundle)
-	s.Require().Error(err)
-	s.Contains(err.Error(), "replicas must be a number")
+	bundle := Bundle{"notes.txt": File{Path: "notes.txt", Content: "hello", Type: ContentPlaintext}}
+	out, err := hk.RenderHook(map[string]any{}, bundle)
+	s.Require().NoError(err)
+	s.Equal("HELLO", out["notes.txt"].Content)
+}
+
+// TestUnvalidatedTypedSourceSkipsTheHost pins mustValidate as the only
+// switch: a typed entry without it still parses and serializes, but the
+// host validator is never called.
+func (s *HookSuite) TestUnvalidatedTypedSourceSkipsTheHost() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    const file = fs.getAppJson();
+    const obj = file.getContent();
+    obj.replicas = "not-a-number";
+    file.setContent(obj);
+    return fs;
+  }
+};
+export default h;
+`)
+	called := false
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(func(kind, resource, path, contents string) error {
+		called = true
+		return nil
+	}))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	bundle := Bundle{"app.json": File{Path: "app.json", Content: `{"replicas":3}`, Type: ContentJSON}}
+	out, err := hk.RenderHook(map[string]any{}, bundle)
+	s.Require().NoError(err)
+	s.False(called, "mustValidate is unset, so the host must not be consulted")
+	s.JSONEq(`{"replicas":"not-a-number"}`, out["app.json"].Content)
+}
+
+// TestSourceValidatorReceivesResourceIdentity covers what the host is
+// handed: the resource it must look up, plus the serialized contents.
+func (s *HookSuite) TestSourceValidatorReceivesResourceIdentity() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) { fs.getAppJson().setContent({ replicas: 7 }); return fs; }
+};
+export default h;
+`)
+	var gotKind, gotResource, gotPath, gotContents string
+	hk, err := New(code, WithResource("worker", "my-worker"),
+		WithSourceValidator(func(kind, resource, path, contents string) error {
+			gotKind, gotResource, gotPath, gotContents = kind, resource, path, contents
+			return nil
+		}))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	_, err = hk.RenderHook(map[string]any{}, typedBundle("app.json", `{"replicas":3}`, ContentJSON))
+	s.Require().NoError(err)
+	s.Equal("worker", gotKind)
+	s.Equal("my-worker", gotResource)
+	s.Equal("app.json", gotPath)
+	s.JSONEq(`{"replicas":7}`, gotContents)
 }
 
 func (s *HookSuite) TestValidateHookTypedAccessorReadsParsedObject() {
@@ -949,12 +1020,11 @@ const h = {
 };
 export default h;
 `)
-	validate := func(path, jsonText string) error { return nil }
-	hk, err := New(code, WithTypedSources(map[string]string{"app.json": "json"}), WithSchemaValidate(validate))
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(numericReplicas))
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"app.json": File{Path: "app.json", Content: `{"replicas":20}`}}
+	bundle := typedBundle("app.json", `{"replicas":20}`, ContentJSON)
 	issues, err := hk.ValidateHook(map[string]any{}, bundle)
 	s.Require().NoError(err)
 	s.Require().Len(issues, 1)
@@ -983,4 +1053,100 @@ func indexAt(s, sub string, from int) int {
 		}
 	}
 	return -1
+}
+
+// TestEncodingSurvivesAHookThatTamperedWithIt is the point of the
+// re-stamp: whatever a hook does to its own copy of type/mustValidate,
+// the bundle handed to the next hook looks as it went in. Within the
+// one hook the change is the author's business; past it, it is not.
+func (s *HookSuite) TestEncodingSurvivesAHookThatTamperedWithIt() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    const file = fs.get("app.json");
+    file.entry.mustValidate = false;
+    file.entry.type = "plaintext";
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(numericReplicas))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	out, err := hk.RenderHook(map[string]any{}, typedBundle("app.json", `{"replicas":3}`, ContentJSON))
+	s.Require().NoError(err)
+	s.Equal(ContentJSON, out["app.json"].Type)
+	s.True(out["app.json"].MustValidate)
+}
+
+// TestAddedFilesCarryNoEncoding pins the other side of the re-stamp: a
+// file a hook created has no declared source behind it, so it comes back
+// plaintext and unvalidated whatever the hook did to it.
+func (s *HookSuite) TestAddedFilesCarryNoEncoding() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    const added = fs.add("extra.json", '{"a":1}');
+    added.entry.type = "json";
+    added.entry.mustValidate = true;
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(numericReplicas))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	out, err := hk.RenderHook(map[string]any{}, typedBundle("app.json", `{"replicas":3}`, ContentJSON))
+	s.Require().NoError(err)
+	s.Equal(ContentType(""), out["extra.json"].Type)
+	s.False(out["extra.json"].MustValidate)
+}
+
+// TestRawStringWriteIsValidatedAndCached is the no-bypass rule: writing
+// a string to a typed source must be checked against the same schema an
+// object would be, and must leave the cache agreeing with what landed.
+func (s *HookSuite) TestRawStringWriteIsValidatedAndCached() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    const file = fs.getAppJson();
+    file.setContent('{"replicas":7}');
+    // The cache has to reflect the raw write, not the value it replaced.
+    const after = file.getContent();
+    if (after.replicas !== 7) throw new Error("stale cache: " + JSON.stringify(after));
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(numericReplicas))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	out, err := hk.RenderHook(map[string]any{}, typedBundle("app.json", `{"replicas":3}`, ContentJSON))
+	s.Require().NoError(err)
+	s.JSONEq(`{"replicas":7}`, out["app.json"].Content)
+}
+
+func (s *HookSuite) TestRawStringWriteStillHitsTheSchema() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    fs.getAppJson().setContent('{"replicas":"oops"}');
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(numericReplicas))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	_, err = hk.RenderHook(map[string]any{}, typedBundle("app.json", `{"replicas":3}`, ContentJSON))
+	s.Require().Error(err)
+	s.Contains(err.Error(), "replicas must be a number")
 }

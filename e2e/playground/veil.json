@@ -1,0 +1,35 @@
+{
+  "$schema": "https://raw.githubusercontent.com/vercel/veil/main/api/jsonschema/VeilConfigDefinition.schema.json",
+  "kinds": [
+    "./.veil/kinds/vpc/kind.json",
+    "./.veil/kinds/secret/kind.json",
+    "./.veil/kinds/postgres/kind.json",
+    "./.veil/kinds/redis/kind.json",
+    "./.veil/kinds/platform/kind.json",
+    "./.veil/kinds/service/kind.json"
+  ],
+  "registries": {
+    "": "./public/r/registry.json"
+  },
+  "resource_discovery": {
+    "paths": [
+      "resources/**/*.json"
+    ]
+  },
+  "variables": {
+    "environment": {
+      "type": "string",
+      "default": "staging",
+      "enum": [
+        "staging",
+        "production"
+      ],
+      "description": "Which Acme environment is being rendered"
+    },
+    "region": {
+      "type": "string",
+      "default": "us-east-1",
+      "description": "Cloud region every resource lands in"
+    }
+  }
+}

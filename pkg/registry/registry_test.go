@@ -53,7 +53,7 @@ func (s *RegistrySuite) writeRegistry(subdir string, kinds ...string) string {
 
 // TestLoadKindReadsYAMLRegistry exercises the YAML ingestion path: a
 // registry.yaml pointing at a kind.yaml round-trips through
-// protoencode's YAML→JSON decode when the registry reads it off the
+// codec's YAML→JSON decode when the registry reads it off the
 // store, without any explicit conversion at the call sites.
 func (s *RegistrySuite) TestLoadKindReadsYAMLRegistry() {
 	dir := filepath.Join(s.root, "yaml")

@@ -10,6 +10,7 @@ on:
 
 jobs:
   test:
+    name: Unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,5 +19,35 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Explicitly the library packages: ./... would pull in ./e2e, which
+      # compiles the binary and runs QuickJS renders in its own job below.
       - name: Run tests
-        run: go test -v ./...
+        run: go test -v ./pkg/... ./cmd/... ./scripts/...
+
+  e2e:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # veil type-checks every hook at build time when a compiler is on
+      # PATH, and silently skips that step when none is. Without this the
+      # e2e suite would never exercise the typecheck path at all.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install TypeScript
+        run: npm install -g typescript
+
+      - name: Verify a compiler is on PATH
+        run: tsc --version
+
+      # -count=1 because these assert on files the binary writes, which
+      # the test cache cannot see.
+      - name: Run end-to-end tests
+        run: go test -count=1 -v ./e2e/...

@@ -1,9 +1,9 @@
 package render
 
 import (
-	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/goccy/go-json"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/vercel/veil/pkg/registry"
 	"github.com/vercel/veil/pkg/resource"
+	"github.com/vercel/veil/pkg/vfs"
 )
 
 type RenderSuite struct {
@@ -28,6 +29,26 @@ func TestRenderSuite(t *testing.T) {
 // it don't need esbuild.
 const helloHookIIFE = `var __veilMod=(()=>{var h={render(ctx,fs){var n=ctx.resource.metadata.name;var ks=fs.keys();for(var i=0;i<ks.length;i++){var f=fs.get(ks[i]);f.setContent(n+":"+f.getContent());}fs.add("greeting.txt","hello, "+n);return fs;}};return{default:h};})();`
 
+// compiledSources builds the wire-shape `sources` list for a fixture
+// kind.json: one entry per path carrying its contents, plus the inlined
+// schema for any path present in schemas. Sorted so fixtures are stable.
+func compiledSources(contents, schemas map[string]string) []map[string]any {
+	paths := make([]string, 0, len(contents))
+	for p := range contents {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	out := make([]map[string]any, 0, len(paths))
+	for _, p := range paths {
+		src := map[string]any{"path": p, "contents": contents[p]}
+		if sch, ok := schemas[p]; ok {
+			src["schema"] = sch
+		}
+		out = append(out, src)
+	}
+	return out
+}
+
 func (s *RenderSuite) SetupTest() {
 	s.root = s.T().TempDir()
 
@@ -36,10 +57,8 @@ func (s *RenderSuite) SetupTest() {
 	s.Require().NoError(os.MkdirAll(kindDir, 0755))
 
 	compiled := map[string]any{
-		"name": "worker",
-		"sources": map[string]string{
-			"config.txt": "base",
-		},
+		"name":    "worker",
+		"sources": compiledSources(map[string]string{"config.txt": "base"}, nil),
 		"hooks": map[string]any{
 			"render": []map[string]any{
 				{"name": "hooks/hello-world.ts", "content": helloHookIIFE},
@@ -91,14 +110,14 @@ func (s *RenderSuite) writeJSON(path string, v any) {
 // covering every resource the test wrote. Each test calls this after
 // writing its inputs. Pattern matches JSON and YAML — discovery is
 // format-agnostic, so a single helper covers every test in the suite.
-func (s *RenderSuite) catalogFor(dir string) (fs.FS, resource.Catalog) {
+func (s *RenderSuite) catalogFor(dir string) (vfs.FS, resource.Catalog) {
 	rel, err := filepath.Rel(s.root, dir)
 	s.Require().NoError(err)
-	fsys := os.DirFS(s.root)
+	fsys := vfs.NewDir(s.root)
 	pattern := filepath.ToSlash(filepath.Join(rel, "*.{json,yaml,yml}"))
 	handles, err := resource.Discover(s.T().Context(), fsys, []string{pattern})
 	s.Require().NoError(err)
-	cat, err := resource.NewCatalog(fsys, handles)
+	cat, err := resource.NewCatalog(fsys, handles, s.registry)
 	s.Require().NoError(err)
 	return fsys, cat
 }
@@ -116,7 +135,6 @@ func (s *RenderSuite) renderWorker(dir, outDir string, vars map[string]any) (*Re
 		Name:      "my-worker",
 		OutDir:    outDir,
 		FS:        fsys,
-		Registry:  s.registry,
 		Catalog:   cat,
 		Variables: vars,
 	})
@@ -214,7 +232,7 @@ func (s *RenderSuite) TestSchemaValidationFailure() {
 // TestRendersYAMLResourceWithYAMLOverlay exercises the full ingestion
 // path: resource and overlay are both authored in YAML, so discovery,
 // loading, and overlay merging all flow through the YAML→JSON
-// conversion in protoencode.
+// conversion in codec.
 func (s *RenderSuite) TestRendersYAMLResourceWithYAMLOverlay() {
 	dir := filepath.Join(s.root, "svc")
 	s.Require().NoError(os.MkdirAll(dir, 0755))
@@ -327,7 +345,6 @@ func (s *RenderSuite) TestUnknownKindErrors() {
 		Name:      "x",
 		OutDir:    filepath.Join(s.root, "out"),
 		FS:        fsys,
-		Registry:  s.registry,
 		Catalog:   cat,
 		Variables: map[string]any{},
 	})
@@ -343,7 +360,7 @@ func (s *RenderSuite) TestSetOutputPathRoutesToNewLocation() {
 	kindDir := filepath.Join(s.root, "r", "worker")
 	s.writeJSON(filepath.Join(kindDir, "kind.json"), map[string]any{
 		"name":    "worker",
-		"sources": map[string]string{"config.txt": "base"},
+		"sources": compiledSources(map[string]string{"config.txt": "base"}, nil),
 		"hooks": map[string]any{
 			"render": []map[string]any{
 				{"name": "hooks/route.ts", "content": routingHook},
@@ -373,7 +390,7 @@ func (s *RenderSuite) TestDeleteSkipsOutput() {
 	kindDir := filepath.Join(s.root, "r", "worker")
 	s.writeJSON(filepath.Join(kindDir, "kind.json"), map[string]any{
 		"name":    "worker",
-		"sources": map[string]string{"config.txt": "base"},
+		"sources": compiledSources(map[string]string{"config.txt": "base"}, nil),
 		"hooks": map[string]any{
 			"render": []map[string]any{
 				{"name": "hooks/delete.ts", "content": deleteHook},
@@ -403,7 +420,7 @@ func (s *RenderSuite) TestPathCollisionErrors() {
 	kindDir := filepath.Join(s.root, "r", "worker")
 	s.writeJSON(filepath.Join(kindDir, "kind.json"), map[string]any{
 		"name":    "worker",
-		"sources": map[string]string{},
+		"sources": compiledSources(nil, nil),
 		"hooks": map[string]any{
 			"render": []map[string]any{
 				{"name": "hooks/collide.ts", "content": collideHook},
@@ -439,7 +456,7 @@ func (s *RenderSuite) TestDiscoveryGlobSkipsNonResources() {
 
 	rel, err := filepath.Rel(s.root, dir)
 	s.Require().NoError(err)
-	handles, err := resource.Discover(s.T().Context(), os.DirFS(s.root), []string{filepath.ToSlash(filepath.Join(rel, "*.json"))})
+	handles, err := resource.Discover(s.T().Context(), vfs.NewDir(s.root), []string{filepath.ToSlash(filepath.Join(rel, "*.json"))})
 	s.Require().NoError(err)
 	s.Require().Len(handles, 1)
 	s.Equal("my-worker", handles[0].Name)

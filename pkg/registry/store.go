@@ -3,14 +3,14 @@ package registry
 import (
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/vercel/veil/pkg/vfs"
 )
 
 // Store is the raw byte source behind a registry: a filesystem (on disk
@@ -28,13 +28,12 @@ type Store interface {
 	Location(name string) string
 }
 
-// FSStore is a Store backed by an fs.FS: os.DirFS for an on-disk
-// registry, or a writable in-memory FS for `veil render --build`. Root,
-// when set, is the on-disk directory FS is rooted at, used only to
-// surface absolute Locations; it is empty for an in-memory FS.
+// FSStore is a Store backed by a filesystem: an on-disk registry
+// directory, or a writable in-memory FS for `veil render --build`. The
+// FS's Root is what lets Location surface an absolute path; an
+// in-memory FS has none, and Location reports "".
 type FSStore struct {
-	FS   fs.FS
-	Root string
+	FS vfs.FS
 }
 
 func (s *FSStore) Open(name string) (io.ReadCloser, error) {
@@ -42,12 +41,12 @@ func (s *FSStore) Open(name string) (io.ReadCloser, error) {
 }
 
 // Location returns the absolute on-disk path of name, or "" when this
-// store isn't on disk (Root unset).
+// store isn't on disk.
 func (s *FSStore) Location(name string) string {
-	if s.Root == "" {
+	if s.FS.Root() == "" {
 		return ""
 	}
-	return filepath.Join(s.Root, filepath.FromSlash(cleanLocation(name)))
+	return filepath.Join(s.FS.Root(), filepath.FromSlash(cleanLocation(name)))
 }
 
 // HTTPStore is a Store backed by an HTTP(S) endpoint; names resolve
@@ -100,7 +99,7 @@ func storeForReference(loc string) (store Store, indexName string, err error) {
 		return nil, "", err
 	}
 	dir := filepath.Dir(abs)
-	return &FSStore{FS: os.DirFS(dir), Root: dir}, filepath.Base(abs), nil
+	return &FSStore{FS: vfs.NewDir(dir)}, filepath.Base(abs), nil
 }
 
 var (
