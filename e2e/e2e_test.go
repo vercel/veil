@@ -9,6 +9,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -439,4 +440,34 @@ func (s *E2ESuite) TestGraphBuildsInMemory() {
 	s.Contains(out, "orders-db")
 	s.Contains(out, "sessions-cache")
 	s.NoDirExists(filepath.Join(dir, "public"), "-b should not write the registry to disk")
+}
+
+// TestHookAddedFileIsWrittenOut covers fs.add: a file that exists in no
+// kind's sources, created wholly by a hook in post_render, summarizing
+// what the dependent hooks wired up. It lands in the output alongside
+// the declared sources, and is per-resource.
+func (s *E2ESuite) TestHookAddedFileIsWrittenOut() {
+	out := s.T().TempDir()
+	stdout, err := s.run("render",
+		"resources/services/checkout.json",
+		"resources/services/billing.json",
+		"--out", out, "--quiet")
+	s.Require().NoError(err, stdout)
+
+	var checkout struct {
+		Service   string   `json:"service"`
+		Region    string   `json:"region"`
+		WiredWith []string `json:"wiredWith"`
+	}
+	s.Require().NoError(json.Unmarshal([]byte(s.read(out, "checkout", "sources/manifest.json")), &checkout))
+	s.Equal("checkout", checkout.Service)
+	s.Equal("us-east-1", checkout.Region)
+	s.Contains(checkout.WiredWith, "ORDERS_DATABASE_URL")
+	s.Contains(checkout.WiredWith, "ACME_PLATFORM")
+
+	// billing has its own wiring, and the added file reflects that rather
+	// than leaking across the concurrent renders.
+	billing := s.read(out, "billing", "sources/manifest.json")
+	s.Contains(billing, "BILLING_DATABASE_URL")
+	s.NotContains(billing, "ORDERS_DATABASE_URL")
 }
