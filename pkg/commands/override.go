@@ -120,11 +120,7 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 	// Resolve the kind via the same registry render uses, so we can
 	// look up the kind's compiled sources without reaching into
 	// .veil/kinds/ on disk.
-	registries, err := resolveRegistries(nil, reg)
-	if err != nil {
-		return nil, err
-	}
-	kindReg, err := registry.Load(registries)
+	kindReg, err := loadKindRegistry(reg, nil, false)
 	if err != nil {
 		return nil, err
 	}

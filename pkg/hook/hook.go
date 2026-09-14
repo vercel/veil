@@ -156,17 +156,27 @@ class SourceFile {
   // setContent serializes value in the entry's own encoding, validates
   // the result when the kind declared a schema for this source, and only
   // then stores it. A rejected write leaves the entry untouched.
+  //
+  // This is the only place an entry's content is ever assigned. A raw
+  // string is not a way around it: for a typed source the string is
+  // parsed first, so it is checked against the same schema an object
+  // would be, and the parse populates the cache so the next read agrees
+  // with what was just written.
   setContent(value) {
     if (!this.typed) {
       this.entry.content = String(value);
       return;
     }
-    var serialized = globalThis.__veilHost.stringify(value, this.entry.type);
+    var object = value;
+    if (typeof value === 'string') {
+      object = globalThis.__veilHost.parse(value, this.entry.type);
+    }
+    var serialized = globalThis.__veilHost.stringify(object, this.entry.type);
     if (this.entry.mustValidate) {
       globalThis.__veilHost.validateSourceFile(this.kind, this.resource, this.entry.path, serialized);
     }
     this.entry.content = serialized;
-    this.cachedObject = value;
+    this.cachedObject = object;
   }
 
   getPath() { return this.entry.path; }
@@ -217,14 +227,12 @@ function __veilMakeFS(initial, identity) {
       if (Object.prototype.hasOwnProperty.call(entries, path)) {
         throw new Error('fs.add: path ' + JSON.stringify(path) + ' already exists');
       }
-      entries[path] = {
-        path: path,
-        content: String(content == null ? '' : content),
-        deleted: false,
-        type: 'plaintext',
-        mustValidate: false
-      };
-      return fileFor(path);
+      entries[path] = { path: path, content: '', deleted: false, type: 'plaintext', mustValidate: false };
+      // Through setContent, not by assigning content here, so every write
+      // in the runtime goes down one path.
+      var file = fileFor(path);
+      file.setContent(content == null ? '' : content);
+      return file;
     },
     delete: function(path) {
       if (Object.prototype.hasOwnProperty.call(entries, path)) entries[path].deleted = true;

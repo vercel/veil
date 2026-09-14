@@ -14,6 +14,7 @@ import (
 	"github.com/vercel/veil/pkg/project"
 	"github.com/vercel/veil/pkg/registry"
 	"github.com/vercel/veil/pkg/resource"
+	"github.com/vercel/veil/pkg/vfs"
 )
 
 const (
@@ -51,6 +52,11 @@ func Graph() *cli.Command {
 				Name:  "format",
 				Usage: "Output format: \"tree\" (default), \"mermaid\", or \"dot\"",
 				Value: graphFormatTree,
+			},
+			&cli.BoolFlag{
+				Name:    "build",
+				Aliases: []string{"b"},
+				Usage:   "Compile the project's kinds into an in-memory registry first, instead of reading a prebuilt one from disk",
 			},
 		},
 		Action: withResult(runGraph),
@@ -97,15 +103,20 @@ func runGraph(ctx context.Context, c *cli.Command) (*graphResponse, error) {
 	}
 
 	// The graph's shape depends on each kind's forwarding policy, so the
-	// compiled registry is required here for the same reason render
-	// needs it — resolved from the project's configured registries.
-	registries, err := resolveRegistries(nil, reg)
-	if err != nil {
+	// compiled registry is required here for the same reason render needs
+	// it. -b compiles it in memory, for a project that has not built yet.
+	var kindReg registry.Registry
+	if c.Bool("build") {
+		mem := vfs.NewMem()
+		if _, err := runBuildPipeline(ctx, reg, mem, buildPipelineOpts{}); err != nil {
+			return nil, fmt.Errorf("building registry: %w", err)
+		}
+		kindReg, err = registry.FromStore(&registry.FSStore{FS: mem})
+		if err != nil {
+			return nil, fmt.Errorf("reading built registry: %w", err)
+		}
+	} else if kindReg, err = loadKindRegistry(reg, nil, true); err != nil {
 		return nil, err
-	}
-	kindReg, err := registry.Load(registries)
-	if err != nil {
-		return nil, fmt.Errorf("loading registry: %w", err)
 	}
 
 	projectFS := reg.FS()

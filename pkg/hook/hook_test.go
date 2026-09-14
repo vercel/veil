@@ -1105,3 +1105,48 @@ export default h;
 	s.Equal(ContentType(""), out["extra.json"].Type)
 	s.False(out["extra.json"].MustValidate)
 }
+
+// TestRawStringWriteIsValidatedAndCached is the no-bypass rule: writing
+// a string to a typed source must be checked against the same schema an
+// object would be, and must leave the cache agreeing with what landed.
+func (s *HookSuite) TestRawStringWriteIsValidatedAndCached() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    const file = fs.getAppJson();
+    file.setContent('{"replicas":7}');
+    // The cache has to reflect the raw write, not the value it replaced.
+    const after = file.getContent();
+    if (after.replicas !== 7) throw new Error("stale cache: " + JSON.stringify(after));
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(numericReplicas))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	out, err := hk.RenderHook(map[string]any{}, typedBundle("app.json", `{"replicas":3}`, ContentJSON))
+	s.Require().NoError(err)
+	s.JSONEq(`{"replicas":7}`, out["app.json"].Content)
+}
+
+func (s *HookSuite) TestRawStringWriteStillHitsTheSchema() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    fs.getAppJson().setContent('{"replicas":"oops"}');
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code, WithResource("worker", "w1"), WithSourceValidator(numericReplicas))
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	_, err = hk.RenderHook(map[string]any{}, typedBundle("app.json", `{"replicas":3}`, ContentJSON))
+	s.Require().Error(err)
+	s.Contains(err.Error(), "replicas must be a number")
+}

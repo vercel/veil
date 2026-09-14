@@ -1,0 +1,5 @@
+image: acme/billing:0.9.0
+port: 8080
+public: false
+region: us-east-1
+replicas: 3

@@ -405,3 +405,38 @@ func (s *E2ESuite) TestGeneratedTypesDescribeEachSource() {
 		s.Contains(vpcTypes, "export interface "+consumer+"FS", consumer)
 	}
 }
+
+// TestMissingRegistryTellsYouHowToFixIt covers the first thing a fresh
+// clone hits: public/ is build output and gitignored, so every command
+// that reads a compiled kind fails until something builds one.
+func (s *E2ESuite) TestMissingRegistryTellsYouHowToFixIt() {
+	dir := s.sandbox()
+	s.Require().NoError(os.RemoveAll(filepath.Join(dir, "public")))
+
+	for _, args := range [][]string{
+		{"graph", "resources/services/checkout.json"},
+		{"render", "resources/services/checkout.json", "--out", s.T().TempDir()},
+	} {
+		s.Run(args[0], func() {
+			out, err := s.runIn(dir, args...)
+			s.Require().Error(err, out)
+			msg := s.errorMessage(out)
+			s.Contains(msg, "no compiled registry found")
+			s.Contains(msg, "run `veil build` first")
+			s.Contains(msg, "-b", "and mention the flag that avoids the build")
+		})
+	}
+}
+
+// TestGraphBuildsInMemory is graph's -b: the same flag render has, for a
+// project that has not built yet.
+func (s *E2ESuite) TestGraphBuildsInMemory() {
+	dir := s.sandbox()
+	s.Require().NoError(os.RemoveAll(filepath.Join(dir, "public")))
+
+	out, err := s.runIn(dir, "graph", "resources/services/checkout.json", "-b", "--format", "tree")
+	s.Require().NoError(err, out)
+	s.Contains(out, "orders-db")
+	s.Contains(out, "sessions-cache")
+	s.NoDirExists(filepath.Join(dir, "public"), "-b should not write the registry to disk")
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -160,11 +161,7 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 			return nil, err
 		}
 	} else {
-		registries, err := resolveRegistries(c.StringSlice("registry"), reg)
-		if err != nil {
-			return nil, err
-		}
-		kindReg, err = registry.Load(registries)
+		kindReg, err = loadKindRegistry(reg, c.StringSlice("registry"), true)
 		if err != nil {
 			return nil, err
 		}
@@ -303,6 +300,29 @@ func renderEntry(catalog resource.Catalog, projectFS vfs.FS, vars map[string]any
 // veil.json directory, while CLI/env paths resolve against cwd. There
 // is no implicit fallback — registries must be declared somewhere
 // (typically veil.json), or rendering fails.
+// loadKindRegistry resolves the project's registries and loads them,
+// turning the "no registry.json" case into something actionable. That
+// file is build output and gitignored in most projects, so a fresh
+// clone hits this before it hits anything else.
+func loadKindRegistry(reg *project.Project, cliRegs []string, buildable bool) (registry.Registry, error) {
+	registries, err := resolveRegistries(cliRegs, reg)
+	if err != nil {
+		return nil, err
+	}
+	kindReg, err := registry.Load(registries)
+	if err == nil {
+		return kindReg, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		hint := "run `veil build` first"
+		if buildable {
+			hint += ", or pass -b to compile the kinds in memory for this run"
+		}
+		return nil, fmt.Errorf("no compiled registry found: %s\n  (%w)", hint, err)
+	}
+	return nil, err
+}
+
 func resolveRegistries(cliRegs []string, reg *project.Project) ([]registry.Reference, error) {
 	if len(cliRegs) > 0 {
 		return absSources(defaultAliasSources(cliRegs), "")

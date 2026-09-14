@@ -20,7 +20,6 @@ import (
 	"github.com/vercel/veil/pkg/fsutil"
 	"github.com/vercel/veil/pkg/interact"
 	"github.com/vercel/veil/pkg/project"
-	"github.com/vercel/veil/pkg/registry"
 	"github.com/vercel/veil/pkg/vfs"
 )
 
@@ -638,11 +637,7 @@ func runNewResource(ctx context.Context, c *cli.Command) (*newResponse, error) {
 	// `veil new kind`, which builds automatically) at least once for
 	// local kinds; aliased external registries should already have a
 	// registry.json on disk wherever veil.json points to.
-	registries, err := resolveRegistries(nil, reg)
-	if err != nil {
-		return nil, err
-	}
-	kindReg, err := registry.Load(registries)
+	kindReg, err := loadKindRegistry(reg, nil, false)
 	if err != nil {
 		return nil, err
 	}

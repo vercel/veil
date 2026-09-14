@@ -28,10 +28,14 @@ const badWriteViaAccessorIIFE = `var __veilMod=(()=>{var h={render:function(ctx,
 // hook happened to reach it.
 const corruptViaGetIIFE = `var __veilMod=(()=>{var h={render:function(ctx,fs){fs.get("app.json").setContent({replicas:"broken"});return fs;}};return{default:h};})();`
 
-// corruptWithAStringIIFE writes a raw string to a typed source. There is
-// no untyped route to a schema-declared source any more, so the string
-// is serialized as a JSON string and rejected on its own type.
-const corruptWithAStringIIFE = `var __veilMod=(()=>{var h={render:function(ctx,fs){fs.get("app.json").setContent('{"replicas":3}');return fs;}};return{default:h};})();`
+// corruptWithAStringIIFE writes a raw string to a typed source. Strings
+// are not a way around the schema: the string is parsed and checked
+// exactly as an object would be.
+const corruptWithAStringIIFE = `var __veilMod=(()=>{var h={render:function(ctx,fs){fs.get("app.json").setContent('{"replicas":"broken"}');return fs;}};return{default:h};})();`
+
+// validStringWriteIIFE is the other half — a raw string that satisfies
+// the schema is stored, parsed, and visible to the next read.
+const validStringWriteIIFE = `var __veilMod=(()=>{var h={render:function(ctx,fs){var f=fs.get("app.json");f.setContent('{"replicas":9}');if(f.getContent().replicas!==9){throw new Error("stale");}return fs;}};return{default:h};})();`
 
 // markerHookIIFE adds a marker file so a test can prove a later stage
 // never ran (its absence in the output is the proof).
@@ -163,11 +167,10 @@ func (s *RenderSuite) TestPreRenderGateRejectsInvalidInitialSource() {
 	s.NoDirExists(filepath.Join(out, "my-worker"))
 }
 
-// TestStringWriteToTypedSourceRejected pins the consequence of one
-// SourceFile per source: a typed source takes objects, so handing it a
-// string — even a string of valid JSON — is a schema failure on the
-// value's own type rather than a way around validation.
-func (s *RenderSuite) TestStringWriteToTypedSourceRejected() {
+// TestInvalidStringWriteIsRejected pins that a raw string write is
+// checked against the source's schema like any other: there is no route
+// to a schema-declared source that skips validation.
+func (s *RenderSuite) TestInvalidStringWriteIsRejected() {
 	s.writeTypedWorkerKind(replicasSchemaJSON, []map[string]any{
 		{"name": "hooks/corrupt.ts", "content": corruptWithAStringIIFE},
 	})
@@ -177,8 +180,24 @@ func (s *RenderSuite) TestStringWriteToTypedSourceRejected() {
 	out := filepath.Join(s.root, "out")
 	_, err := s.renderWorker(dir, out, nil)
 	s.Require().Error(err)
-	s.Contains(err.Error(), "want object")
+	s.Contains(err.Error(), "replicas")
 	s.NoDirExists(filepath.Join(out, "my-worker"))
+}
+
+// TestValidStringWriteIsStoredAndCached is the passing side: a raw
+// string that satisfies the schema lands, and the next read through the
+// same handle sees it parsed rather than the value it replaced.
+func (s *RenderSuite) TestValidStringWriteIsStoredAndCached() {
+	s.writeTypedWorkerKind(replicasSchemaJSON, []map[string]any{
+		{"name": "hooks/write.ts", "content": validStringWriteIIFE},
+	})
+	dir := filepath.Join(s.root, "svc")
+	s.writeTypedWorkerResource(dir)
+
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderWorker(dir, out, nil)
+	s.Require().NoError(err)
+	s.Equal(float64(9), s.readOutputJSON(out, "my-worker", "app.json")["replicas"])
 }
 
 // TestCorruptionThroughGetCaughtImmediately proves enforcement isn't
