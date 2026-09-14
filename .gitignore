@@ -1,3 +1,7 @@
 /veil
 .idea
 example
+
+# Build output. `veil build` regenerates it, and the e2e suite builds
+# before it renders, so the compiled registry never belongs in the repo.
+/e2e/playground/public/

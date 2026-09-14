@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "description": "What a service tells a database when it depends on it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["envVar"],
+  "properties": {
+    "envVar": { "type": "string", "description": "Env var the connection string is written to" },
+    "poolSize": { "type": "integer", "default": 10 }
+  }
+}

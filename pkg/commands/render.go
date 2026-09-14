@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -15,9 +14,9 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"github.com/vercel/veil/pkg/config"
 	"github.com/vercel/veil/pkg/interact"
 	"github.com/vercel/veil/pkg/logging"
+	"github.com/vercel/veil/pkg/project"
 	"github.com/vercel/veil/pkg/registry"
 	"github.com/vercel/veil/pkg/render"
 	"github.com/vercel/veil/pkg/resource"
@@ -46,7 +45,7 @@ type renderedResource struct {
 func Render() *cli.Command {
 	configDefault := "veil.json"
 	if cwd, err := os.Getwd(); err == nil {
-		if reg, err := config.Discover(cwd); err == nil {
+		if reg, err := project.Discover(cwd); err == nil {
 			configDefault = reg.ConfigPath
 		}
 	}
@@ -123,7 +122,7 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 	// registry + resource catalog exactly once, then reuse them across
 	// every path. Rendering N files in one invocation pays the registry
 	// and catalog cost a single time instead of once per file.
-	reg, err := registry.LoadProject(c.String("config"))
+	reg, err := project.LoadProject(c.String("config"))
 	if err != nil {
 		return nil, err
 	}
@@ -171,12 +170,12 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 		}
 	}
 
-	projectFS := os.DirFS(reg.Root)
+	projectFS := reg.FS()
 	handles, err := resource.Discover(ctx, projectFS, reg.ResourceDiscovery.GetPaths())
 	if err != nil {
 		return nil, fmt.Errorf("discovering resources: %w", err)
 	}
-	catalog, err := resource.NewCatalog(projectFS, handles)
+	catalog, err := resource.NewCatalog(projectFS, handles, kindReg)
 	if err != nil {
 		return nil, fmt.Errorf("building resource catalog: %w", err)
 	}
@@ -217,7 +216,7 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 				jobErrs[i] = fmt.Errorf("%s: %w", pathArg, err)
 				return
 			}
-			rr, err := renderEntry(reg, kindReg, catalog, projectFS, vars, outDir, relFS)
+			rr, err := renderEntry(catalog, projectFS, vars, outDir, relFS)
 			if err != nil {
 				jobErrs[i] = fmt.Errorf("%s: %w", pathArg, err)
 				return
@@ -269,7 +268,7 @@ func resolveProjectRel(root, pathArg string) (string, error) {
 // hook runtime mounts Root as its filesystem root, so no process-global
 // working directory is involved. Returns the rendered-resource descriptor
 // for the JSON response.
-func renderEntry(reg *config.Registry, kindReg registry.Registry, catalog resource.Catalog, projectFS fs.FS, vars map[string]any, outDir, relFS string) (renderedResource, error) {
+func renderEntry(catalog resource.Catalog, projectFS vfs.FS, vars map[string]any, outDir, relFS string) (renderedResource, error) {
 	entry, err := catalog.LoadByPath(relFS)
 	if err != nil {
 		return renderedResource{}, err
@@ -279,9 +278,7 @@ func renderEntry(reg *config.Registry, kindReg registry.Registry, catalog resour
 		Kind:      entry.GetMetadata().GetKind(),
 		Name:      entry.GetMetadata().GetName(),
 		OutDir:    outDir,
-		Root:      reg.Root,
 		FS:        projectFS,
-		Registry:  kindReg,
 		Catalog:   catalog,
 		Variables: vars,
 	})
@@ -306,13 +303,13 @@ func renderEntry(reg *config.Registry, kindReg registry.Registry, catalog resour
 // veil.json directory, while CLI/env paths resolve against cwd. There
 // is no implicit fallback — registries must be declared somewhere
 // (typically veil.json), or rendering fails.
-func resolveRegistries(cliRegs []string, reg *config.Registry) ([]registry.Reference, error) {
+func resolveRegistries(cliRegs []string, reg *project.Project) ([]registry.Reference, error) {
 	if len(cliRegs) > 0 {
 		return absSources(defaultAliasSources(cliRegs), "")
 	}
 	if env := os.Getenv("VEIL_REGISTRY"); env != "" {
 		var parts []string
-		for _, p := range strings.Split(env, string(os.PathListSeparator)) {
+		for p := range strings.SplitSeq(env, string(os.PathListSeparator)) {
 			if p != "" {
 				parts = append(parts, p)
 			}

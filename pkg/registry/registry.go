@@ -22,7 +22,7 @@ import (
 	"sync"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
-	"github.com/vercel/veil/pkg/protoencode"
+	"github.com/vercel/veil/pkg/codec"
 )
 
 // Registry resolves compiled kind documents by name. Implementations load
@@ -101,7 +101,7 @@ func (r *cachedRegistry) addSource(alias string, store Store, indexName string) 
 		return fmt.Errorf("loading registry index: %w", err)
 	}
 	var index veilv1.Registry
-	if err := protoencode.UnmarshalProto(bytes.NewReader(data), &index); err != nil {
+	if err := codec.Decode(bytes.NewReader(data), &index); err != nil {
 		return fmt.Errorf("loading registry index: %w", err)
 	}
 	if r.loaders[alias] == nil {
@@ -165,7 +165,7 @@ func loadKindFn(store Store, name, kindPath, schemaPath string) func() (*LoadedK
 			return nil, fmt.Errorf("loading kind %s: %w", name, err)
 		}
 		var ck veilv1.Kind
-		if err := protoencode.UnmarshalProto(bytes.NewReader(kindData), &ck); err != nil {
+		if err := codec.Decode(bytes.NewReader(kindData), &ck); err != nil {
 			return nil, fmt.Errorf("loading kind %s: %w", name, err)
 		}
 		schemaData, err := readAll(store, schemaPath)
@@ -180,11 +180,18 @@ func loadKindFn(store Store, name, kindPath, schemaPath string) func() (*LoadedK
 		if err != nil {
 			return nil, fmt.Errorf("loading kind %s schema: %w", name, err)
 		}
-		sourceValidators, err := compileSourceSchemas(ck.GetSourceSchemas())
+		sources, sourceByPath, err := loadSources(ck.GetSources())
 		if err != nil {
-			return nil, fmt.Errorf("loading kind %s source schemas: %w", name, err)
+			return nil, fmt.Errorf("loading kind %s sources: %w", name, err)
 		}
-		return &LoadedKind{Kind: &ck, SpecSchema: spec, SchemaPath: store.Location(schemaPath), validator: validator, sourceValidators: sourceValidators}, nil
+		return &LoadedKind{
+			Kind:         &ck,
+			SpecSchema:   spec,
+			SchemaPath:   store.Location(schemaPath),
+			Sources:      sources,
+			validator:    validator,
+			sourceByPath: sourceByPath,
+		}, nil
 	}
 }
 

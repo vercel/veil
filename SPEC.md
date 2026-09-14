@@ -1019,7 +1019,9 @@ The `Makefile` runs a generation pipeline:
 
 The embedded schemas are available via `veil schema {config,kind,kind-definition,resource,metadata}`.
 
-All on-disk veil JSON is encoded via `pkg/protoencode`, which centralizes the canonical `protojson`
+All on-disk veil documents are read and written via `pkg/codec`, which owns the JSON/YAML dispatch —
+format detected from the content when decoding, from the path extension when encoding. Every entry
+point takes `any`; values implementing `proto.Message` are routed through the canonical `protojson`
 configuration: `UseProtoNames: true` (snake_case field names) for marshalling, `DiscardUnknown: true`
 for unmarshalling so editor metadata like `$schema` doesn't break loading.
 

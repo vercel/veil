@@ -1,0 +1,4 @@
+{
+  "metadata": { "kind": "secret", "name": "commerce-signing-key" },
+  "spec": { "rotationDays": 30 }
+}

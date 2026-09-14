@@ -1,37 +1,17 @@
 package config
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
-	"github.com/vercel/veil/pkg/fsutil"
-	"github.com/vercel/veil/pkg/protoencode"
-	"github.com/vercel/veil/pkg/schemaload"
+	"github.com/vercel/veil/pkg/codec"
+	"github.com/vercel/veil/pkg/ioutil"
 )
-
-const (
-	// ArtifactsDir is the directory under the project root where veil
-	// stores source-side artifacts (kind definitions, hooks, schemas).
-	// veil.json itself sits at the project root, *not* under this dir.
-	ArtifactsDir = ".veil"
-	// PublicDir is the directory under the project root where `veil
-	// build` writes its publishable output (compiled kinds + registry).
-	// Mirrors shadcn's `public/r/` convention.
-	PublicDir = "public"
-)
-
-// VeilFiles is the ordered list of project-root config filenames
-// `Discover` walks ancestors looking for. JSON is preferred when more
-// than one is present, since that's the original default and what the
-// scaffolders write.
-var VeilFiles = []string{"veil.json", "veil.yaml", "veil.yml"}
 
 // Kind is a kind definition loaded from disk. It embeds the proto-generated
 // KindDefinition (so all wire fields — Name, Sources, Hooks, Schema,
@@ -54,22 +34,38 @@ type Kind struct {
 	// Import is the kind's types-package import wiring, set when its
 	// `kinds` entry used the {path, import} object form. nil for a bare
 	// path string — in which case the kind's types are inlined per hook.
-	Import *veilv1.KindImport
-	// SchemaLoader shares schema reads within a build.
-	SchemaLoader *schemaload.Loader
-
+	Import          *veilv1.KindImport
 	sources         []*veilv1.SourceDefinition
 	renderHooks     []*veilv1.RenderHookDefinition
 	validateHooks   []*veilv1.RenderHookDefinition
 	postRenderHooks []*veilv1.RenderHookDefinition
 }
 
-// ReadSchema reads a schema relative to the kind, or from an HTTP(S) URL.
-func (k *Kind) ReadSchema(ref string) ([]byte, error) {
-	if k.SchemaLoader == nil {
-		k.SchemaLoader = schemaload.New(context.Background())
+// SchemaURI resolves a schema reference to something ioutil can open:
+// an HTTP(S) URL is returned as-is, a relative path is resolved against
+// the kind's directory.
+func (k *Kind) SchemaURI(ref string) string {
+	if ioutil.IsRemote(ref) || filepath.IsAbs(ref) {
+		return ref
 	}
-	return k.SchemaLoader.Read(k.Dir, ref)
+	return filepath.Join(k.Dir, ref)
+}
+
+// ReadSchema reads a schema relative to the kind, or from an HTTP(S)
+// URL, as raw bytes.
+func (k *Kind) ReadSchema(ref string) ([]byte, error) {
+	return ioutil.Read(k.SchemaURI(ref))
+}
+
+// DecodeSchema reads a schema relative to the kind, or from an HTTP(S)
+// URL, and decodes the JSON or YAML document into v.
+func (k *Kind) DecodeSchema(ref string, v any) error {
+	r, err := ioutil.Open(k.SchemaURI(ref))
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	return codec.Decode(r, v)
 }
 
 // SourceDefs returns the parsed `sources` entries — path plus optional
@@ -95,60 +91,6 @@ func (k *Kind) ValidateHooks() []*veilv1.RenderHookDefinition { return k.validat
 
 // PostRenderHooks returns the parsed post_render-lifecycle entries.
 func (k *Kind) PostRenderHooks() []*veilv1.RenderHookDefinition { return k.postRenderHooks }
-
-// Registry is the set of kind definitions and project-level configuration
-// discovered from veil.json, plus the project root directory (which is not
-// part of any wire format). ConfigPath is the absolute path of the
-// config file the registry was loaded from (veil.json, veil.yaml, or
-// veil.yml) — mutation commands use it so a project authored in YAML
-// stays in YAML across edits.
-type Registry struct {
-	Root              string
-	ConfigPath        string
-	Kinds             []*Kind
-	Variables         map[string]*veilv1.Variable
-	Registries        map[string]string
-	ResourceDiscovery *veilv1.ResourceDiscovery
-	Generators        *veilv1.Generators
-	// CliVersion is the project's minimum required veil CLI version
-	// (semver, leading "v" optional), or "" when unset. Enforced by
-	// `veil render`. See VeilConfigDefinition.cli_version.
-	CliVersion string
-}
-
-// DefaultKindsDir is the path (relative to the project root) where
-// `veil new kind` scaffolds a new kind when generators.kinds_dir is
-// unset.
-var DefaultKindsDir = filepath.Join(ArtifactsDir, "kinds")
-
-// KindsDir returns the absolute path of the directory where `veil new
-// kind` should scaffold new kind trees. Honors generators.kinds_dir from
-// veil.json when set; otherwise falls back to <root>/.veil/kinds.
-func (r *Registry) KindsDir() string {
-	dir := r.Generators.GetKindsDir()
-	if dir == "" {
-		dir = DefaultKindsDir
-	}
-	if filepath.IsAbs(dir) {
-		return filepath.Clean(dir)
-	}
-	return filepath.Clean(filepath.Join(r.Root, dir))
-}
-
-// TypesOutputDir returns the absolute directory where `veil build` writes
-// the shared types package (generators.types.output_dir), or "" when unset.
-// When set, kinds whose `kinds` entry carries an `import` emit their
-// generated types here and their hooks import them by package specifier.
-func (r *Registry) TypesOutputDir() string {
-	dir := r.Generators.GetTypes().GetOutputDir()
-	if dir == "" {
-		return ""
-	}
-	if filepath.IsAbs(dir) {
-		return filepath.Clean(dir)
-	}
-	return filepath.Clean(filepath.Join(r.Root, dir))
-}
 
 // HasDefault reports whether v has a default value declared.
 func HasDefault(v *veilv1.Variable) bool {
@@ -239,140 +181,6 @@ func MakeValue(v any) (*structpb.Value, error) {
 	return structpb.NewValue(v)
 }
 
-// Discover walks upward from startDir to find a directory containing
-// a project config file (veil.json, veil.yaml, or veil.yml), loads it,
-// resolves all kind paths, and returns the loaded registry.
-func Discover(startDir string) (*Registry, error) {
-	configPath, err := findProjectRoot(startDir)
-	if err != nil {
-		return nil, err
-	}
-	return Load(configPath)
-}
-
-// Load reads a veil.json at the given path and resolves all kind references
-// relative to its parent directory. Unlike Discover, it does not walk the
-// filesystem — the path is used as-is.
-func Load(configPath string) (*Registry, error) {
-	configPath, err := filepath.Abs(configPath)
-	if err != nil {
-		return nil, err
-	}
-
-	cfg, err := loadConfig(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("loading %s: %w", configPath, err)
-	}
-
-	if err := validateVariables(cfg.Variables); err != nil {
-		return nil, fmt.Errorf("%s: %w", configPath, err)
-	}
-
-	root := filepath.Dir(configPath)
-	kinds := make([]*Kind, 0, len(cfg.Kinds))
-	for i, entry := range cfg.Kinds {
-		ref, err := parseKindEntry(entry)
-		if err != nil {
-			return nil, fmt.Errorf("%s: kinds[%d]: %w", configPath, i, err)
-		}
-		path := ref.GetPath()
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(root, path)
-		}
-		path = filepath.Clean(path)
-
-		k, err := loadKind(path)
-		if err != nil {
-			return nil, fmt.Errorf("loading kind %s: %w", ref.GetPath(), err)
-		}
-		k.Import = ref.GetImport()
-		kinds = append(kinds, k)
-	}
-
-	merged, err := mergeVariables(cfg.Variables, kinds)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", configPath, err)
-	}
-
-	return &Registry{
-		Root:              root,
-		ConfigPath:        configPath,
-		Kinds:             kinds,
-		Variables:         merged,
-		Registries:        cfg.Registries,
-		ResourceDiscovery: cfg.ResourceDiscovery,
-		Generators:        cfg.Generators,
-		CliVersion:        cfg.GetCliVersion(),
-	}, nil
-}
-
-// mergeVariables flattens project-level variables and per-kind
-// variables into a single namespace. Conflicts (same name across any
-// pair of sources) are rejected — the error names both sources so the
-// user can resolve the collision. Each kind's variables are validated
-// individually before they enter the merge.
-func mergeVariables(project map[string]*veilv1.Variable, kinds []*Kind) (map[string]*veilv1.Variable, error) {
-	merged := make(map[string]*veilv1.Variable, len(project))
-	source := make(map[string]string, len(project))
-	for name, v := range project {
-		merged[name] = v
-		source[name] = "veil.json"
-	}
-	for _, k := range kinds {
-		kv := k.GetVariables()
-		if len(kv) == 0 {
-			continue
-		}
-		if err := validateVariables(kv); err != nil {
-			return nil, fmt.Errorf("kind %q: %w", k.Name, err)
-		}
-		kindLabel := fmt.Sprintf("kind %q", k.Name)
-		for name, v := range kv {
-			if prev, ok := source[name]; ok {
-				return nil, fmt.Errorf("variable %q declared in both %s and %s", name, prev, kindLabel)
-			}
-			merged[name] = v
-			source[name] = kindLabel
-		}
-	}
-	return merged, nil
-}
-
-// validateVariables checks each variable's type is one of the supported
-// set, that any default value matches that type, and that any declared
-// enum is well-formed (bool vars can't have an enum; each entry must
-// match the declared type; the default, if present, must be in the
-// enum set).
-func validateVariables(vars map[string]*veilv1.Variable) error {
-	for name, v := range vars {
-		if v == nil {
-			return fmt.Errorf(`variable %q: declaration is empty`, name)
-		}
-		switch v.Type {
-		case veilv1.VariableType_string, veilv1.VariableType_number, veilv1.VariableType_bool:
-		default:
-			return fmt.Errorf(`variable %q: type must be "string", "number", or "bool" (got %q)`, name, v.Type)
-		}
-		if len(v.Enum) > 0 && v.Type == veilv1.VariableType_bool {
-			return fmt.Errorf(`variable %q: enum is not supported for bool`, name)
-		}
-		enumVals, err := ParsedEnum(v)
-		if err != nil {
-			return fmt.Errorf("variable %q enum: %w", name, err)
-		}
-		if HasDefault(v) {
-			def, err := ParsedDefault(v)
-			if err != nil {
-				return fmt.Errorf("variable %q default: %w", name, err)
-			}
-			if enumVals != nil && !containsValue(enumVals, def) {
-				return fmt.Errorf("variable %q default %v is not in enum %v", name, def, enumVals)
-			}
-		}
-	}
-	return nil
-}
-
 // validateDependents enforces the one rule on a kind's dependents list
 // that the proto can't express: a given consumer kind must appear at
 // most once. The proto's buf.validate annotations already enforce that
@@ -389,63 +197,18 @@ func validateDependents(deps []*veilv1.DependentDefinition) error {
 	return nil
 }
 
-// containsValue reports whether needle is present in haystack using
-// equality that mirrors CoerceValue's output types (string/float64/bool).
-func containsValue(haystack []any, needle any) bool {
-	for _, v := range haystack {
-		if v == needle {
-			return true
-		}
-	}
-	return false
-}
-
-// findProjectRoot walks upward from dir looking for a project config
-// file (veil.json, veil.yaml, or veil.yml), returning the absolute
-// path of the file. Order matters: veil.json wins over the YAML
-// variants when more than one is present in the same directory.
-func findProjectRoot(dir string) (string, error) {
-	found := fsutil.FindAncestorAny(dir, VeilFiles)
-	if found == "" {
-		abs, _ := filepath.Abs(dir)
-		return "", fmt.Errorf("no veil.{json,yaml,yml} found (searched up from %s)", abs)
-	}
-	return found, nil
-}
-
-func loadConfig(path string) (*veilv1.VeilConfigDefinition, error) {
-	var cfg veilv1.VeilConfigDefinition
-	if err := protoencode.ReadProtoFile(path, &cfg); err != nil {
-		return nil, err
-	}
-	if err := protoencode.Validate(&cfg); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
-}
-
-func loadKind(path string) (*Kind, error) {
+func LoadKind(path string) (*Kind, error) {
 	pk := &veilv1.KindDefinition{}
-	if err := protoencode.ReadProtoFile(path, pk); err != nil {
+	if err := codec.ReadFile(path, pk); err != nil {
 		return nil, err
 	}
-	if err := protoencode.Validate(pk); err != nil {
+	if err := codec.Validate(pk); err != nil {
 		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
 	if err := validateDependents(pk.GetHooks().GetDependents()); err != nil {
 		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
 	k := &Kind{KindDefinition: pk, Path: path, Dir: filepath.Dir(path)}
-	if pk.GetSchema() != "" {
-		if _, _, err := schemaload.Resolve(k.Dir, pk.GetSchema()); err != nil {
-			return nil, fmt.Errorf("kind at %s: schema: %w", path, err)
-		}
-	}
-	for _, dep := range pk.GetHooks().GetDependents() {
-		if _, _, err := schemaload.Resolve(k.Dir, dep.GetParamsPath()); err != nil {
-			return nil, fmt.Errorf("kind at %s: dependent %q: params_path: %w", path, dep.GetKind(), err)
-		}
-	}
 
 	sources, err := parseSourceEntries(pk.GetSources())
 	if err != nil {
@@ -488,14 +251,10 @@ func validateSourceSchemas(k *Kind) error {
 		default:
 			return fmt.Errorf("source %q: schema-declared sources must have a .json, .yaml, or .yml extension", path)
 		}
-		location, remote, err := schemaload.Resolve(k.Dir, schema)
-		if err != nil {
-			return fmt.Errorf("source %q: %w", path, err)
-		}
-		if remote {
+		if ioutil.IsRemote(schema) {
 			continue
 		}
-		if _, err := os.Stat(location); err != nil {
+		if _, err := os.Stat(k.SchemaURI(schema)); err != nil {
 			return fmt.Errorf("source %q: schema %q: %w", path, schema, err)
 		}
 	}
@@ -528,13 +287,9 @@ func parseSourceEntry(v *structpb.Value) (*veilv1.SourceDefinition, error) {
 		}
 		return &veilv1.SourceDefinition{Path: kind.StringValue}, nil
 	case *structpb.Value_StructValue:
-		raw, err := protojson.Marshal(kind.StructValue)
-		if err != nil {
-			return nil, fmt.Errorf("marshalling source entry: %w", err)
-		}
 		def := &veilv1.SourceDefinition{}
-		if err := protoencode.Unmarshal.Unmarshal(raw, def); err != nil {
-			return nil, fmt.Errorf("unmarshalling source entry: %w", err)
+		if err := codec.Convert(kind.StructValue, def); err != nil {
+			return nil, fmt.Errorf("source entry: %w", err)
 		}
 		if def.GetPath() == "" {
 			return nil, fmt.Errorf("source entry object missing required `path` field")
@@ -574,13 +329,9 @@ func parseHookEntry(v *structpb.Value) (*veilv1.RenderHookDefinition, error) {
 		}
 		return &veilv1.RenderHookDefinition{Path: kind.StringValue}, nil
 	case *structpb.Value_StructValue:
-		raw, err := protojson.Marshal(kind.StructValue)
-		if err != nil {
-			return nil, fmt.Errorf("marshalling hook entry: %w", err)
-		}
 		def := &veilv1.RenderHookDefinition{}
-		if err := protoencode.Unmarshal.Unmarshal(raw, def); err != nil {
-			return nil, fmt.Errorf("unmarshalling hook entry: %w", err)
+		if err := codec.Convert(kind.StructValue, def); err != nil {
+			return nil, fmt.Errorf("hook entry: %w", err)
 		}
 		if def.GetPath() == "" {
 			return nil, fmt.Errorf("hook entry object missing required `path` field")
@@ -591,12 +342,12 @@ func parseHookEntry(v *structpb.Value) (*veilv1.RenderHookDefinition, error) {
 	}
 }
 
-// parseKindEntry narrows one on-wire `kinds` entry — a bare path string or a
+// ParseKindEntry narrows one on-wire `kinds` entry — a bare path string or a
 // {path, import?} object — into a KindRef, mirroring parseHookEntry. The wire
 // field is google.protobuf.Value because protojson can't express "string OR
 // struct" on a typed field; narrowing it once at load time lets every
 // consumer read ref.Path / ref.Import directly.
-func parseKindEntry(v *structpb.Value) (*veilv1.KindRef, error) {
+func ParseKindEntry(v *structpb.Value) (*veilv1.KindRef, error) {
 	if v == nil {
 		return nil, fmt.Errorf("kind entry is nil")
 	}
@@ -607,7 +358,7 @@ func parseKindEntry(v *structpb.Value) (*veilv1.KindRef, error) {
 		}
 		return &veilv1.KindRef{Path: kind.StringValue}, nil
 	case *structpb.Value_StructValue:
-		// Reject unknown keys before unmarshalling: protoencode.Unmarshal uses
+		// Reject unknown keys before unmarshalling: codec.Unmarshal uses
 		// DiscardUnknown, so a typo like `imprt:` would otherwise be silently
 		// dropped and the kind would quietly degrade to inline mode with no error.
 		for key := range kind.StructValue.GetFields() {
@@ -624,13 +375,9 @@ func parseKindEntry(v *structpb.Value) (*veilv1.KindRef, error) {
 				}
 			}
 		}
-		raw, err := protojson.Marshal(kind.StructValue)
-		if err != nil {
-			return nil, fmt.Errorf("marshalling kind entry: %w", err)
-		}
 		ref := &veilv1.KindRef{}
-		if err := protoencode.Unmarshal.Unmarshal(raw, ref); err != nil {
-			return nil, fmt.Errorf("unmarshalling kind entry: %w", err)
+		if err := codec.Convert(kind.StructValue, ref); err != nil {
+			return nil, fmt.Errorf("kind entry: %w", err)
 		}
 		if ref.GetPath() == "" {
 			return nil, fmt.Errorf("kind entry object missing required `path` field")

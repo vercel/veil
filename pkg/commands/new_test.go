@@ -142,9 +142,7 @@ func (s *NewSuite) TestNewKindAutoInitsVeilJSONAndScaffoldsAllFiles() {
 
 	registry := s.readJSON(filepath.Join(s.root, "public", "r", "registry.json"))
 	s.Equal(embeds.RegistrySchemaURL, registry["$schema"])
-	sources, ok := compiled["sources"].(map[string]any)
-	s.Require().True(ok)
-	s.Equal("This is a source file for worker.\n", sources["sources/source.txt"])
+	s.Equal("This is a source file for worker.\n", sourceContents(compiled)["sources/source.txt"])
 	compiledHooks, ok := compiled["hooks"].(map[string]any)
 	s.Require().True(ok)
 	renderHooks, ok := compiledHooks["render"].([]any)

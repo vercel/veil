@@ -18,18 +18,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goccy/go-json"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
-	yaml "gopkg.in/yaml.v3"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
+	"github.com/vercel/veil/pkg/build"
 	"github.com/vercel/veil/pkg/bundle"
+	"github.com/vercel/veil/pkg/codec"
 	"github.com/vercel/veil/pkg/hook"
 	"github.com/vercel/veil/pkg/interact"
-	"github.com/vercel/veil/pkg/protoencode"
 	"github.com/vercel/veil/pkg/registry"
 	"github.com/vercel/veil/pkg/resource"
+	"github.com/vercel/veil/pkg/vfs"
 )
 
 // Options configures a Render call.
@@ -45,29 +45,22 @@ type Options struct {
 	// instance gets a subdirectory named after metadata.name.
 	OutDir string
 
-	// Root is the veil project root — the directory housing veil.json.
-	// Threaded through to the hook context as `ctx.root` and handed to
-	// each hook runtime as its filesystem root (QuickJS mounts it at "/"),
-	// so `ctx.std` / `ctx.os` paths resolve against the project root
-	// regardless of where the user invoked `veil render` from. Passed
-	// straight to the runtime — never via the host process's working
-	// directory — so renders are safe to run concurrently. If empty,
-	// falls back to the caller's CWD.
-	Root string
-
-	// Registry resolves compiled kinds on demand. The render pipeline asks
-	// it for each resource's kind by name; the registry handles index
-	// resolution, lazy loading, and caching internally.
-	Registry registry.Registry
-
-	// FS is the read-only project filesystem rooted at the project
-	// root. Used to read overlay files, schemas, and any other
-	// auxiliary content the render pipeline pulls in. CLI typically
-	// passes os.DirFS(reg.Root); tests may pass an fstest.MapFS.
-	FS fs.FS
+	// FS is the read-only project filesystem, rooted at the directory
+	// housing veil.json. Used to read overlay files, schemas, and any
+	// other auxiliary content the render pipeline pulls in. CLI passes
+	// reg.FS(); tests may wrap an fstest.MapFS.
+	//
+	// Its Root is threaded through to the hook context as `ctx.root` and
+	// handed to each hook runtime as its filesystem root (QuickJS mounts
+	// it at "/"), so `ctx.std` / `ctx.os` paths resolve against the
+	// project root regardless of where the user invoked `veil render`
+	// from. Passed straight to the runtime — never via the host
+	// process's working directory — so renders are safe to run
+	// concurrently. When Root is empty, it falls back to the caller's CWD.
+	FS vfs.FS
 
 	// Catalog resolves the entry-point resource and any dependency
-	// targets by (kind, name). Built from the same fs.FS, lazy and
+	// targets by (kind, name). Built from the same FS, lazy and
 	// cached.
 	Catalog resource.Catalog
 
@@ -104,7 +97,7 @@ func Render(opts *Options) (*RenderedResource, error) {
 	// root (see invokeHook → hook.WithCwd), so hook-side std/os paths
 	// resolve against it without the host process ever changing its own
 	// working directory — which is what lets renders run concurrently.
-	root := opts.Root
+	root := opts.FS.Root()
 	if root == "" {
 		root, _ = os.Getwd()
 	}
@@ -121,14 +114,8 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	resourceName := r.GetMetadata().GetName()
 	logger := slog.Default().With("kind", kindName, "resource", resourceName, "path", r.Path)
 
-	if opts.Registry == nil {
-		return nil, fmt.Errorf("no registry configured")
-	}
-	logger.Debug("loading compiled kind")
-	loaded, err := opts.Registry.LoadKind(kindName)
-	if err != nil {
-		return nil, err
-	}
+	// The catalog resolved this when it loaded the resource.
+	loaded := r.Kind
 	kind := loaded.Kind
 
 	logger.Debug("applying overlays", "count", len(r.GetMetadata().GetOverlays()))
@@ -160,13 +147,21 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		return nil, fmt.Errorf("schema validation: %w", err)
 	}
 
-	// Promote the flat source map to the identity → File structure that
+	// Promote the compiled sources to the identity → File structure that
 	// flows through the hook pipeline. Identity starts as the declared
 	// source path; hooks may remap the destination via File.setOutputPath
 	// without changing identity.
 	bundle := make(hook.Bundle, len(kind.Sources))
-	for k, v := range kind.Sources {
-		bundle[k] = hook.File{Path: k, Content: v}
+	for _, src := range kind.Sources {
+		// A source is typed — and validated on write — exactly when its
+		// kind declared a schema for it. Everything else stays a string
+		// the hook can do what it likes with.
+		entry := hook.File{Path: src.GetPath(), Content: src.GetContents(), Type: hook.ContentPlaintext}
+		if loaded.HasSourceSchema(src.GetPath()) {
+			entry.Type = sourceContentType(src.GetPath())
+			entry.MustValidate = true
+		}
+		bundle[src.GetPath()] = entry
 	}
 
 	// Apply local overrides before any hook runs so hooks see the
@@ -194,7 +189,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	renderHooks := kind.GetHooks().GetRender()
 	logger.Info("running render hooks", "count", len(renderHooks))
 	for _, h := range renderHooks {
-		newBundle, err := invokeHook(logger, h, kindName, resourceName, ctx, bundle, loaded)
+		newBundle, err := invokeHook(logger, h, r, ctx, bundle, opts.Catalog)
 		if err != nil {
 			return nil, fmt.Errorf("hook %s: %w", h.GetName(), err)
 		}
@@ -204,7 +199,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	if deps := resolved.GetDependencies(); len(deps) > 0 {
 		logger.Info("resolving dependency graph", "declared_dependencies", len(deps))
 	}
-	newBundle, err := applyDependencies(logger, bundle, kindName, resourceName, r.Path, resolved, resourceMap, root, opts, loaded)
+	newBundle, err := applyDependencies(logger, bundle, r, resolved, resourceMap, root, opts)
 	if err != nil {
 		return nil, fmt.Errorf("dependencies: %w", err)
 	}
@@ -224,7 +219,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 			if err != nil {
 				return nil, fmt.Errorf("resource hook %s: %w", def.GetPath(), err)
 			}
-			newBundle, err := invokeHook(logger, compiled, kindName, resourceName, ctx, bundle, loaded)
+			newBundle, err := invokeHook(logger, compiled, r, ctx, bundle, opts.Catalog)
 			if err != nil {
 				return nil, fmt.Errorf("resource hook %s: %w", def.GetPath(), err)
 			}
@@ -242,7 +237,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	if len(postRenderHooks) > 0 {
 		logger.Info("running post_render hooks", "count", len(postRenderHooks))
 		for _, h := range postRenderHooks {
-			newBundle, err := invokeHook(logger, h, kindName, resourceName, ctx, bundle, loaded)
+			newBundle, err := invokeHook(logger, h, r, ctx, bundle, opts.Catalog)
 			if err != nil {
 				return nil, fmt.Errorf("post_render hook %s: %w", h.GetName(), err)
 			}
@@ -258,7 +253,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	// synchronously as it happened.
 	var issues []hook.ValidationIssue
 	if validateHooks := kind.GetHooks().GetValidate(); len(validateHooks) > 0 {
-		hookIssues, err := runValidateHooks(logger, validateHooks, kindName, resourceName, ctx, bundle, loaded)
+		hookIssues, err := runValidateHooks(logger, validateHooks, r, ctx, bundle, opts.Catalog)
 		if err != nil {
 			return nil, fmt.Errorf("validate: %w", err)
 		}
@@ -305,7 +300,7 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 // override paths whose `skip_hooks` flag is set, mapped to their
 // content — callers re-stamp those after the hook pipeline runs so
 // any in-flight mutations are discarded.
-func applyOverrides(fsys fs.FS, r *resource.Resource, bundle hook.Bundle) (map[string]string, error) {
+func applyOverrides(fsys vfs.FS, r *resource.Resource, bundle hook.Bundle) (map[string]string, error) {
 	overrides := r.GetMetadata().GetOverrides()
 	if len(overrides) == 0 {
 		return nil, nil
@@ -363,16 +358,13 @@ func resolveResource(r *veilv1.Resource, mergedSpec map[string]any) (*veilv1.Res
 	return out, nil
 }
 
-// resourceToMap marshals a Resource via protojson and re-parses it as a
-// generic map, suitable for embedding in the hook ctx (which round-trips
-// through goccy/go-json).
+// resourceToMap flattens a Resource into a generic map, suitable for
+// embedding in the hook ctx (which round-trips through goccy/go-json).
+// codec.Convert marshals via protojson so the map is keyed by proto
+// field names.
 func resourceToMap(r *veilv1.Resource) (map[string]any, error) {
-	data, err := protoencode.Marshal.Marshal(r)
-	if err != nil {
-		return nil, err
-	}
 	var out map[string]any
-	if err := json.Unmarshal(data, &out); err != nil {
+	if err := codec.Convert(r, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -383,126 +375,114 @@ func resourceToMap(r *veilv1.Resource) (map[string]any, error) {
 // form and map encoding, cached so a target reached through multiple
 // consumer paths is only loaded and resolved once.
 type depNode struct {
-	kind, name, path string
-	resource         *veilv1.Resource
-	resourceMap      map[string]any
+	// res is the resource as loaded: its kind, name, path and compiled
+	// kind all hang off it, so the node keeps no copies.
+	res *resource.Resource
+	// resolved is res with overlays and schema defaults applied —
+	// computed once per node and reused across every edge reaching it.
+	resolved    *veilv1.Resource
+	resourceMap map[string]any
 }
 
 func depNodeID(kind, name string) string { return kind + "/" + name }
 
-// applyDependencies walks the full transitive dependency graph reachable
-// from the root resource — breadth-first, cycle-safe, visit-once, the
-// same shape commands.buildResourceGraph uses for `veil graph` — and
-// applies every qualifying dependent hook along the way, not just the
-// root's own directly-declared dependencies.
+// applyDependencies applies the dependent hooks of every resource the
+// render root depends on, against the root's own bundle.
 //
-// At every edge, the "consumer" a target's dependent hook sees is the
-// render root — never the intermediate resource that actually declared
-// the edge. A service depending on a package that itself depends on a
-// dynamo-table runs the dynamo-table's "service" dependent hooks with
-// the *service* as ctx.consumer, not the package: the package is a
-// pass-through, and the only FS a dependent hook can ever mutate is
-// the render root's bundle, so ctx.consumer names the resource that
-// bundle actually belongs to. This also means a target kind's
-// `dependents` list is keyed by the possible render-root kinds that
-// can reach it, regardless of how many pass-through kinds sit in
-// between — dynamo-table's existing `dependents: [service, subscriber]`
-// already covers a service reaching it through any number of
-// intermediate packages, with no new entry required per pass-through
-// kind.
-func applyDependencies(parent *slog.Logger, bundle hook.Bundle, rootKind, rootName, rootPath string, rootResource *veilv1.Resource, rootMap map[string]any, root string, opts *Options, rootLoaded *registry.LoadedKind) (hook.Bundle, error) {
-	if opts.Catalog == nil {
-		return nil, fmt.Errorf("no catalog configured")
+// The set is already decided: the catalog resolved each resource's
+// effective dependencies — its own declared edges plus whatever those
+// targets forward up — so this is one pass over a flat list, not a
+// graph traversal. A service that depends on a package sees the
+// package's table only when the package forwards it.
+//
+// At every edge the "consumer" the target's hooks see is the render
+// root, never an intermediate that forwarded the edge: the only bundle
+// a dependent hook can mutate is the root's, so ctx.consumer names the
+// resource that bundle belongs to. A target kind's `dependents` list is
+// therefore keyed by the render-root kinds that can reach it.
+func applyDependencies(parent *slog.Logger, bundle hook.Bundle, rootRes *resource.Resource, rootResolved *veilv1.Resource, rootMap map[string]any, root string, opts *Options) (hook.Bundle, error) {
+	deps := rootRes.Dependencies
+	if len(deps) == 0 {
+		return bundle, nil
 	}
+	rootNode := &depNode{res: rootRes, resolved: rootResolved, resourceMap: rootMap}
 
-	rootNode := &depNode{kind: rootKind, name: rootName, path: rootPath, resource: rootResource, resourceMap: rootMap}
-	visited := map[string]*depNode{depNodeID(rootKind, rootName): rootNode}
-	queue := []*depNode{rootNode}
-	edges := 0
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		for _, dep := range cur.resource.GetDependencies() {
-			targetKind, targetName := dep.GetKind(), dep.GetName()
-			logger := parent.With("dep_kind", targetKind, "dep_name", targetName)
+	// Several edges can land on one target — a diamond, or a forwarded
+	// edge alongside a direct one — and each fires its own hooks with
+	// its own params. Resolving the target is the expensive half, so
+	// that part is done once and shared.
+	nodes := map[string]*depNode{}
+	for _, dep := range deps {
+		target := dep.Resource
+		targetKind, targetName := target.GetMetadata().GetKind(), target.GetMetadata().GetName()
+		logger := parent.With("dep_kind", targetKind, "dep_name", targetName)
 
-			id := depNodeID(targetKind, targetName)
-			node, seen := visited[id]
-			if !seen {
-				logger.Debug("resolving dependency target")
-				target, err := opts.Catalog.LoadResource(targetKind, targetName)
-				if err != nil {
-					return nil, fmt.Errorf("dependency %s/%s: %w", targetKind, targetName, err)
-				}
-				resolvedTarget, err := resolveTargetResource(target, opts)
-				if err != nil {
-					return nil, fmt.Errorf("dependency %s/%s: resolving target: %w", targetKind, targetName, err)
-				}
-				targetMap, err := resourceToMap(resolvedTarget)
-				if err != nil {
-					return nil, fmt.Errorf("dependency %s/%s: encoding target: %w", targetKind, targetName, err)
-				}
-				node = &depNode{kind: targetKind, name: targetName, path: target.Path, resource: resolvedTarget, resourceMap: targetMap}
-				visited[id] = node
-				queue = append(queue, node)
-			}
-
-			newBundle, err := applyDependentHooks(logger, bundle, dep, node, rootNode, root, opts, rootLoaded)
+		id := depNodeID(targetKind, targetName)
+		node, seen := nodes[id]
+		if !seen {
+			resolvedTarget, err := resolveTargetResource(target, opts)
 			if err != nil {
-				return nil, fmt.Errorf("dependency %s/%s: %w", targetKind, targetName, err)
+				return nil, fmt.Errorf("dependency %s/%s: resolving target: %w", targetKind, targetName, err)
 			}
-			bundle = newBundle
-			edges++
+			targetMap, err := resourceToMap(resolvedTarget)
+			if err != nil {
+				return nil, fmt.Errorf("dependency %s/%s: encoding target: %w", targetKind, targetName, err)
+			}
+			node = &depNode{res: target, resolved: resolvedTarget, resourceMap: targetMap}
+			nodes[id] = node
 		}
+
+		newBundle, err := applyDependentHooks(logger, bundle, dep.Dependency, node, rootNode, root, opts)
+		if err != nil {
+			return nil, fmt.Errorf("dependency %s/%s: %w", targetKind, targetName, err)
+		}
+		bundle = newBundle
 	}
-	if edges > 0 {
-		parent.Info("applied dependency graph", "nodes", len(visited)-1, "edges", edges)
-	}
+	parent.Info("applied dependency graph", "targets", len(nodes), "edges", len(deps))
 	return bundle, nil
 }
 
 // applyDependentHooks runs every dependent hook target's kind registers
 // for the render root's kind against the shared bundle. consumer is
 // always the render root (see applyDependencies), never the resource
-// that actually declared this edge — a target's `dependents` list is
-// matched against the root's kind regardless of which hop the edge
-// came from. target is already resolved (overlays + schema defaults
-// applied) by the caller — reused across every edge that reaches it
-// during the walk so a many-times-depended-on resource is only
-// resolved once; params are read fresh per edge below, so two edges
-// into the same target with different params still apply independently.
-func applyDependentHooks(parent *slog.Logger, bundle hook.Bundle, dep *veilv1.Dependency, target, consumer *depNode, root string, opts *Options, rootLoaded *registry.LoadedKind) (hook.Bundle, error) {
-	loadedKind, err := opts.Registry.LoadKind(target.kind)
-	if err != nil {
-		return nil, fmt.Errorf("loading target kind: %w", err)
-	}
-
+// that declared or forwarded this edge — a target's `dependents` list
+// is matched against the root's kind however the edge arrived. target
+// is already resolved (overlays + schema defaults applied) by the
+// caller and shared across every edge that reaches it; params are read
+// per edge below, so two edges into the same target with different
+// params still apply independently.
+func applyDependentHooks(parent *slog.Logger, bundle hook.Bundle, dep *veilv1.Dependency, target, consumer *depNode, root string, opts *Options) (hook.Bundle, error) {
 	var dependentEntry *veilv1.DependentHook
-	for _, d := range loadedKind.Kind.GetHooks().GetDependents() {
-		if d.GetKind() == consumer.kind {
+	consumerKind := consumer.res.GetMetadata().GetKind()
+	for _, d := range target.res.Kind.GetHooks().GetDependents() {
+		if d.GetKind() == consumerKind {
 			dependentEntry = d
 			break
 		}
 	}
 	if dependentEntry == nil {
-		return nil, fmt.Errorf("target kind %q does not list %q as a valid consumer", target.kind, consumer.kind)
+		return nil, fmt.Errorf("target kind %q does not list %q as a valid consumer",
+			target.res.GetMetadata().GetKind(), consumerKind)
 	}
 
-	var paramsMap map[string]any
+	// An edge with no params still gets an object, so a hook can read
+	// ctx.params.whatever without guarding. Forwarded edges frequently
+	// declare none.
+	paramsMap := map[string]any{}
 	if p := dep.GetParams(); p != nil {
 		paramsMap = p.AsMap()
 	}
 	depCtx := map[string]any{
 		"self":     target.resourceMap,
 		"consumer": consumer.resourceMap,
-		"path":     consumer.path,
+		"path":     consumer.res.Path,
 		"params":   paramsMap,
 		"vars":     opts.Variables,
 		"root":     root,
 	}
 
 	for _, h := range dependentEntry.GetHooks() {
-		newBundle, err := invokeHook(parent, h, target.kind, target.name, depCtx, bundle, rootLoaded)
+		newBundle, err := invokeHook(parent, h, target.res, depCtx, bundle, opts.Catalog)
 		if err != nil {
 			return nil, fmt.Errorf("hook %s: %w", h.GetName(), err)
 		}
@@ -522,11 +502,7 @@ func resolveTargetResource(r *resource.Resource, opts *Options) (*veilv1.Resourc
 	if err != nil {
 		return nil, fmt.Errorf("overlays: %w", err)
 	}
-	loaded, err := opts.Registry.LoadKind(r.GetMetadata().GetKind())
-	if err != nil {
-		return nil, fmt.Errorf("loading kind: %w", err)
-	}
-	applySchemaDefaults(mergedSpec, loaded.SpecSchema)
+	applySchemaDefaults(mergedSpec, r.Kind.SpecSchema)
 	return resolveResource(r.Resource, mergedSpec)
 }
 
@@ -534,23 +510,13 @@ func resolveTargetResource(r *resource.Resource, opts *Options) (*veilv1.Resourc
 // YAML-encoded (vs. JSON), the same detection applyOverlays already
 // uses for overlay files.
 func isYAMLSourcePath(p string) bool {
-	return strings.HasSuffix(p, ".yaml") || strings.HasSuffix(p, ".yml")
+	return codec.IsYAML(p)
 }
 
 // parseSourceContent decodes a bundle entry into a generic value,
 // choosing YAML or JSON by path extension.
 func parseSourceContent(p, content string) (any, error) {
-	var v any
-	if isYAMLSourcePath(p) {
-		if err := yaml.Unmarshal([]byte(content), &v); err != nil {
-			return nil, err
-		}
-		return v, nil
-	}
-	if err := json.Unmarshal([]byte(content), &v); err != nil {
-		return nil, err
-	}
-	return v, nil
+	return build.ParseSourceContents(p, []byte(content))
 }
 
 // validateSchemaSources parses and validates every schema-declared
@@ -584,7 +550,7 @@ func validateSchemaSources(loaded *registry.LoadedKind, bdl hook.Bundle) []hook.
 // The compiled Hook carries the access info copied from the
 // definition so the runner can pre-flight env access the same way it
 // does for kind-bundled hooks.
-func compileResourceHook(fsys fs.FS, resourceDir, hookPath string, access *veilv1.HookAccess) (*veilv1.Hook, error) {
+func compileResourceHook(fsys vfs.FS, resourceDir, hookPath string, access *veilv1.HookAccess) (*veilv1.Hook, error) {
 	entrypoint := hookPath
 	if !path.IsAbs(entrypoint) {
 		entrypoint = path.Join(resourceDir, entrypoint)
@@ -609,11 +575,11 @@ func compileResourceHook(fsys fs.FS, resourceDir, hookPath string, access *veilv
 // hook does not abort the loop — the runner records it as an
 // error-severity issue and keeps going so the user sees every problem
 // at once.
-func runValidateHooks(parent *slog.Logger, hooks []*veilv1.Hook, kindName, resourceName string, ctx any, bdl hook.Bundle, loaded *registry.LoadedKind) ([]hook.ValidationIssue, error) {
+func runValidateHooks(parent *slog.Logger, hooks []*veilv1.Hook, res *resource.Resource, ctx any, bdl hook.Bundle, catalog resource.Catalog) ([]hook.ValidationIssue, error) {
 	parent.Info("running validate hooks", "count", len(hooks))
 	var issues []hook.ValidationIssue
 	for _, h := range hooks {
-		hookIssues, err := invokeValidateHook(parent, h, kindName, resourceName, ctx, bdl, loaded)
+		hookIssues, err := invokeValidateHook(parent, h, res, ctx, bdl, catalog)
 		if err != nil {
 			// Aggregate the throw as a single error-severity issue,
 			// then keep iterating so subsequent hooks still get a
@@ -688,28 +654,35 @@ func cwdFromCtx(ctx any) string {
 	return ""
 }
 
-// typedSourceOptions builds the hook.Options wiring a hook's FS to
-// schema-declared sources: a path->codec map plus a validate closure
-// checking a candidate value against that source's schema. Empty when
-// the kind has no schema-declared sources.
-func typedSourceOptions(loaded *registry.LoadedKind) (hook.Option, hook.Option) {
-	paths := loaded.SchemaSources()
-	codecByPath := make(map[string]string, len(paths))
-	for _, p := range paths {
-		if isYAMLSourcePath(p) {
-			codecByPath[p] = "yaml"
-		} else {
-			codecByPath[p] = "json"
-		}
+// sourceContentType maps a source path to the encoding its bytes use,
+// the same extension rule build and the pre-render gate follow.
+func sourceContentType(p string) hook.ContentType {
+	if isYAMLSourcePath(p) {
+		return hook.ContentYAML
 	}
-	validate := func(path, jsonText string) error {
-		var v any
-		if err := json.Unmarshal([]byte(jsonText), &v); err != nil {
+	return hook.ContentJSON
+}
+
+// sourceValidator is the check a SourceFile runs before it stores a
+// write. It takes the resource by (kind, name) rather than closing over
+// one, so a dependent hook writing into a bundle is checked against the
+// schema of the resource that bundle belongs to — resolved through the
+// catalog exactly as the render pipeline did.
+//
+// contents arrive already serialized in the source's own encoding, so
+// this parses by the same extension rule that produced them.
+func sourceValidator(catalog resource.Catalog) func(kind, name, path, contents string) error {
+	return func(kind, name, path, contents string) error {
+		res, err := catalog.LoadResource(kind, name)
+		if err != nil {
+			return fmt.Errorf("source %q: %w", path, err)
+		}
+		doc, err := build.ParseSourceContents(path, []byte(contents))
+		if err != nil {
 			return fmt.Errorf("source %q: parsing: %w", path, err)
 		}
-		return loaded.ValidateSource(path, v)
+		return res.Kind.ValidateSource(path, doc)
 	}
-	return hook.WithTypedSources(codecByPath), hook.WithSchemaValidate(validate)
 }
 
 // invokeValidateHook is the validate-lifecycle twin of invokeHook —
@@ -717,7 +690,9 @@ func typedSourceOptions(loaded *registry.LoadedKind) (hook.Option, hook.Option) 
 // instead and returns the issue list. Any FS or ctx mutations the
 // hook makes inside the runtime are not read back out: the only
 // observable output is the issues slice.
-func invokeValidateHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceName string, ctx any, bdl hook.Bundle, loaded *registry.LoadedKind) ([]hook.ValidationIssue, error) {
+func invokeValidateHook(parent *slog.Logger, h *veilv1.Hook, res *resource.Resource, ctx any, bdl hook.Bundle, catalog resource.Catalog) ([]hook.ValidationIssue, error) {
+	kindName := res.GetMetadata().GetKind()
+	resourceName := res.GetMetadata().GetName()
 	hookName := h.GetName()
 	logger := parent.With("hook", hookName)
 
@@ -747,15 +722,14 @@ func invokeValidateHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceN
 		}
 	}
 
-	typedSources, schemaValidate := typedSourceOptions(loaded)
 	hk, err := hook.New(
 		h.GetContent(),
 		hook.WithLogger(logger),
 		hook.WithDisplay(display),
 		hook.WithEnv(env),
 		hook.WithCwd(cwdFromCtx(ctx)),
-		typedSources,
-		schemaValidate,
+		hook.WithResource(kindName, resourceName),
+		hook.WithSourceValidator(sourceValidator(catalog)),
 	)
 	if err != nil {
 		logger.Error("validate hook failed", "stage", "init", "duration", time.Since(start).String(), "err", err.Error())
@@ -780,7 +754,9 @@ func invokeValidateHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceN
 // the user's terminal via interact.Default(). loaded is always the
 // render root's LoadedKind, whose schemas govern typed-File behavior
 // for bdl (the one shared, root-owned bundle) at every call site here.
-func invokeHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceName string, ctx any, bundle hook.Bundle, loaded *registry.LoadedKind) (hook.Bundle, error) {
+func invokeHook(parent *slog.Logger, h *veilv1.Hook, res *resource.Resource, ctx any, bundle hook.Bundle, catalog resource.Catalog) (hook.Bundle, error) {
+	kindName := res.GetMetadata().GetKind()
+	resourceName := res.GetMetadata().GetName()
 	hookName := h.GetName()
 	logger := parent.With("hook", hookName)
 
@@ -810,15 +786,14 @@ func invokeHook(parent *slog.Logger, h *veilv1.Hook, kindName, resourceName stri
 		}
 	}
 
-	typedSources, schemaValidate := typedSourceOptions(loaded)
 	hk, err := hook.New(
 		h.GetContent(),
 		hook.WithLogger(logger),
 		hook.WithDisplay(display),
 		hook.WithEnv(env),
 		hook.WithCwd(cwdFromCtx(ctx)),
-		typedSources,
-		schemaValidate,
+		hook.WithResource(kindName, resourceName),
+		hook.WithSourceValidator(sourceValidator(catalog)),
 	)
 	if err != nil {
 		logger.Error("hook failed", "stage", "init", "duration", time.Since(start).String(), "err", err.Error())
@@ -870,7 +845,7 @@ func resolveHookEnv(h *veilv1.Hook, kindName, resourceName, hookName string) (ma
 // matches the corresponding variable's stringified value; matching
 // overlays' specs are deep-merged into the base spec in declaration
 // order.
-func applyOverlays(fsys fs.FS, r *resource.Resource, vars map[string]any) (map[string]any, error) {
+func applyOverlays(fsys vfs.FS, r *resource.Resource, vars map[string]any) (map[string]any, error) {
 	baseSpec := r.GetSpec().AsMap()
 	overlays := r.GetMetadata().GetOverlays()
 	if len(overlays) == 0 {
@@ -897,7 +872,7 @@ func applyOverlays(fsys fs.FS, r *resource.Resource, vars map[string]any) (map[s
 		var overlayDoc struct {
 			Spec map[string]any `json:"spec" yaml:"spec"`
 		}
-		if err := protoencode.ReadFS(fsys, overlayPath, &overlayDoc); err != nil {
+		if err := codec.ReadFS(fsys, overlayPath, &overlayDoc); err != nil {
 			return nil, fmt.Errorf("reading overlay %s: %w", overlayPath, err)
 		}
 		result = deepMerge(result, overlayDoc.Spec)

@@ -2,7 +2,21 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "KindDefinition is a hand-authored kind.json — the source-side shape\n that `veil build` compiles into a published Kind (registry.proto).",
+  "patternProperties": {
+    "^(forwardDependencies)$": {
+      "default": false,
+      "description": "Union with the per-edge flag — an edge forwards when either says\n so — and forwarding chains either way.",
+      "title": "Whether every dependency a resource of this kind declares is\n forwarded to that resource's own consumers, as if each edge had set\n `forward: true`. A policy for the kind rather than a per-resource\n choice: a `package` that exists to bundle things up for whoever\n uses it sets this once, instead of every package resource\n repeating the flag on every edge.",
+      "type": "boolean"
+    }
+  },
   "properties": {
+    "forward_dependencies": {
+      "default": false,
+      "description": "Union with the per-edge flag — an edge forwards when either says\n so — and forwarding chains either way.",
+      "title": "Whether every dependency a resource of this kind declares is\n forwarded to that resource's own consumers, as if each edge had set\n `forward: true`. A policy for the kind rather than a per-resource\n choice: a `package` that exists to bundle things up for whoever\n uses it sets this once, instead of every package resource\n repeating the flag on every edge.",
+      "type": "boolean"
+    },
     "hooks": {
       "additionalProperties": false,
       "description": "Hook code files grouped by lifecycle point. The dependents block —\n the per-consumer hooks that fire when another kind declares a\n dependency on this one — also lives under `hooks`, since it is\n ultimately just another hook lifecycle.",

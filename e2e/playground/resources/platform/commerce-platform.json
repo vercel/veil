@@ -1,0 +1,35 @@
+{
+  "metadata": {
+    "kind": "platform",
+    "name": "commerce-platform"
+  },
+  "spec": {
+    "owner": "team-commerce",
+    "tier": "premium"
+  },
+  "dependencies": [
+    {
+      "kind": "postgres",
+      "name": "orders-db",
+      "params": {
+        "envVar": "ORDERS_DATABASE_URL",
+        "poolSize": 25
+      }
+    },
+    {
+      "kind": "redis",
+      "name": "sessions-cache",
+      "params": {
+        "envVar": "SESSIONS_REDIS_URL"
+      }
+    },
+    {
+      "kind": "vpc",
+      "name": "acme-global"
+    },
+    {
+      "kind": "secret",
+      "name": "commerce-signing-key"
+    }
+  ]
+}

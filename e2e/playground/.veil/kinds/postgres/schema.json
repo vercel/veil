@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "description": "A managed Postgres instance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["size"],
+  "properties": {
+    "size": { "type": "string", "enum": ["small", "medium", "large"] },
+    "storageGb": { "type": "integer", "default": 20 },
+    "multiAz": { "type": "boolean", "default": false }
+  }
+}

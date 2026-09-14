@@ -44,10 +44,8 @@ const stringValidateIIFE = `var __veilMod=(()=>{var h={validate:function(ctx,fs)
 // matching the assertions in TestHappyPathRendersBundle.
 func (s *RenderSuite) writeWorkerKind(validateContent string) {
 	compiled := map[string]any{
-		"name": "worker",
-		"sources": map[string]string{
-			"config.txt": "base",
-		},
+		"name":    "worker",
+		"sources": compiledSources(map[string]string{"config.txt": "base"}, nil),
 		"hooks": map[string]any{
 			"render": []map[string]any{
 				{"name": "hooks/hello-world.ts", "content": helloHookIIFE},
@@ -71,10 +69,8 @@ func (s *RenderSuite) writeWorkerKindMultiValidate(contents ...string) {
 		})
 	}
 	compiled := map[string]any{
-		"name": "worker",
-		"sources": map[string]string{
-			"config.txt": "base",
-		},
+		"name":    "worker",
+		"sources": compiledSources(map[string]string{"config.txt": "base"}, nil),
 		"hooks": map[string]any{
 			"render": []map[string]any{
 				{"name": "hooks/hello-world.ts", "content": helloHookIIFE},
@@ -105,7 +101,7 @@ func (s *RenderSuite) writeWorkerKindWithPostRender(postContent, validateContent
 	}
 	compiled := map[string]any{
 		"name":    "worker",
-		"sources": map[string]string{"config.txt": "base"},
+		"sources": compiledSources(map[string]string{"config.txt": "base"}, nil),
 		"hooks":   hooks,
 	}
 	s.writeJSON(filepath.Join(s.root, "r", "worker", "kind.json"), compiled)

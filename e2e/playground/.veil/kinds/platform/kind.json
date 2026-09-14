@@ -1,0 +1,27 @@
+{
+  "name": "platform",
+  "schema": "./schema.json",
+  "forward_dependencies": true,
+  "sources": [
+    {
+      "path": "./sources/platform.json",
+      "schema": "./schemas/platform.schema.json"
+    }
+  ],
+  "hooks": {
+    "render": [
+      {
+        "path": "./hooks/src/describe.ts"
+      }
+    ],
+    "dependents": [
+      {
+        "kind": "service",
+        "paths": [
+          "./hooks/src/dependents/stamp-platform.ts"
+        ],
+        "params_path": "./schemas/service.params.json"
+      }
+    ]
+  }
+}

@@ -642,6 +642,16 @@ type KindDefinition struct {
 	Hooks *HooksDefinition `protobuf:"bytes,3,opt,name=hooks,proto3" json:"hooks,omitempty"`
 	// Local path or HTTP(S) URL to the spec's JSON Schema.
 	Schema string `protobuf:"bytes,5,opt,name=schema,proto3" json:"schema,omitempty"`
+	// Whether every dependency a resource of this kind declares is
+	// forwarded to that resource's own consumers, as if each edge had set
+	// `forward: true`. A policy for the kind rather than a per-resource
+	// choice: a `package` that exists to bundle things up for whoever
+	// uses it sets this once, instead of every package resource
+	// repeating the flag on every edge.
+	//
+	// Union with the per-edge flag — an edge forwards when either says
+	// so — and forwarding chains either way.
+	ForwardDependencies bool `protobuf:"varint,7,opt,name=forward_dependencies,json=forwardDependencies,proto3" json:"forward_dependencies,omitempty"`
 	// Kind-scoped input variable declarations, keyed by name. Merged with
 	// the project-level variables from veil.json at config-load time;
 	// declaring a name that already exists in veil.json or in another
@@ -708,6 +718,13 @@ func (x *KindDefinition) GetSchema() string {
 		return x.Schema
 	}
 	return ""
+}
+
+func (x *KindDefinition) GetForwardDependencies() bool {
+	if x != nil {
+		return x.ForwardDependencies
+	}
+	return false
 }
 
 func (x *KindDefinition) GetVariables() map[string]*Variable {
@@ -1174,12 +1191,13 @@ const file_veil_v1_config_proto_rawDesc = "" +
 	"\x04enum\x18\x04 \x03(\v2\x16.google.protobuf.ValueR\x04enumB\n" +
 	"\n" +
 	"\b_defaultB\x0e\n" +
-	"\f_description\"\xfb\x02\n" +
+	"\f_description\"\xae\x03\n" +
 	"\x0eKindDefinition\x122\n" +
 	"\x04name\x18\x01 \x01(\tB\x1e\xbaH\x1b\xc8\x01\x01r\x16\x10\x012\x12^[a-z][a-z0-9_-]*$R\x04name\x120\n" +
 	"\asources\x18\x02 \x03(\v2\x16.google.protobuf.ValueR\asources\x12.\n" +
 	"\x05hooks\x18\x03 \x01(\v2\x18.veil.v1.HooksDefinitionR\x05hooks\x12\x16\n" +
-	"\x06schema\x18\x05 \x01(\tR\x06schema\x12j\n" +
+	"\x06schema\x18\x05 \x01(\tR\x06schema\x121\n" +
+	"\x14forward_dependencies\x18\a \x01(\bR\x13forwardDependencies\x12j\n" +
 	"\tvariables\x18\x06 \x03(\v2&.veil.v1.KindDefinition.VariablesEntryB$\xbaH!\x9a\x01\x1e\"\x1cr\x1a2\x18^[a-zA-Z_][a-zA-Z0-9_]*$R\tvariables\x1aO\n" +
 	"\x0eVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +

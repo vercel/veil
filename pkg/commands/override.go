@@ -11,8 +11,8 @@ import (
 	"github.com/urfave/cli/v3"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
-	"github.com/vercel/veil/pkg/config"
 	"github.com/vercel/veil/pkg/interact"
+	"github.com/vercel/veil/pkg/project"
 	"github.com/vercel/veil/pkg/registry"
 	"github.com/vercel/veil/pkg/resource"
 )
@@ -93,7 +93,7 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 		return nil, fmt.Errorf("getting working directory: %w", err)
 	}
 
-	reg, err := config.Discover(cwd)
+	reg, err := project.Discover(cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +107,7 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 		return nil, fmt.Errorf("%s is outside the project root %s", resourceArg, reg.Root)
 	}
 
-	res, err := resource.Load(os.DirFS(reg.Root), filepath.ToSlash(relFromRoot))
+	res, err := resource.Load(reg.FS(), filepath.ToSlash(relFromRoot))
 	if err != nil {
 		return nil, fmt.Errorf("loading resource %s: %w", resourceArg, err)
 	}
@@ -133,7 +133,7 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 		return nil, fmt.Errorf("loading kind %q: %w", kindName, err)
 	}
 
-	sources := loadedKind.Kind.GetSources()
+	sources := loadedKind.Sources
 
 	// Discovery mode: only the resource was given. List the kind's
 	// sources so the user can pick one for the next invocation.
@@ -145,10 +145,10 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 	// Validate every requested source up front so we don't half-apply
 	// when one is misspelled.
 	for _, s := range sourceArgs {
-		if _, ok := sources[s]; !ok {
+		if loadedKind.Source(s) == nil {
 			return nil, fmt.Errorf(
 				"kind %q does not declare a source named %q (known sources: %s)",
-				kindName, s, strings.Join(sortedKeys(sources), ", "),
+				kindName, s, strings.Join(sourcePaths(sources), ", "),
 			)
 		}
 	}
@@ -166,7 +166,7 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 
 	resp := &overrideResponse{Kind: kindName, SkipHooks: skipHooks}
 	for _, sourceName := range sourceArgs {
-		sourceContent := sources[sourceName]
+		sourceContent := loadedKind.Source(sourceName).GetContents()
 
 		// Default output path: same basename as the source, dropped
 		// alongside the resource file. With --out the file lands under
@@ -220,13 +220,13 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 }
 
 // discoveryResponse builds the JSON payload for override discovery mode.
-func discoveryResponse(kindName string, existing []*veilv1.Override, sources map[string]string) *overrideResponse {
+func discoveryResponse(kindName string, existing []*veilv1.Override, sources []*registry.LoadedSource) *overrideResponse {
 	taken := make(map[string]bool, len(existing))
 	for _, ov := range existing {
 		taken[ov.GetSource()] = true
 	}
 	resp := &overrideResponse{Kind: kindName, Sources: []overridableSrc{}}
-	for _, k := range sortedKeys(sources) {
+	for _, k := range sourcePaths(sources) {
 		resp.Sources = append(resp.Sources, overridableSrc{Name: k, Overridden: taken[k]})
 	}
 	return resp
@@ -236,14 +236,14 @@ func discoveryResponse(kindName string, existing []*veilv1.Override, sources map
 // when the override command is invoked without a source. Already-
 // overridden entries are flagged so the user knows what's already
 // taken without re-reading the resource JSON.
-func listOverridableSources(kindName, resourceArg string, existing []*veilv1.Override, sources map[string]string) {
+func listOverridableSources(kindName, resourceArg string, existing []*veilv1.Override, sources []*registry.LoadedSource) {
 	p := interact.Default()
 	taken := make(map[string]bool, len(existing))
 	for _, ov := range existing {
 		taken[ov.GetSource()] = true
 	}
 
-	keys := sortedKeys(sources)
+	keys := sourcePaths(sources)
 	if len(keys) == 0 {
 		p.Infof("kind %q declares no sources", kindName)
 		return
@@ -260,15 +260,15 @@ func listOverridableSources(kindName, resourceArg string, existing []*veilv1.Ove
 	p.Infof("Pick one and re-run: veil override %s <source> [--skip-hooks]", resourceArg)
 }
 
-// sortedKeys returns the map's keys in lexical order. Used so the
-// override listing is stable across runs.
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+// sourcePaths returns the sources' paths in lexical order. Used so the
+// override listing is stable across runs regardless of wire order.
+func sourcePaths(sources []*registry.LoadedSource) []string {
+	paths := make([]string, 0, len(sources))
+	for _, src := range sources {
+		paths = append(paths, src.GetPath())
 	}
-	sort.Strings(keys)
-	return keys
+	sort.Strings(paths)
+	return paths
 }
 
 // registerOverride mutates the resource file in place to append the

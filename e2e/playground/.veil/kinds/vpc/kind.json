@@ -1,0 +1,47 @@
+{
+  "name": "vpc",
+  "schema": "./schema.json",
+  "sources": [
+    {
+      "path": "./sources/network.json",
+      "schema": "./schemas/network.schema.json"
+    }
+  ],
+  "hooks": {
+    "render": [
+      {
+        "path": "./hooks/src/apply-cidr.ts"
+      }
+    ],
+    "dependents": [
+      {
+        "kind": "service",
+        "paths": [
+          "./hooks/src/dependents/inject-network.ts"
+        ],
+        "params_path": "./schemas/service.params.json"
+      },
+      {
+        "kind": "postgres",
+        "paths": [
+          "./hooks/src/dependents/place-postgres.ts"
+        ],
+        "params_path": "./schemas/placement.params.json"
+      },
+      {
+        "kind": "redis",
+        "paths": [
+          "./hooks/src/dependents/place-redis.ts"
+        ],
+        "params_path": "./schemas/placement.params.json"
+      },
+      {
+        "kind": "platform",
+        "paths": [
+          "./hooks/src/dependents/place-platform.ts"
+        ],
+        "params_path": "./schemas/placement.params.json"
+      }
+    ]
+  }
+}

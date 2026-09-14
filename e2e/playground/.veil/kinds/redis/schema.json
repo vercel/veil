@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "description": "A managed Redis cache.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["size"],
+  "properties": {
+    "size": { "type": "string", "enum": ["small", "large"] },
+    "evictionPolicy": { "type": "string", "default": "allkeys-lru" }
+  }
+}

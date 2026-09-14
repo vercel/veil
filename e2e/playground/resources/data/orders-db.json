@@ -1,0 +1,5 @@
+{
+  "metadata": { "kind": "postgres", "name": "orders-db" },
+  "spec": { "size": "medium", "storageGb": 200, "multiAz": true },
+  "dependencies": [{ "kind": "vpc", "name": "acme-global" }]
+}

@@ -32,23 +32,23 @@ type Kind struct {
 	// Name of the kind (matches KindDefinition.name). Same naming rules
 	// — lowercase letter start, then `[a-z0-9_-]`.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// Source files keyed by path relative to the kind directory. Values are
-	// the raw file contents.
-	Sources map[string]string `protobuf:"bytes,2,rep,name=sources,proto3" json:"sources,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Source files that make up the kind, each carrying its own contents
+	// and (when declared) the schema it validates against.
+	Sources []*Source `protobuf:"bytes,2,rep,name=sources,proto3" json:"sources,omitempty"`
 	// Compiled hooks grouped by lifecycle point — render hooks plus the
 	// per-consumer dependent block. Mirrors KindDefinition.hooks.
 	Hooks *Hooks `protobuf:"bytes,3,opt,name=hooks,proto3" json:"hooks,omitempty"`
 	// Input variable declarations copied from veil.json. Consumers resolve
 	// values from --var flags, VEIL_VAR_* env vars, or the declared default.
 	Variables map[string]*Variable `protobuf:"bytes,4,rep,name=variables,proto3" json:"variables,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Raw JSON Schema text per schema-declared source, keyed like
-	// `sources` (path relative to the kind directory). Inlined — like
-	// DependentHook.params_schema — so render can validate without
-	// filesystem access to the kind directory. No entry for a source
-	// with no declared schema.
-	SourceSchemas map[string]string `protobuf:"bytes,5,rep,name=source_schemas,json=sourceSchemas,proto3" json:"source_schemas,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Whether every dependency of a resource of this kind forwards to
+	// that resource's consumers, copied from
+	// KindDefinition.forward_dependencies. Read at resolve time together
+	// with each edge's own `forward` flag — an edge forwards when either
+	// says so.
+	ForwardDependencies bool `protobuf:"varint,6,opt,name=forward_dependencies,json=forwardDependencies,proto3" json:"forward_dependencies,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *Kind) Reset() {
@@ -88,7 +88,7 @@ func (x *Kind) GetName() string {
 	return ""
 }
 
-func (x *Kind) GetSources() map[string]string {
+func (x *Kind) GetSources() []*Source {
 	if x != nil {
 		return x.Sources
 	}
@@ -109,11 +109,83 @@ func (x *Kind) GetVariables() map[string]*Variable {
 	return nil
 }
 
-func (x *Kind) GetSourceSchemas() map[string]string {
+func (x *Kind) GetForwardDependencies() bool {
 	if x != nil {
-		return x.SourceSchemas
+		return x.ForwardDependencies
 	}
-	return nil
+	return false
+}
+
+// Source is one compiled source file: where it lives in the kind, what
+// it contains, and the schema it is checked against. Everything a
+// consumer needs to read and validate the file is inlined here, so
+// render never reaches back to the kind directory.
+type Source struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Path relative to the kind directory (e.g. "sources/app.json"). Also
+	// the source's identity through the render pipeline — hooks may remap
+	// where a file is written without changing this.
+	Path string `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	// Raw file contents. May be empty: an empty source file is valid.
+	Contents string `protobuf:"bytes,2,opt,name=contents,proto3" json:"contents,omitempty"`
+	// Inlined JSON Schema for this source, as raw JSON text — like
+	// DependentHook.params_schema, so validation needs no filesystem
+	// access to the kind directory. Unset when the source declared no
+	// schema, in which case its contents are never schema-checked.
+	Schema        *string `protobuf:"bytes,3,opt,name=schema,proto3,oneof" json:"schema,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Source) Reset() {
+	*x = Source{}
+	mi := &file_veil_v1_registry_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Source) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Source) ProtoMessage() {}
+
+func (x *Source) ProtoReflect() protoreflect.Message {
+	mi := &file_veil_v1_registry_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Source.ProtoReflect.Descriptor instead.
+func (*Source) Descriptor() ([]byte, []int) {
+	return file_veil_v1_registry_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Source) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *Source) GetContents() string {
+	if x != nil {
+		return x.Contents
+	}
+	return ""
+}
+
+func (x *Source) GetSchema() string {
+	if x != nil && x.Schema != nil {
+		return *x.Schema
+	}
+	return ""
 }
 
 // Hooks mirrors KindDefinition.hooks but holds compiled/bundled hook
@@ -144,7 +216,7 @@ type Hooks struct {
 
 func (x *Hooks) Reset() {
 	*x = Hooks{}
-	mi := &file_veil_v1_registry_proto_msgTypes[1]
+	mi := &file_veil_v1_registry_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -156,7 +228,7 @@ func (x *Hooks) String() string {
 func (*Hooks) ProtoMessage() {}
 
 func (x *Hooks) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_registry_proto_msgTypes[1]
+	mi := &file_veil_v1_registry_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -169,7 +241,7 @@ func (x *Hooks) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Hooks.ProtoReflect.Descriptor instead.
 func (*Hooks) Descriptor() ([]byte, []int) {
-	return file_veil_v1_registry_proto_rawDescGZIP(), []int{1}
+	return file_veil_v1_registry_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Hooks) GetRender() []*Hook {
@@ -215,7 +287,7 @@ type Registry struct {
 
 func (x *Registry) Reset() {
 	*x = Registry{}
-	mi := &file_veil_v1_registry_proto_msgTypes[2]
+	mi := &file_veil_v1_registry_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -227,7 +299,7 @@ func (x *Registry) String() string {
 func (*Registry) ProtoMessage() {}
 
 func (x *Registry) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_registry_proto_msgTypes[2]
+	mi := &file_veil_v1_registry_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -240,7 +312,7 @@ func (x *Registry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Registry.ProtoReflect.Descriptor instead.
 func (*Registry) Descriptor() ([]byte, []int) {
-	return file_veil_v1_registry_proto_rawDescGZIP(), []int{2}
+	return file_veil_v1_registry_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Registry) GetKinds() map[string]*RegistryEntry {
@@ -266,7 +338,7 @@ type RegistryEntry struct {
 
 func (x *RegistryEntry) Reset() {
 	*x = RegistryEntry{}
-	mi := &file_veil_v1_registry_proto_msgTypes[3]
+	mi := &file_veil_v1_registry_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -278,7 +350,7 @@ func (x *RegistryEntry) String() string {
 func (*RegistryEntry) ProtoMessage() {}
 
 func (x *RegistryEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_registry_proto_msgTypes[3]
+	mi := &file_veil_v1_registry_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -291,7 +363,7 @@ func (x *RegistryEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegistryEntry.ProtoReflect.Descriptor instead.
 func (*RegistryEntry) Descriptor() ([]byte, []int) {
-	return file_veil_v1_registry_proto_rawDescGZIP(), []int{3}
+	return file_veil_v1_registry_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *RegistryEntry) GetName() string {
@@ -335,7 +407,7 @@ type Hook struct {
 
 func (x *Hook) Reset() {
 	*x = Hook{}
-	mi := &file_veil_v1_registry_proto_msgTypes[4]
+	mi := &file_veil_v1_registry_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -347,7 +419,7 @@ func (x *Hook) String() string {
 func (*Hook) ProtoMessage() {}
 
 func (x *Hook) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_registry_proto_msgTypes[4]
+	mi := &file_veil_v1_registry_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -360,7 +432,7 @@ func (x *Hook) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Hook.ProtoReflect.Descriptor instead.
 func (*Hook) Descriptor() ([]byte, []int) {
-	return file_veil_v1_registry_proto_rawDescGZIP(), []int{4}
+	return file_veil_v1_registry_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Hook) GetName() string {
@@ -403,7 +475,7 @@ type DependentHook struct {
 
 func (x *DependentHook) Reset() {
 	*x = DependentHook{}
-	mi := &file_veil_v1_registry_proto_msgTypes[5]
+	mi := &file_veil_v1_registry_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -415,7 +487,7 @@ func (x *DependentHook) String() string {
 func (*DependentHook) ProtoMessage() {}
 
 func (x *DependentHook) ProtoReflect() protoreflect.Message {
-	mi := &file_veil_v1_registry_proto_msgTypes[5]
+	mi := &file_veil_v1_registry_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -428,7 +500,7 @@ func (x *DependentHook) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DependentHook.ProtoReflect.Descriptor instead.
 func (*DependentHook) Descriptor() ([]byte, []int) {
-	return file_veil_v1_registry_proto_rawDescGZIP(), []int{5}
+	return file_veil_v1_registry_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *DependentHook) GetKind() string {
@@ -456,22 +528,22 @@ var File_veil_v1_registry_proto protoreflect.FileDescriptor
 
 const file_veil_v1_registry_proto_rawDesc = "" +
 	"\n" +
-	"\x16veil/v1/registry.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x14veil/v1/config.proto\"\xac\x04\n" +
+	"\x16veil/v1/registry.proto\x12\aveil.v1\x1a\x1bbuf/validate/validate.proto\x1a\x14veil/v1/config.proto\"\xf1\x02\n" +
 	"\x04Kind\x122\n" +
-	"\x04name\x18\x01 \x01(\tB\x1e\xbaH\x1b\xc8\x01\x01r\x16\x10\x012\x12^[a-z][a-z0-9_-]*$R\x04name\x12B\n" +
-	"\asources\x18\x02 \x03(\v2\x1a.veil.v1.Kind.SourcesEntryB\f\xbaH\t\x9a\x01\x06\"\x04r\x02\x10\x01R\asources\x12$\n" +
+	"\x04name\x18\x01 \x01(\tB\x1e\xbaH\x1b\xc8\x01\x01r\x16\x10\x012\x12^[a-z][a-z0-9_-]*$R\x04name\x12)\n" +
+	"\asources\x18\x02 \x03(\v2\x0f.veil.v1.SourceR\asources\x12$\n" +
 	"\x05hooks\x18\x03 \x01(\v2\x0e.veil.v1.HooksR\x05hooks\x12`\n" +
-	"\tvariables\x18\x04 \x03(\v2\x1c.veil.v1.Kind.VariablesEntryB$\xbaH!\x9a\x01\x1e\"\x1cr\x1a2\x18^[a-zA-Z_][a-zA-Z0-9_]*$R\tvariables\x12U\n" +
-	"\x0esource_schemas\x18\x05 \x03(\v2 .veil.v1.Kind.SourceSchemasEntryB\f\xbaH\t\x9a\x01\x06\"\x04r\x02\x10\x01R\rsourceSchemas\x1a:\n" +
-	"\fSourcesEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aO\n" +
+	"\tvariables\x18\x04 \x03(\v2\x1c.veil.v1.Kind.VariablesEntryB$\xbaH!\x9a\x01\x1e\"\x1cr\x1a2\x18^[a-zA-Z_][a-zA-Z0-9_]*$R\tvariables\x121\n" +
+	"\x14forward_dependencies\x18\x06 \x01(\bR\x13forwardDependencies\x1aO\n" +
 	"\x0eVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +
-	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\x1a@\n" +
-	"\x12SourceSchemasEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc1\x01\n" +
+	"\x05value\x18\x02 \x01(\v2\x11.veil.v1.VariableR\x05value:\x028\x01\"l\n" +
+	"\x06Source\x12\x1e\n" +
+	"\x04path\x18\x01 \x01(\tB\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04path\x12\x1a\n" +
+	"\bcontents\x18\x02 \x01(\tR\bcontents\x12\x1b\n" +
+	"\x06schema\x18\x03 \x01(\tH\x00R\x06schema\x88\x01\x01B\t\n" +
+	"\a_schema\"\xc1\x01\n" +
 	"\x05Hooks\x12%\n" +
 	"\x06render\x18\x01 \x03(\v2\r.veil.v1.HookR\x06render\x126\n" +
 	"\n" +
@@ -517,40 +589,38 @@ func file_veil_v1_registry_proto_rawDescGZIP() []byte {
 	return file_veil_v1_registry_proto_rawDescData
 }
 
-var file_veil_v1_registry_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_veil_v1_registry_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_veil_v1_registry_proto_goTypes = []any{
 	(*Kind)(nil),          // 0: veil.v1.Kind
-	(*Hooks)(nil),         // 1: veil.v1.Hooks
-	(*Registry)(nil),      // 2: veil.v1.Registry
-	(*RegistryEntry)(nil), // 3: veil.v1.RegistryEntry
-	(*Hook)(nil),          // 4: veil.v1.Hook
-	(*DependentHook)(nil), // 5: veil.v1.DependentHook
-	nil,                   // 6: veil.v1.Kind.SourcesEntry
+	(*Source)(nil),        // 1: veil.v1.Source
+	(*Hooks)(nil),         // 2: veil.v1.Hooks
+	(*Registry)(nil),      // 3: veil.v1.Registry
+	(*RegistryEntry)(nil), // 4: veil.v1.RegistryEntry
+	(*Hook)(nil),          // 5: veil.v1.Hook
+	(*DependentHook)(nil), // 6: veil.v1.DependentHook
 	nil,                   // 7: veil.v1.Kind.VariablesEntry
-	nil,                   // 8: veil.v1.Kind.SourceSchemasEntry
-	nil,                   // 9: veil.v1.Registry.KindsEntry
-	(*HookAccess)(nil),    // 10: veil.v1.HookAccess
-	(*Variable)(nil),      // 11: veil.v1.Variable
+	nil,                   // 8: veil.v1.Registry.KindsEntry
+	(*HookAccess)(nil),    // 9: veil.v1.HookAccess
+	(*Variable)(nil),      // 10: veil.v1.Variable
 }
 var file_veil_v1_registry_proto_depIdxs = []int32{
-	6,  // 0: veil.v1.Kind.sources:type_name -> veil.v1.Kind.SourcesEntry
-	1,  // 1: veil.v1.Kind.hooks:type_name -> veil.v1.Hooks
+	1,  // 0: veil.v1.Kind.sources:type_name -> veil.v1.Source
+	2,  // 1: veil.v1.Kind.hooks:type_name -> veil.v1.Hooks
 	7,  // 2: veil.v1.Kind.variables:type_name -> veil.v1.Kind.VariablesEntry
-	8,  // 3: veil.v1.Kind.source_schemas:type_name -> veil.v1.Kind.SourceSchemasEntry
-	4,  // 4: veil.v1.Hooks.render:type_name -> veil.v1.Hook
-	5,  // 5: veil.v1.Hooks.dependents:type_name -> veil.v1.DependentHook
-	4,  // 6: veil.v1.Hooks.validate:type_name -> veil.v1.Hook
-	4,  // 7: veil.v1.Hooks.post_render:type_name -> veil.v1.Hook
-	9,  // 8: veil.v1.Registry.kinds:type_name -> veil.v1.Registry.KindsEntry
-	10, // 9: veil.v1.Hook.access:type_name -> veil.v1.HookAccess
-	4,  // 10: veil.v1.DependentHook.hooks:type_name -> veil.v1.Hook
-	11, // 11: veil.v1.Kind.VariablesEntry.value:type_name -> veil.v1.Variable
-	3,  // 12: veil.v1.Registry.KindsEntry.value:type_name -> veil.v1.RegistryEntry
-	13, // [13:13] is the sub-list for method output_type
-	13, // [13:13] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	5,  // 3: veil.v1.Hooks.render:type_name -> veil.v1.Hook
+	6,  // 4: veil.v1.Hooks.dependents:type_name -> veil.v1.DependentHook
+	5,  // 5: veil.v1.Hooks.validate:type_name -> veil.v1.Hook
+	5,  // 6: veil.v1.Hooks.post_render:type_name -> veil.v1.Hook
+	8,  // 7: veil.v1.Registry.kinds:type_name -> veil.v1.Registry.KindsEntry
+	9,  // 8: veil.v1.Hook.access:type_name -> veil.v1.HookAccess
+	5,  // 9: veil.v1.DependentHook.hooks:type_name -> veil.v1.Hook
+	10, // 10: veil.v1.Kind.VariablesEntry.value:type_name -> veil.v1.Variable
+	4,  // 11: veil.v1.Registry.KindsEntry.value:type_name -> veil.v1.RegistryEntry
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_veil_v1_registry_proto_init() }
@@ -559,13 +629,14 @@ func file_veil_v1_registry_proto_init() {
 		return
 	}
 	file_veil_v1_config_proto_init()
+	file_veil_v1_registry_proto_msgTypes[1].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_veil_v1_registry_proto_rawDesc), len(file_veil_v1_registry_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

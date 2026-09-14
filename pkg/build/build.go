@@ -9,7 +9,6 @@
 package build
 
 import (
-	"bytes"
 	"fmt"
 	"net/url"
 	"os"
@@ -23,8 +22,7 @@ import (
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/config"
-	"github.com/vercel/veil/pkg/protoencode"
-	"github.com/vercel/veil/pkg/schemaload"
+	"github.com/vercel/veil/pkg/ioutil"
 	"github.com/vercel/veil/pkg/typegen"
 )
 
@@ -319,12 +317,8 @@ func LoadSpecSchema(k *config.Kind) (map[string]any, error) {
 		}, nil
 	}
 
-	data, err := k.ReadSchema(k.Schema)
-	if err != nil {
-		return nil, fmt.Errorf("reading schema %s: %w", k.Schema, err)
-	}
 	var spec map[string]any
-	if err := protoencode.Decode(bytes.NewReader(data), &spec); err != nil {
+	if err := k.DecodeSchema(k.Schema, &spec); err != nil {
 		return nil, fmt.Errorf("reading schema %s: %w", k.Schema, err)
 	}
 	return spec, nil
@@ -339,12 +333,8 @@ func LoadSpecSchema(k *config.Kind) (map[string]any, error) {
 // prefix "" -> "KubernetesDeployment"; with prefix "Service" ->
 // "ServiceKubernetesDeployment".
 func typeNameForSchemaPath(prefix, p string) (string, error) {
-	_, remote, err := schemaload.Resolve("", p)
-	if err != nil {
-		return "", err
-	}
 	schemaPath := p
-	if remote {
+	if ioutil.IsRemote(p) {
 		u, err := url.Parse(p)
 		if err != nil {
 			return "", err
@@ -358,7 +348,7 @@ func typeNameForSchemaPath(prefix, p string) (string, error) {
 	base = strings.TrimSuffix(base, filepath.Ext(base))
 	base = strings.TrimSuffix(base, ".schema")
 	name := PascalCase(base)
-	if remote && (name == "" || name == "." || name == "..") {
+	if ioutil.IsRemote(p) && (name == "" || name == "." || name == "..") {
 		return "", fmt.Errorf("schema URL %q has no usable filename for a type name", p)
 	}
 	return prefix + name, nil
@@ -396,12 +386,8 @@ func SourceSchemaTypes(k *config.Kind, prefix string) (string, map[string]string
 			nameOwner[name] = schema
 			typeNameBySchema[schema] = name
 
-			data, err := k.ReadSchema(schema)
-			if err != nil {
-				return "", nil, fmt.Errorf("reading schema %s: %w", schema, err)
-			}
 			var raw map[string]any
-			if err := protoencode.Decode(bytes.NewReader(data), &raw); err != nil {
+			if err := k.DecodeSchema(schema, &raw); err != nil {
 				return "", nil, fmt.Errorf("reading schema %s: %w", schema, err)
 			}
 			iface, err := interfaceFromSchemaMap(name, raw)

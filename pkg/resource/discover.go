@@ -7,7 +7,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
-	"github.com/vercel/veil/pkg/protoencode"
+	"github.com/vercel/veil/pkg/codec"
 )
 
 // Handle is a lightweight reference to a resource on disk: its
@@ -69,7 +69,7 @@ func Discover(ctx context.Context, fsys fs.FS, patterns []string) ([]*Handle, er
 // JSON schemas at build time, not to drive runtime behavior.
 func peekIdentity(fsys fs.FS, path string) (kind, name string, ok bool) {
 	var idx resourceIndex
-	if err := protoencode.ReadFS(fsys, path, &idx); err != nil {
+	if err := codec.ReadFS(fsys, path, &idx); err != nil {
 		return "", "", false
 	}
 	if idx.Metadata.Kind == "" || idx.Metadata.Name == "" || idx.Spec == nil {

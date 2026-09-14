@@ -1,0 +1,13 @@
+{
+  "name": "service",
+  "schema": "./schema.json",
+  "sources": [
+    { "path": "./sources/deployment.yaml", "schema": "./schemas/deployment.schema.json" },
+    "./sources/env"
+  ],
+  "hooks": {
+    "render": [{ "path": "./hooks/src/shape-deployment.ts" }],
+    "post_render": [{ "path": "./hooks/src/sort-env.ts" }],
+    "validate": [{ "path": "./hooks/src/require-database.ts" }]
+  }
+}
