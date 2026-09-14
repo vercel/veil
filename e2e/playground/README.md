@@ -27,6 +27,7 @@ postgres/orders-db   redis/sessions-cache   postgres/billing-db
 | `vpc` | the network everything lands in | JSON source, dependent hook injecting network env |
 | `postgres` | a managed database | validate hook (no tiny prod DBs), dependent hook injecting `*_DATABASE_URL` |
 | `redis` | a managed cache | **YAML** source — the codec is per source, not per project |
+| `secret` | a credential a database holds | accepts `postgres` and nothing else — forwarding it to a service is an error |
 | `platform` | a bundle a team adopts as one unit | `forward_dependencies: true` |
 | `service` | an application | typed YAML source, `post_render` normalization, validate gate |
 
@@ -53,6 +54,16 @@ sees nothing else.
 **Per-edge forwarding.** `billing`'s database edge sets `"forward": true`,
 so anything depending on `billing` would inherit it. The kind-level flag
 on `platform` is the same idea applied to every edge of a kind.
+
+**What forwarding refuses.** `orders-db` holds a `secret`, and the secret
+kind registers dependents for `postgres` only. Marking that edge
+`"forward": true` fails the load rather than quietly dropping it:
+
+```
+cannot inherit secret/commerce-signing-key, forwarded by postgres/orders-db:
+kind "secret" declares no dependents for kind "platform"
+(stop forwarding that dependency, or give the secret kind a dependents entry for "platform")
+```
 
 **Variables and overlays.** `--var environment=production` applies
 `checkout.production.json` (2 replicas → 12) and arms the database

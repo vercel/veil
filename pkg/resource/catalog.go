@@ -183,14 +183,19 @@ func (c *lazyCatalog) resolveEntry(key catalogKey, seen []catalogKey) (*catalogE
 		}
 		edge := &Dependency{Dependency: decl, Resource: target}
 		effective = append(effective, edge)
-		// An inherited edge only lands if its target would have accepted
-		// this resource as a consumer in the first place. A platform that
-		// forwards everything it uses shouldn't push its private pieces
-		// onto a service the target never declared dependents for.
+		// An inherited edge has to be one its target would have accepted
+		// directly. Silently dropping it would leave the consumer missing
+		// wiring it never asked about and cannot see; the author who
+		// forwarded it is the one who can fix it, so say so loudly.
 		for _, inherited := range targetEntry.forwarded {
-			if inherited.Resource.Kind.AcceptsDependent(kind) {
-				effective = append(effective, inherited)
+			if !inherited.Resource.Kind.AcceptsDependent(kind) {
+				return nil, fmt.Errorf(
+					"%s: cannot inherit %s, forwarded by %s: kind %q declares no dependents for kind %q "+
+						"(stop forwarding that dependency, or give the %s kind a dependents entry for %q)",
+					r.Path, edgeID(inherited), edgeID(edge),
+					inherited.GetKind(), kind, inherited.GetKind(), kind)
 			}
+			effective = append(effective, inherited)
 		}
 		// What propagates further up is unfiltered: eligibility depends
 		// on the consumer, and each level re-checks against its own kind.
@@ -239,6 +244,11 @@ func (c *lazyCatalog) entry(key catalogKey) (*catalogEntry, bool) {
 		}, false
 	})
 	return e, true
+}
+
+// edgeID names an edge's target the way the rest of the errors do.
+func edgeID(d *Dependency) string {
+	return catalogKey{Kind: d.GetKind(), Name: d.GetName()}.String()
 }
 
 // lineage renders a chain of resources as "svc/a -> svc/b -> svc/a".

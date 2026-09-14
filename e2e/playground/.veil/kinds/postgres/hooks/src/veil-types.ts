@@ -147,6 +147,10 @@ export interface Database {
   storageGb: number;
 }
 
+export interface SecretDependencyParams {
+  role?: string;
+}
+
 /** Nothing is required to be placed in a VPC. */
 export interface VpcDependencyParams {
   note?: string;
@@ -155,6 +159,7 @@ export interface VpcDependencyParams {
 /** A single dependency this kind may declare. The discriminator
  *  `kind` selects the params shape. */
 export type Dependency =
+  | { kind: "secret"; name: string; params: SecretDependencyParams }
   | { kind: "vpc"; name: string; params: VpcDependencyParams };
 
 export interface Override {

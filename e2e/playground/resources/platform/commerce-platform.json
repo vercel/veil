@@ -26,10 +26,6 @@
     {
       "kind": "vpc",
       "name": "acme-global"
-    },
-    {
-      "kind": "secret",
-      "name": "commerce-signing-key"
     }
   ]
 }

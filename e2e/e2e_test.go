@@ -192,22 +192,49 @@ func (s *E2ESuite) TestDependencyCycleFailsWithItsLineage() {
 	s.Contains(s.errorMessage(out), "dependency cycle")
 }
 
-// TestForwardingSkipsKindsThatRejectTheConsumer is the limit on
-// inheritance. The platform provisions a secret and forwards everything
-// it depends on, but the secret kind registers no dependents at all — so
-// a service adopting the platform inherits the database, cache and VPC
-// and never the secret.
-func (s *E2ESuite) TestForwardingSkipsKindsThatRejectTheConsumer() {
+// TestPrivateDependencyStaysWithItsOwner is the shape the playground
+// ships: orders-db holds a secret, the secret kind accepts postgres and
+// nothing else, and the edge is not forwarded — so a service adopting
+// the platform inherits the database and never the credential behind it.
+func (s *E2ESuite) TestPrivateDependencyStaysWithItsOwner() {
 	env := s.read(s.render("resources/services/checkout.json"), "checkout", "sources/env")
-
 	s.Contains(env, "ORDERS_DATABASE_URL=", "the platform's database is inherited")
-	s.NotContains(env, "commerce-signing-key", "the platform's secret is not")
+	s.NotContains(env, "signing-key", "the database's secret is not")
 
-	// The platform itself still depends on it — only the inheritance is
-	// filtered, not the declared edge.
-	out, err := s.run("graph", "resources/platform/commerce-platform.json", "--format", "tree")
-	s.Require().NoError(err, out)
-	s.Contains(out, "secret/commerce-signing-key")
+	// The database itself is wired to it.
+	dir := s.render("resources/data/orders-db.json")
+	s.Contains(s.read(dir, "orders-db", "sources/secret-ref"), "secret=commerce-signing-key")
+}
+
+// TestForwardingUnacceptableDependencyFails covers the mistake this
+// rejects: marking a private dependency `forward: true` pushes it at a
+// consumer whose kind the target never agreed to serve. Dropping it
+// silently would leave the service missing wiring it cannot see, so the
+// load fails and names both ends and the fix.
+func (s *E2ESuite) TestForwardingUnacceptableDependencyFails() {
+	dir := s.sandbox()
+	// orders-db forwards its credential — which the secret kind accepts
+	// from postgres, but never from a service.
+	s.write(dir, "resources/data/orders-db.json", `{
+  "metadata": { "kind": "postgres", "name": "orders-db" },
+  "spec": { "size": "medium", "storageGb": 200, "multiAz": true },
+  "dependencies": [
+    { "kind": "vpc", "name": "acme-global" },
+    { "kind": "secret", "name": "commerce-signing-key", "forward": true }
+  ]
+}`)
+	out, err := s.runIn(dir, "render", "resources/services/checkout.json", "--out", s.T().TempDir())
+	s.Require().Error(err, out)
+
+	// The failure surfaces at the nearest consumer that cannot take it —
+	// the platform, which absorbs the database's forwarded set before the
+	// service ever sees it. That is also where the fix belongs.
+	msg := s.errorMessage(out)
+	s.Contains(msg, "cannot inherit secret/commerce-signing-key")
+	s.Contains(msg, "forwarded by postgres/orders-db")
+	s.Contains(msg, `kind "secret" declares no dependents for kind "platform"`)
+	s.Contains(msg, "stop forwarding that dependency", "the error should say how to fix it")
+	s.Contains(msg, "commerce-platform.json", "and name the resource that inherited it")
 }
 
 // ---- the rest of the CLI ------------------------------------------------

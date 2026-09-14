@@ -360,11 +360,11 @@ func reachShared(from *Resource) (*Resource, error) {
 	return nil, fmt.Errorf("shared not reachable from %s", from.GetMetadata().GetName())
 }
 
-// TestForwardedEdgeSkippedWhenTargetRejectsTheConsumer is the limit on
-// inheritance: b forwards c, but c registers no dependents for a's kind,
-// so a never sees it. Without this a platform would push its private
-// pieces onto consumers the target never agreed to serve.
-func (s *CatalogSuite) TestForwardedEdgeSkippedWhenTargetRejectsTheConsumer() {
+// TestForwardedEdgeRejectedWhenTargetRejectsTheConsumer is the limit on
+// inheritance: b forwards c, but c registers no dependents for a's kind.
+// That is a mistake in b, not something to paper over — a silently
+// dropped edge would leave a missing wiring it never asked about.
+func (s *CatalogSuite) TestForwardedEdgeRejectedWhenTargetRejectsTheConsumer() {
 	files := fstest.MapFS{
 		"a.yaml": &fstest.MapFile{Data: []byte("metadata:\n  kind: app\n  name: a\nspec: {}\ndependencies:\n  - kind: mid\n    name: b\n")},
 		"b.yaml": &fstest.MapFile{Data: []byte("metadata:\n  kind: mid\n  name: b\nspec: {}\ndependencies:\n  - kind: priv\n    name: c\n    forward: true\n")},
@@ -376,19 +376,28 @@ func (s *CatalogSuite) TestForwardedEdgeSkippedWhenTargetRejectsTheConsumer() {
 		{Kind: "priv", Name: "c", Path: "c.yaml"},
 	}
 
-	// priv accepts mid but not app: b may depend on c, a may not inherit it.
+	// priv accepts mid but not app: b may depend on c, but forwarding it
+	// to a is an error naming both ends and how to fix it.
 	cat, err := NewCatalog(vfs.New(files, ""), handles, stubKinds{accepts: []string{"mid"}})
 	s.Require().NoError(err)
-	a, err := cat.LoadResource("app", "a")
+	_, err = cat.LoadResource("app", "a")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "cannot inherit priv/c")
+	s.Contains(err.Error(), "forwarded by mid/b")
+	s.Contains(err.Error(), `kind "priv" declares no dependents for kind "app"`)
+	s.Contains(err.Error(), "stop forwarding")
+
+	// b itself is fine — it declared that edge directly.
+	cat2, err := NewCatalog(vfs.New(files, ""), handles, stubKinds{accepts: []string{"mid"}})
 	s.Require().NoError(err)
-	s.Equal([]string{"b"}, depNames(a))
-	// b itself still sees c — it declared that edge directly.
-	s.Equal([]string{"c"}, depNames(a.Dependencies[0].Resource))
+	b, err := cat2.LoadResource("mid", "b")
+	s.Require().NoError(err)
+	s.Equal([]string{"c"}, depNames(b))
 
 	// Once priv accepts app too, the same graph forwards it through.
 	cat, err = NewCatalog(vfs.New(files, ""), handles, stubKinds{accepts: []string{"mid", "app"}})
 	s.Require().NoError(err)
-	a, err = cat.LoadResource("app", "a")
+	a, err := cat.LoadResource("app", "a")
 	s.Require().NoError(err)
 	s.Equal([]string{"b", "c"}, depNames(a))
 }

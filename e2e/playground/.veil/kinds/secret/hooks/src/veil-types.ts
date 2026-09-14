@@ -260,3 +260,69 @@ export interface ValidateHook {
    */
   validate(ctx: RenderHookContext, fs: FS): ValidationResult | Promise<ValidationResult>;
 }
+
+// ---- Dependent hook types ----------------------------------------------
+// One block per consumer kind that may declare a dependency on this
+// kind. Each block replicates the consumer's spec / FS shape so the
+// per-consumer hook receives concretely-typed `consumer` and `fs`.
+
+/** A managed Postgres instance. */
+export interface PostgresSpec {
+  multiAz: boolean;
+  size: "small" | "medium" | "large";
+  storageGb: number;
+}
+
+export interface PostgresFS {
+  /** Handle for the declared source "./sources/database.json". */
+  getSourcesDatabaseJson(): File<PostgresDatabase>;
+
+  /** Look up a file handle by its path. Returns undefined if absent.
+   *  Always File<string> — still schema-enforced, just doesn't parse
+   *  for you. */
+  get(path: string): File | undefined;
+  /** Every file handle currently present (including tombstoned ones —
+   *  filter via `file.isDeleted()` if you only want live files). */
+  getAll(): File[];
+  /** Create a new file at the given path. Errors if a file with that path already exists. */
+  add(path: string, content: string): File;
+  /** Tombstone the file at the given path (soft delete — downstream hooks still see it). */
+  delete(path: string): void;
+  /** All paths currently present. */
+  keys(): string[];
+}
+
+export interface PostgresDatabase {
+  engine: string;
+  instanceClass: string;
+  multiAz?: boolean;
+  storageGb: number;
+}
+
+export interface PostgresParams {
+  role?: string;
+}
+
+export interface PostgresDependentHookContext {
+  /** This kind's resolved resource. */
+  self: Resource<SecretSpec, Dependency>;
+  /** The consumer resource that declared a dependency on us. */
+  consumer: Resource<PostgresSpec>;
+  /** Path of the consumer resource file being rendered, relative
+   *  to the veil project root. */
+  path: string;
+  /** Params the consumer supplied for this dependency. */
+  params: PostgresParams;
+  vars: RegistryVariables;
+  root: string;
+  std: Std;
+  os: Os;
+  fetch: Fetch;
+}
+
+export interface PostgresDependentHook {
+  /** Runs after the consumer's render hooks complete. Mutates the
+   *  consumer's bundle to wire it up against this resource. */
+  render(ctx: PostgresDependentHookContext, fs: PostgresFS): PostgresFS | void | Promise<PostgresFS | void>;
+}
+

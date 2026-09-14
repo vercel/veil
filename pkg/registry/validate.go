@@ -57,8 +57,9 @@ func (k *LoadedKind) Source(path string) *LoadedSource {
 // AcceptsDependent reports whether this kind registers dependent hooks
 // for consumers of the given kind — that is, whether a resource of that
 // kind is allowed to depend on one of these. Forwarding consults it
-// before handing an inherited edge to a consumer: a dependency the
-// target would not accept directly is not one it inherits.
+// before handing an inherited edge to a consumer, and rejects the load
+// when the answer is no: a dependency the target would not accept
+// directly is not one it can be given indirectly either.
 func (k *LoadedKind) AcceptsDependent(kind string) bool {
 	for _, d := range k.GetHooks().GetDependents() {
 		if d.GetKind() == kind {
