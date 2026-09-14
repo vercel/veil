@@ -471,3 +471,82 @@ func (s *E2ESuite) TestHookAddedFileIsWrittenOut() {
 	s.Contains(billing, "BILLING_DATABASE_URL")
 	s.NotContains(billing, "ORDERS_DATABASE_URL")
 }
+
+// TestResourceHookAddingAnExistingPathFails covers fs.add's one refusal:
+// a path already in the bundle. Declared on the resource rather than the
+// kind, which also exercises the resource-hook path — compiled on the fly
+// at render time rather than baked into kind.json.
+func (s *E2ESuite) TestResourceHookAddingAnExistingPathFails() {
+	dir := s.sandbox()
+	s.write(dir, "resources/services/collide.ts", `
+export default {
+  render(ctx, fs) {
+    fs.add('sources/env', 'SNEAKY=1');
+    return fs;
+  },
+};
+`)
+	s.write(dir, "resources/services/collider.json", `{
+  "metadata": {
+    "kind": "service",
+    "name": "collider",
+    "hooks": { "render": ["./collide.ts"] }
+  },
+  "spec": { "image": "acme/collider:1.0.0", "replicas": 1 },
+  "dependencies": [
+    { "kind": "postgres", "name": "billing-db", "params": { "envVar": "DB_URL" } },
+    { "kind": "vpc", "name": "acme-global" }
+  ]
+}`)
+	out, err := s.runIn(dir, "render", "resources/services/collider.json", "--out", s.T().TempDir())
+	s.Require().Error(err, out)
+
+	msg := s.errorMessage(out)
+	s.Contains(msg, "sources/env")
+	s.Contains(msg, "already exists")
+	s.Contains(msg, "collide.ts", "the error should name the hook that tried it")
+}
+
+// TestResourceHookFeedsLaterKindHooks pins the pipeline order. A
+// resource hook runs after the kind's render and dependent hooks but
+// *before* post_render, so what it writes is what the kind's final
+// normalization pass sees — here the manifest, which summarizes the env
+// file the resource hook just added a line to.
+func (s *E2ESuite) TestResourceHookFeedsLaterKindHooks() {
+	dir := s.sandbox()
+	s.write(dir, "resources/services/annotate.ts", `
+export default {
+  render(ctx, fs) {
+    // The manifest does not exist yet — post_render adds it after this.
+    if (fs.get('sources/manifest.json')) throw new Error('post_render ran too early');
+    const env = fs.get('sources/env');
+    env.setContent(env.getContent() + '\nRESOURCE_HOOK_URL=set-by-resource-hook');
+    return fs;
+  },
+};
+`)
+	s.write(dir, "resources/services/annotator.json", `{
+  "metadata": {
+    "kind": "service",
+    "name": "annotator",
+    "hooks": { "render": ["./annotate.ts"] }
+  },
+  "spec": { "image": "acme/annotator:1.0.0", "replicas": 1 },
+  "dependencies": [
+    { "kind": "postgres", "name": "billing-db", "params": { "envVar": "DB_URL" } },
+    { "kind": "vpc", "name": "acme-global" }
+  ]
+}`)
+	out := filepath.Join(s.T().TempDir(), "rendered")
+	stdout, err := s.runIn(dir, "render", "resources/services/annotator.json", "--out", out)
+	s.Require().NoError(err, stdout)
+
+	// post_render sorted the env file the resource hook wrote to...
+	env := readFile(s.T(), filepath.Join(out, "annotator", "sources", "env"))
+	s.Contains(env, "RESOURCE_HOOK_URL=set-by-resource-hook")
+	s.True(sortedAscending(strings.Split(strings.TrimSpace(env), "\n")))
+
+	// ...and the manifest it added afterwards saw that line.
+	s.Contains(readFile(s.T(), filepath.Join(out, "annotator", "sources", "manifest.json")),
+		"RESOURCE_HOOK_URL")
+}
