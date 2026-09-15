@@ -1025,6 +1025,24 @@ point takes `any`; values implementing `proto.Message` are routed through the ca
 configuration: `UseProtoNames: true` (snake_case field names) for marshalling, `DiscardUnknown: true`
 for unmarshalling so editor metadata like `$schema` doesn't break loading.
 
+## Dependency params when a target is reached more than once
+
+A resource can reach the same target by more than one route: declared
+directly *and* inherited from something that forwards it, or inherited
+down two branches at once. The target's dependent hooks run **once**
+whichever way it was reached, so the params have to be settled first:
+
+- The resource's own declaration wins outright. It asked for that target
+  explicitly, so no inherited edge has to agree with it.
+- Otherwise every inherited edge must agree. A disagreement with no
+  direct declaration to arbitrate is a render-time error, because there
+  is no basis to prefer either and applying both would wire the resource
+  up twice with different configurations.
+
+Firing per edge instead would make the outcome depend on the order
+dependencies happen to be listed in — a hook that sets a fixed key would
+silently keep whichever ran last.
+
 # CLI commands
 
 ## `veil build`
