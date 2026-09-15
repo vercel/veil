@@ -1029,19 +1029,26 @@ for unmarshalling so editor metadata like `$schema` doesn't break loading.
 
 A resource can reach the same target by more than one route: declared
 directly *and* inherited from something that forwards it, or inherited
-down two branches at once. The target's dependent hooks run **once**
-whichever way it was reached, so the params have to be settled first:
+down two branches at once. Inherited duplication is never something the
+resource asked for, so it is settled before any hook runs:
 
-- The resource's own declaration wins outright. It asked for that target
-  explicitly, so no inherited edge has to agree with it.
-- Otherwise every inherited edge must agree. A disagreement with no
-  direct declaration to arbitrate is a render-time error, because there
-  is no basis to prefer either and applying both would wire the resource
-  up twice with different configurations.
+- The resource's own declarations win outright. It asked for that target
+  explicitly, so no inherited edge has to agree with them, and inherited
+  edges to that target are dropped.
+- Declaring one target **several times** is deliberate fan-out, not a
+  conflict, and each declaration fires. A subscriber naming one queue
+  twice — once for its URL under `SUBSCRIBER_*`, once for its region
+  under `USAGE_INGEST_*` — means both wirings, and collapsing them would
+  silently drop half of what was asked for.
+- Inherited edges, which nothing in the resource's file asked for, must
+  all agree. A disagreement with no direct declaration to arbitrate is a
+  render-time error, because there is no basis to prefer either and
+  applying both would wire the resource up twice with different
+  configurations.
 
-Firing per edge instead would make the outcome depend on the order
-dependencies happen to be listed in — a hook that sets a fixed key would
-silently keep whichever ran last.
+Firing per inherited edge instead would make the outcome depend on the
+order dependencies happen to be listed in — a hook that sets a fixed key
+would silently keep whichever ran last.
 
 # CLI commands
 

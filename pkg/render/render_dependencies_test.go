@@ -369,3 +369,87 @@ func (s *RenderSuite) TestRootDirectDependencyWinsOverForwardedParams() {
 	s.NoFileExists(filepath.Join(out, "r1", "from-leaf-via-forwarded.txt"),
 		"the forwarded params must not also be applied — one target, one firing")
 }
+
+// TestDirectDuplicateDeclarationsEachFire covers deliberate fan-out: a
+// resource names the same target twice, with different params, because
+// it wants both wirings. A subscriber asking one queue for a URL under
+// SUBSCRIBER_* and a region under USAGE_INGEST_* is the real shape of
+// this.
+//
+// Collapsing these would silently drop half of what the author asked
+// for. Two declarations in the file are two explicit requests, so both
+// fire — unlike inherited edges, where nothing in the file says the
+// duplication was wanted.
+func (s *RenderSuite) TestDirectDuplicateDeclarationsEachFire() {
+	s.writeSimpleKind("fanout-root")
+	s.writeDependentKind("fanout-leaf", "fanout-root", dependentHookIIFEKeyedByParam("from-leaf", "tag"))
+	s.reloadRegistryWithKinds("fanout-root", "fanout-leaf")
+
+	dir := filepath.Join(s.root, "fanout")
+	s.Require().NoError(os.MkdirAll(dir, 0755))
+	s.writeJSON(filepath.Join(dir, "r1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "fanout-root", "name": "r1"},
+		"spec":     map[string]any{},
+		"dependencies": []map[string]any{
+			{"kind": "fanout-leaf", "name": "d1", "params": map[string]any{"tag": "first"}},
+			{"kind": "fanout-leaf", "name": "d1", "params": map[string]any{"tag": "second"}},
+		},
+	})
+	s.writeJSON(filepath.Join(dir, "d1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "fanout-leaf", "name": "d1"},
+		"spec":     map[string]any{},
+	})
+
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderKind("fanout-root", "r1", dir, out)
+	s.Require().NoError(err, "declaring the same target twice is deliberate fan-out, not a conflict")
+
+	first, err := os.ReadFile(filepath.Join(out, "r1", "from-leaf-via-first.txt"))
+	s.Require().NoError(err)
+	s.Contains(string(first), "param=first")
+	second, err := os.ReadFile(filepath.Join(out, "r1", "from-leaf-via-second.txt"))
+	s.Require().NoError(err)
+	s.Contains(string(second), "param=second")
+}
+
+// TestDirectDuplicatesSuppressForwardedEdge pins the interaction between
+// the two rules: deliberate fan-out still displaces inherited edges to
+// the same target, so a forwarded copy does not sneak in a third wiring.
+func (s *RenderSuite) TestDirectDuplicatesSuppressForwardedEdge() {
+	s.writeSimpleKind("fsup-root")
+	s.writeDependentKind("fsup-mid", "fsup-root", noopDependentHookIIFE)
+	s.writeDependentKind("fsup-leaf", "fsup-root", dependentHookIIFEKeyedByParam("from-leaf", "tag"))
+	s.reloadRegistryWithKinds("fsup-root", "fsup-mid", "fsup-leaf")
+
+	dir := filepath.Join(s.root, "fsup")
+	s.Require().NoError(os.MkdirAll(dir, 0755))
+	s.writeJSON(filepath.Join(dir, "r1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "fsup-root", "name": "r1"},
+		"spec":     map[string]any{},
+		"dependencies": []map[string]any{
+			{"kind": "fsup-mid", "name": "m1", "params": map[string]any{}},
+			{"kind": "fsup-leaf", "name": "d1", "params": map[string]any{"tag": "first"}},
+			{"kind": "fsup-leaf", "name": "d1", "params": map[string]any{"tag": "second"}},
+		},
+	})
+	s.writeJSON(filepath.Join(dir, "m1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "fsup-mid", "name": "m1"},
+		"spec":     map[string]any{},
+		"dependencies": []map[string]any{
+			{"kind": "fsup-leaf", "name": "d1", "params": map[string]any{"tag": "forwarded"}, "forward": true},
+		},
+	})
+	s.writeJSON(filepath.Join(dir, "d1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "fsup-leaf", "name": "d1"},
+		"spec":     map[string]any{},
+	})
+
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderKind("fsup-root", "r1", dir, out)
+	s.Require().NoError(err)
+
+	s.FileExists(filepath.Join(out, "r1", "from-leaf-via-first.txt"))
+	s.FileExists(filepath.Join(out, "r1", "from-leaf-via-second.txt"))
+	s.NoFileExists(filepath.Join(out, "r1", "from-leaf-via-forwarded.txt"),
+		"an inherited edge must not add a wiring on top of what the root declared")
+}
