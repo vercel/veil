@@ -251,20 +251,50 @@ func (s *RenderSuite) TestDependencyCycleIsRejected() {
 	s.NoDirExists(filepath.Join(out, "a1"))
 }
 
-// TestDiamondDependencyFiresTargetHookOncePerIncomingEdge covers a
-// target reached by two forwarded edges: root depends on branch/b1 and
-// branch/c1, and both branches forward the same leaf/d1. The leaf is
-// resolved once, but its dependent hook fires once per incoming edge —
-// deduping targets is about not resolving one twice, not about dropping
-// an edge. ctx.consumer is the render root for both firings, identical
-// either way, so the two are distinguished by their own params, the one
-// thing that still varies per edge.
-func (s *RenderSuite) TestDiamondDependencyFiresTargetHookOncePerIncomingEdge() {
+// TestDiamondWithAgreeingParamsFiresOnce covers a target reached down
+// two branches of a diamond: both forward leaf/d1 and both pass the same
+// params, so there is nothing to settle and the hook runs once.
+func (s *RenderSuite) TestDiamondWithAgreeingParamsFiresOnce() {
 	s.writeSimpleKind("diamond-root")
 	s.writeDependentKind("diamond-branch", "diamond-root", noopDependentHookIIFE)
 	s.writeDependentKind("diamond-leaf", "diamond-root", dependentHookIIFEKeyedByParam("from-leaf", "tag"))
 	s.reloadRegistryWithKinds("diamond-root", "diamond-branch", "diamond-leaf")
 
+	dir := s.writeDiamond(map[string]string{"b1": "shared", "c1": "shared"})
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderKind("diamond-root", "r1", dir, out)
+	s.Require().NoError(err)
+
+	body, err := os.ReadFile(filepath.Join(out, "r1", "from-leaf-via-shared.txt"))
+	s.Require().NoError(err)
+	s.Equal("target=d1 consumer=r1 param=shared", string(body))
+}
+
+// TestDiamondWithConflictingParamsIsAnError is the case with no arbiter:
+// two branches forward the same leaf with different params and the root
+// declares no dependency on it, so there is no basis to prefer either.
+// Applying both would wire the root up twice; picking one silently would
+// come down to declaration order.
+func (s *RenderSuite) TestDiamondWithConflictingParamsIsAnError() {
+	s.writeSimpleKind("diamond-root")
+	s.writeDependentKind("diamond-branch", "diamond-root", noopDependentHookIIFE)
+	s.writeDependentKind("diamond-leaf", "diamond-root", dependentHookIIFEKeyedByParam("from-leaf", "tag"))
+	s.reloadRegistryWithKinds("diamond-root", "diamond-branch", "diamond-leaf")
+
+	dir := s.writeDiamond(map[string]string{"b1": "from-b1", "c1": "from-c1"})
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderKind("diamond-root", "r1", dir, out)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "diamond-leaf/d1")
+	s.Contains(err.Error(), "conflicting params")
+	s.Contains(err.Error(), "tag=from-b1")
+	s.Contains(err.Error(), "tag=from-c1")
+	s.NoDirExists(filepath.Join(out, "r1"))
+}
+
+// writeDiamond lays down root r1 depending on two branches, each
+// forwarding leaf d1 with the tag given for that branch.
+func (s *RenderSuite) writeDiamond(tagByBranch map[string]string) string {
 	dir := filepath.Join(s.root, "dmd")
 	s.Require().NoError(os.MkdirAll(dir, 0755))
 	s.writeJSON(filepath.Join(dir, "r1.json"), map[string]any{
@@ -275,37 +305,67 @@ func (s *RenderSuite) TestDiamondDependencyFiresTargetHookOncePerIncomingEdge() 
 			{"kind": "diamond-branch", "name": "c1", "params": map[string]any{}},
 		},
 	})
-	s.writeJSON(filepath.Join(dir, "b1.json"), map[string]any{
-		"metadata": map[string]any{"kind": "diamond-branch", "name": "b1"},
-		"spec":     map[string]any{},
-		"dependencies": []map[string]any{
-			{"kind": "diamond-leaf", "name": "d1", "params": map[string]any{"tag": "b1"}, "forward": true},
-		},
-	})
-	s.writeJSON(filepath.Join(dir, "c1.json"), map[string]any{
-		"metadata": map[string]any{"kind": "diamond-branch", "name": "c1"},
-		"spec":     map[string]any{},
-		"dependencies": []map[string]any{
-			{"kind": "diamond-leaf", "name": "d1", "params": map[string]any{"tag": "c1"}, "forward": true},
-		},
-	})
+	for _, branch := range []string{"b1", "c1"} {
+		s.writeJSON(filepath.Join(dir, branch+".json"), map[string]any{
+			"metadata": map[string]any{"kind": "diamond-branch", "name": branch},
+			"spec":     map[string]any{},
+			"dependencies": []map[string]any{
+				{"kind": "diamond-leaf", "name": "d1", "params": map[string]any{"tag": tagByBranch[branch]}, "forward": true},
+			},
+		})
+	}
 	s.writeJSON(filepath.Join(dir, "d1.json"), map[string]any{
 		"metadata": map[string]any{"kind": "diamond-leaf", "name": "d1"},
 		"spec":     map[string]any{},
 	})
+	return dir
+}
+
+// TestRootDirectDependencyWinsOverForwardedParams covers a target the
+// render root reaches two ways: declared directly, and inherited from
+// something it depends on that forwards the same target. Each edge
+// carries its own params.
+//
+// Firing the dependent hook once per edge wires the root up twice with
+// two different configurations — and which one a hook that sets a fixed
+// key ends up with depends on the order the dependencies happen to be
+// listed in. The root's own declaration is the one it asked for, so it
+// wins, and the hook runs once.
+func (s *RenderSuite) TestRootDirectDependencyWinsOverForwardedParams() {
+	s.writeSimpleKind("dup-root")
+	s.writeDependentKind("dup-mid", "dup-root", noopDependentHookIIFE)
+	s.writeDependentKind("dup-leaf", "dup-root", dependentHookIIFEKeyedByParam("from-leaf", "tag"))
+	s.reloadRegistryWithKinds("dup-root", "dup-mid", "dup-leaf")
+
+	dir := filepath.Join(s.root, "dup")
+	s.Require().NoError(os.MkdirAll(dir, 0755))
+	s.writeJSON(filepath.Join(dir, "r1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "dup-root", "name": "r1"},
+		"spec":     map[string]any{},
+		"dependencies": []map[string]any{
+			{"kind": "dup-mid", "name": "m1", "params": map[string]any{}},
+			{"kind": "dup-leaf", "name": "d1", "params": map[string]any{"tag": "direct"}},
+		},
+	})
+	s.writeJSON(filepath.Join(dir, "m1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "dup-mid", "name": "m1"},
+		"spec":     map[string]any{},
+		"dependencies": []map[string]any{
+			{"kind": "dup-leaf", "name": "d1", "params": map[string]any{"tag": "forwarded"}, "forward": true},
+		},
+	})
+	s.writeJSON(filepath.Join(dir, "d1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "dup-leaf", "name": "d1"},
+		"spec":     map[string]any{},
+	})
 
 	out := filepath.Join(s.root, "out")
-	rendered, err := s.renderKind("diamond-root", "r1", dir, out)
+	_, err := s.renderKind("dup-root", "r1", dir, out)
 	s.Require().NoError(err)
-	s.Equal("r1", rendered.Name)
 
-	// Both edges into d1 must have run: one marker file per incoming
-	// edge, not one shared file the second firing silently overwrote.
-	viaB, err := os.ReadFile(filepath.Join(out, "r1", "from-leaf-via-b1.txt"))
-	s.Require().NoError(err)
-	s.Equal("target=d1 consumer=r1 param=b1", string(viaB))
-
-	viaC, err := os.ReadFile(filepath.Join(out, "r1", "from-leaf-via-c1.txt"))
-	s.Require().NoError(err)
-	s.Equal("target=d1 consumer=r1 param=c1", string(viaC))
+	direct, err := os.ReadFile(filepath.Join(out, "r1", "from-leaf-via-direct.txt"))
+	s.Require().NoError(err, "the root's own params should be the ones applied")
+	s.Contains(string(direct), "param=direct")
+	s.NoFileExists(filepath.Join(out, "r1", "from-leaf-via-forwarded.txt"),
+		"the forwarded params must not also be applied — one target, one firing")
 }

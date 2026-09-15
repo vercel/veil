@@ -407,39 +407,124 @@ func applyDependencies(parent *slog.Logger, bundle hook.Bundle, rootRes *resourc
 	}
 	rootNode := &depNode{res: rootRes, resolved: rootResolved, resourceMap: rootMap}
 
-	// Several edges can land on one target — a diamond, or a forwarded
-	// edge alongside a direct one — and each fires its own hooks with
-	// its own params. Resolving the target is the expensive half, so
-	// that part is done once and shared.
-	nodes := map[string]*depNode{}
-	for _, dep := range deps {
-		target := dep.Resource
-		targetKind, targetName := target.GetMetadata().GetKind(), target.GetMetadata().GetName()
-		logger := parent.With("dep_kind", targetKind, "dep_name", targetName)
-
-		id := depNodeID(targetKind, targetName)
-		node, seen := nodes[id]
-		if !seen {
-			resolvedTarget, err := resolveTargetResource(target, opts)
-			if err != nil {
-				return nil, fmt.Errorf("dependency %s/%s: resolving target: %w", targetKind, targetName, err)
-			}
-			targetMap, err := resourceToMap(resolvedTarget)
-			if err != nil {
-				return nil, fmt.Errorf("dependency %s/%s: encoding target: %w", targetKind, targetName, err)
-			}
-			node = &depNode{res: target, resolved: resolvedTarget, resourceMap: targetMap}
-			nodes[id] = node
-		}
-
-		newBundle, err := applyDependentHooks(logger, bundle, dep.Dependency, node, rootNode, root, opts)
+	targets, order, err := groupDependencies(rootRes, opts)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range order {
+		t := targets[id]
+		logger := parent.With("dep_kind", t.node.res.GetMetadata().GetKind(), "dep_name", t.node.res.GetMetadata().GetName())
+		newBundle, err := applyDependentHooks(logger, bundle, t.params, t.node, rootNode, root, opts)
 		if err != nil {
-			return nil, fmt.Errorf("dependency %s/%s: %w", targetKind, targetName, err)
+			return nil, fmt.Errorf("dependency %s: %w", id, err)
 		}
 		bundle = newBundle
 	}
-	parent.Info("applied dependency graph", "targets", len(nodes), "edges", len(deps))
+	parent.Info("applied dependency graph", "targets", len(order), "edges", len(deps))
 	return bundle, nil
+}
+
+// depTarget is one resource the root depends on, however many edges
+// reach it, together with the single params object that applies.
+type depTarget struct {
+	node   *depNode
+	params *veilv1.Dependency
+	direct bool
+}
+
+// groupDependencies collapses the root's effective edges to one entry
+// per target and settles which params apply, returning the targets and
+// the order to visit them in.
+//
+// A target can be reached more than once — declared directly and also
+// inherited from something that forwards it, or inherited down two
+// branches of a diamond. Firing its hooks once per edge would wire the
+// root up several times with different configurations, and which one
+// survived would come down to the order the dependencies happen to be
+// listed in. So:
+//
+//   - the root's own declaration wins outright; no inherited edge has to
+//     agree with it, since the root asked for it explicitly;
+//   - otherwise every inherited edge must agree, and a disagreement with
+//     no direct declaration to arbitrate is an error rather than a coin
+//     flip.
+func groupDependencies(rootRes *resource.Resource, opts *Options) (map[string]*depTarget, []string, error) {
+	declared := make(map[*veilv1.Dependency]bool, len(rootRes.GetDependencies()))
+	for _, d := range rootRes.GetDependencies() {
+		declared[d] = true
+	}
+
+	targets := map[string]*depTarget{}
+	var order []string
+	for _, dep := range rootRes.Dependencies {
+		target := dep.Resource
+		kind, name := target.GetMetadata().GetKind(), target.GetMetadata().GetName()
+		id := depNodeID(kind, name)
+		direct := declared[dep.Dependency]
+
+		existing, seen := targets[id]
+		if !seen {
+			// Resolving a target (overlays + schema defaults) is the
+			// expensive half, so it happens once however many edges
+			// reach it.
+			resolved, err := resolveTargetResource(target, opts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("dependency %s: resolving target: %w", id, err)
+			}
+			resolvedMap, err := resourceToMap(resolved)
+			if err != nil {
+				return nil, nil, fmt.Errorf("dependency %s: encoding target: %w", id, err)
+			}
+			targets[id] = &depTarget{
+				node:   &depNode{res: target, resolved: resolved, resourceMap: resolvedMap},
+				params: dep.Dependency,
+				direct: direct,
+			}
+			order = append(order, id)
+			continue
+		}
+
+		switch {
+		case direct && !existing.direct:
+			// The root's own declaration displaces anything inherited.
+			existing.params, existing.direct = dep.Dependency, true
+		case existing.direct && !direct:
+			// Already settled by the root's declaration.
+		case proto.Equal(existing.params.GetParams(), dep.GetParams()):
+			// Both say the same thing, so there is nothing to settle.
+		case direct && existing.direct:
+			return nil, nil, fmt.Errorf(
+				"%s: declares %s twice with different params — remove one of them",
+				rootRes.Path, id)
+		default:
+			return nil, nil, fmt.Errorf(
+				"%s: inherits %s along more than one path with conflicting params (%s vs %s), "+
+					"and declares no dependency on it to settle which applies — "+
+					"declare it directly, or make the forwarding resources agree",
+				rootRes.Path, id,
+				paramsSummary(existing.params.GetParams()), paramsSummary(dep.GetParams()))
+		}
+	}
+	return targets, order, nil
+}
+
+// paramsSummary renders a params struct for an error message, with keys
+// in a stable order.
+func paramsSummary(params *structpb.Struct) string {
+	if params == nil || len(params.GetFields()) == 0 {
+		return "{}"
+	}
+	m := params.AsMap()
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, m[k]))
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
 }
 
 // applyDependentHooks runs every dependent hook target's kind registers

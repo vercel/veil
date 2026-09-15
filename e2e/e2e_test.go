@@ -550,3 +550,32 @@ export default {
 	s.Contains(readFile(s.T(), filepath.Join(out, "annotator", "sources", "manifest.json")),
 		"RESOURCE_HOOK_URL")
 }
+
+// TestDirectDependencyWinsOverForwardedParams is the Acme version of the
+// same collision: checkout reaches orders-db through the platform, which
+// asks for ORDERS_DATABASE_URL with a pool of 25, and also declares it
+// directly asking for DB_URL with a pool of 5. One database, one wiring —
+// the service's own declaration.
+func (s *E2ESuite) TestDirectDependencyWinsOverForwardedParams() {
+	dir := s.sandbox()
+	checkout := filepath.Join(dir, "resources", "services", "checkout.json")
+	var doc map[string]any
+	s.Require().NoError(json.Unmarshal([]byte(readFile(s.T(), checkout)), &doc))
+	doc["dependencies"] = append(doc["dependencies"].([]any), map[string]any{
+		"kind": "postgres", "name": "orders-db",
+		"params": map[string]any{"envVar": "DB_URL", "poolSize": 5},
+	})
+	updated, err := json.Marshal(doc)
+	s.Require().NoError(err)
+	s.Require().NoError(os.WriteFile(checkout, updated, 0o644))
+
+	out := filepath.Join(s.T().TempDir(), "rendered")
+	stdout, err := s.runIn(dir, "render", "resources/services/checkout.json", "--out", out)
+	s.Require().NoError(err, stdout)
+
+	env := readFile(s.T(), filepath.Join(out, "checkout", "sources", "env"))
+	s.Contains(env, "DB_URL=", "the service's own params apply")
+	s.Contains(env, "pool=5")
+	s.NotContains(env, "ORDERS_DATABASE_URL=", "the platform's forwarded params must not also apply")
+	s.NotContains(env, "pool=25")
+}
