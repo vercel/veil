@@ -1,4 +1,8 @@
+# Compiled binaries. `make build` writes ./veil; `go build ./cmd/veil`
+# without -o drops one next to main.go, which is how a 39 MB blob reached
+# the history once already.
 /veil
+/cmd/veil/veil
 .idea
 example
 
