@@ -2,12 +2,10 @@ package build
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/vercel/veil/pkg/config"
-	"github.com/vercel/veil/pkg/protoencode"
 )
 
 // KindGraph is a directed graph of kinds and the dependency relationships
@@ -31,10 +29,17 @@ type KindGraph struct {
 
 // KindNode is one kind in the graph: its name, parsed spec schema,
 // declared source paths, and the dependency edges it participates in.
+// SourceTypes/SourceTypeNames are this kind's schema-derived TS
+// interfaces and source-path -> type-name map, generated with a
+// PascalCase(Name) prefix — only used when a dependent hook replicates
+// this kind's FS inline (see dependentInterfaces); a kind's own
+// veil-types.ts recomputes these unprefixed via SourceSchemaTypes(k, "").
 type KindNode struct {
-	Name    string
-	Spec    map[string]any
-	Sources []string
+	Name            string
+	Spec            map[string]any
+	Sources         []string
+	SourceTypes     string
+	SourceTypeNames map[string]string
 
 	dependencies []*DependencyEdge // outgoing — what this kind may depend on
 	dependents   []*DependencyEdge // incoming — who may depend on this kind
@@ -64,10 +69,16 @@ func BuildGraph(kinds []*config.Kind) (*KindGraph, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: spec: %w", k.Name, err)
 		}
+		sourceTypes, sourceTypeNames, err := SourceSchemaTypes(k, PascalCase(k.Name))
+		if err != nil {
+			return nil, fmt.Errorf("%s: source schema types: %w", k.Name, err)
+		}
 		g.nodes[k.Name] = &KindNode{
-			Name:    k.Name,
-			Spec:    spec,
-			Sources: append([]string(nil), k.Sources...),
+			Name:            k.Name,
+			Spec:            spec,
+			Sources:         append([]string(nil), k.SourcePaths()...),
+			SourceTypes:     sourceTypes,
+			SourceTypeNames: sourceTypeNames,
 		}
 		g.nodesOrder = append(g.nodesOrder, k.Name)
 	}
@@ -149,17 +160,10 @@ func (n *KindNode) Dependents() []*DependencyEdge {
 	return n.dependents
 }
 
-// loadParamsSchema reads the params_path JSON Schema for a dependent
-// declaration, resolving relative paths against the kind directory.
-// The schema may be authored in JSON or YAML — extension decides how
-// the bytes are parsed.
+// loadParamsSchema reads a dependent's local or remote JSON/YAML schema.
 func loadParamsSchema(k *config.Kind, p string) (map[string]any, error) {
-	abs := p
-	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(k.Dir, p)
-	}
 	var s map[string]any
-	if err := protoencode.ReadFile(abs, &s); err != nil {
+	if err := k.DecodeSchema(p, &s); err != nil {
 		return nil, fmt.Errorf("reading %s: %w", p, err)
 	}
 	return s, nil
@@ -180,11 +184,21 @@ func dependenciesProperty(n *KindNode) map[string]any {
 		branches = append(branches, map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"required":             []string{"kind", "name", "params"},
+			// params is optional: a target whose params schema requires
+			// nothing shouldn't force every consumer to write "params": {}.
+			"required": []string{"kind", "name"},
 			"properties": map[string]any{
 				"kind":   map[string]any{"const": edge.Target.Name},
 				"name":   map[string]any{"type": "string", "minLength": 1},
 				"params": edge.ParamsSchema,
+				// Whether this edge is part of the declaring resource's
+				// public surface. Optional: absent means private, the
+				// default. additionalProperties is false, so leaving it
+				// out of the branch would make the flag unusable.
+				"forward": map[string]any{
+					"type":        "boolean",
+					"description": "Forward this dependency to anything that depends on this resource.",
+				},
 			},
 		})
 	}
@@ -271,7 +285,7 @@ func dependentInterfaces(n *KindNode, packageMode bool) (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("consumer %q spec: %w", consumer.Name, err)
 			}
-			consumerFS, err := fsInterfaceNamed(consumerFSName, consumer.Sources)
+			consumerFS, err := fsInterfaceNamed(consumerFSName, consumer.Sources, consumer.SourceTypeNames)
 			if err != nil {
 				return "", fmt.Errorf("consumer %q fs: %w", consumer.Name, err)
 			}
@@ -279,6 +293,7 @@ func dependentInterfaces(n *KindNode, packageMode bool) (string, error) {
 			b.WriteString("\n")
 			b.WriteString(consumerFS)
 			b.WriteString("\n")
+			b.WriteString(consumer.SourceTypes)
 		}
 
 		paramsIface, err := interfaceFromSchemaMap(paramsName, edge.ParamsSchema)

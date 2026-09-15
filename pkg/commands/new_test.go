@@ -104,9 +104,9 @@ func (s *NewSuite) TestNewKindAutoInitsVeilJSONAndScaffoldsAllFiles() {
 	// Old names should be gone.
 	s.NotContains(string(types), "interface Hook {")
 	s.NotContains(string(types), "renderHook?")
-	s.Contains(string(types), "interface File {")
-	s.Contains(string(types), "getContent(): string;")
-	s.Contains(string(types), "setContent(content: string): void;")
+	s.Contains(string(types), "interface File<T = string>")
+	s.Contains(string(types), "getContent(): T;")
+	s.Contains(string(types), "setContent(content: T): void;")
 	s.Contains(string(types), "getPath(): string;")
 	s.Contains(string(types), "setOutputPath(path: string): void;")
 	s.Contains(string(types), "isDeleted(): boolean;")
@@ -142,9 +142,7 @@ func (s *NewSuite) TestNewKindAutoInitsVeilJSONAndScaffoldsAllFiles() {
 
 	registry := s.readJSON(filepath.Join(s.root, "public", "r", "registry.json"))
 	s.Equal(embeds.RegistrySchemaURL, registry["$schema"])
-	sources, ok := compiled["sources"].(map[string]any)
-	s.Require().True(ok)
-	s.Equal("This is a source file for worker.\n", sources["sources/source.txt"])
+	s.Equal("This is a source file for worker.\n", sourceContents(compiled)["sources/source.txt"])
 	compiledHooks, ok := compiled["hooks"].(map[string]any)
 	s.Require().True(ok)
 	renderHooks, ok := compiledHooks["render"].([]any)
@@ -235,6 +233,37 @@ func (s *NewSuite) TestNewHookAppendsToKind() {
 		map[string]any{"path": "./hooks/src/hello-world.ts"},
 		map[string]any{"path": "./hooks/src/annotate.ts"},
 	}, hooksField["render"])
+}
+
+func (s *NewSuite) TestNewHookVeilTypesGeneratesFileOfTForSchemaSource() {
+	_, err := s.run("new", "kind", "worker")
+	s.Require().NoError(err)
+
+	kindDir := filepath.Join(s.root, ".veil", "kinds", "worker")
+	s.Require().NoError(os.MkdirAll(filepath.Join(kindDir, "schemas"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "schemas", "deployment.schema.json"),
+		[]byte(`{"type":"object","properties":{"replicas":{"type":"integer"}},"required":["replicas"]}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "sources", "deployment.json"), []byte(`{"replicas":1}`), 0644))
+
+	kind := s.readJSON(filepath.Join(kindDir, "kind.json"))
+	sources, _ := kind["sources"].([]any)
+	sources = append(sources, map[string]any{"path": "./sources/deployment.json", "schema": "./schemas/deployment.schema.json"})
+	kind["sources"] = sources
+	data, err := json.MarshalIndent(kind, "", "  ")
+	s.Require().NoError(err)
+	s.Require().NoError(os.WriteFile(filepath.Join(kindDir, "kind.json"), data, 0644))
+
+	// An ordinary hook — no binding flag needed; the generated FS accessor
+	// for the schema-declared source is typed regardless of which hook
+	// touches it.
+	_, err = s.run("new", "hook", "bump", "--kind", "worker")
+	s.Require().NoError(err)
+
+	types, err := os.ReadFile(filepath.Join(kindDir, "hooks", "src", "veil-types.ts"))
+	s.Require().NoError(err)
+	s.Contains(string(types), "export interface Deployment {")
+	s.Contains(string(types), "export interface File<T = string>")
+	s.Contains(string(types), "getSourcesDeploymentJson(): File<Deployment>;")
 }
 
 func (s *NewSuite) TestNewHookRequiresKindOrResourceFlagOrAutoDetect() {

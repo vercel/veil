@@ -1,0 +1,29 @@
+{
+  "metadata": {
+    "kind": "service",
+    "name": "checkout",
+    "overlays": [
+      {
+        "file": "./checkout.production.json",
+        "if": {
+          "environment": "^production$"
+        }
+      }
+    ]
+  },
+  "spec": {
+    "image": "acme/checkout:1.4.2",
+    "replicas": 2,
+    "port": 8080,
+    "public": true
+  },
+  "dependencies": [
+    {
+      "kind": "platform",
+      "name": "commerce-platform",
+      "params": {
+        "team": "commerce"
+      }
+    }
+  ]
+}

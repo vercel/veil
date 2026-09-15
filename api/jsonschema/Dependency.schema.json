@@ -3,6 +3,12 @@
   "additionalProperties": false,
   "description": "Dependency declares that this resource depends on another resource.\n The depended-on resource (target) authoritatively controls how this\n resource talks to it via the target's `dependent` hooks.",
   "properties": {
+    "forward": {
+      "default": false,
+      "description": "Off by default. A service that depends on a package should not\n inherit the package's private table just because the package uses\n one; the package has to say that the table is part of what it\n offers. The kind-level equivalent is\n KindDefinition.forward_dependencies, which turns this on for every\n dependency of a given kind without repeating it per resource.",
+      "title": "Whether this dependency is part of the declaring resource's public\n surface: when true, anything that depends on this resource also\n picks up this edge, and the target's dependent hooks run against\n that consumer too. Forwarding chains — a forwarded edge carries on\n up through every consumer that forwards the resource holding it.",
+      "type": "boolean"
+    },
     "kind": {
       "description": "The kind of the target resource.",
       "minLength": 1,

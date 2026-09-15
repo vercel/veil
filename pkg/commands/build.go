@@ -1,10 +1,10 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path"
@@ -14,13 +14,17 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/urfave/cli/v3"
 
+	"google.golang.org/protobuf/proto"
+
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 	"github.com/vercel/veil/pkg/build"
 	"github.com/vercel/veil/pkg/bundle"
+	"github.com/vercel/veil/pkg/codec"
 	"github.com/vercel/veil/pkg/config"
 	"github.com/vercel/veil/pkg/embeds"
 	"github.com/vercel/veil/pkg/interact"
-	"github.com/vercel/veil/pkg/protoencode"
+	"github.com/vercel/veil/pkg/project"
+	"github.com/vercel/veil/pkg/registry"
 	"github.com/vercel/veil/pkg/resource"
 	"github.com/vercel/veil/pkg/tsc"
 	"github.com/vercel/veil/pkg/vfs"
@@ -32,11 +36,11 @@ import (
 // <out>/registry.json indexing them.
 func Build() *cli.Command {
 	configDefault := "veil.json"
-	outDefault := filepath.Join(config.PublicDir, "r")
+	outDefault := filepath.Join(project.PublicDir, "r")
 	if cwd, err := os.Getwd(); err == nil {
-		if reg, err := config.Discover(cwd); err == nil {
+		if reg, err := project.Discover(cwd); err == nil {
 			configDefault = reg.ConfigPath
-			outDefault = filepath.Join(reg.Root, config.PublicDir, "r")
+			outDefault = filepath.Join(reg.Root, project.PublicDir, "r")
 		}
 	}
 
@@ -94,7 +98,7 @@ type regeneratedResource struct {
 func runBuild(ctx context.Context, c *cli.Command) (*buildResponse, error) {
 	p := interact.Default()
 
-	reg, err := config.Load(c.String("config"))
+	reg, err := project.Load(c.String("config"))
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +149,7 @@ type buildPipelineOpts struct {
 // FS) at registry-relative paths. Called by `veil build`, `veil new
 // kind|hook` (so scaffolding leaves a buildable state), and `veil render
 // --build` (into an in-memory FS the registry then reads via FSStore).
-func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opts buildPipelineOpts) (*buildResponse, error) {
+func runBuildPipeline(ctx context.Context, reg *project.Project, dst vfs.Filesystem, opts buildPipelineOpts) (*buildResponse, error) {
 	p := interact.Default()
 	resp := &buildResponse{Kinds: []builtKind{}}
 
@@ -162,14 +166,14 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 	build.ShapeOverlayIf(metadataSchema, reg.Variables)
 
 	// Bundle entrypoints are relative to the project root (= reg.Root).
-	fsys := os.DirFS(reg.Root)
+	fsys := reg.FS()
 
 	// display turns a registry-relative output path into the string shown
 	// to the user. On disk that's the real (cwd-relative) location; for an
 	// in-memory build it's just the registry-relative path.
 	display := func(rel string) string { return rel }
-	if dir, ok := dst.(*vfs.Dir); ok {
-		display = func(rel string) string { return cwdRel(filepath.Join(dir.Root(), filepath.FromSlash(rel))) }
+	if root := dst.Root(); root != "" {
+		display = func(rel string) string { return cwdRel(filepath.Join(root, filepath.FromSlash(rel))) }
 	}
 
 	var checker tsc.Checker
@@ -280,14 +284,14 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 			}
 		}
 
-		ck, err := compileKind(k, reg.Variables, reg.Root, fsys)
+		ck, err := compileKind(k, reg.Variables, fsys)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", k.Name, err))
 			continue
 		}
 
 		jsonRel := path.Join(k.Name, "kind.json")
-		kindBytes, err := protoencode.MarshalFile(ck, embeds.KindSchemaURL)
+		kindBytes, err := marshalArtifact(ck, embeds.KindSchemaURL)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", k.Name, err))
 			continue
@@ -327,7 +331,7 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 		return resp, nil
 	}
 
-	regBytes, err := protoencode.MarshalFile(index, embeds.RegistrySchemaURL)
+	regBytes, err := marshalArtifact(index, embeds.RegistrySchemaURL)
 	if err != nil {
 		return nil, fmt.Errorf("writing registry: %w", err)
 	}
@@ -343,7 +347,13 @@ func runBuildPipeline(ctx context.Context, reg *config.Registry, dst vfs.FS, opt
 	// hooks do. Gated on resourceTypes (only a full `veil build`), so
 	// `veil new` and in-memory render builds never touch the source tree.
 	if opts.resourceTypes {
-		resources, err := regenResourceTypes(ctx, reg, graph, fsys, tp)
+		// Read the kinds back out of what this build just wrote, so each
+		// resource resolves against the registry it was compiled into.
+		kindReg, err := registry.FromStore(&registry.FSStore{FS: dst})
+		if err != nil {
+			return nil, fmt.Errorf("reading built registry: %w", err)
+		}
+		resources, err := regenResourceTypes(ctx, reg, graph, fsys, tp, kindReg)
 		if err != nil {
 			return nil, fmt.Errorf("regenerating resource hook types: %w", err)
 		}
@@ -370,9 +380,10 @@ func cwdRel(abs string) string {
 // schemas. `variables` is the merged variable declaration set (veil.json
 // plus every kind's kind.json), copied verbatim so the compiled document
 // is self-contained at render time.
-func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectRoot string, fsys fs.FS) (*veilv1.Kind, error) {
-	sources := make(map[string]string, len(k.Sources))
-	for _, src := range k.Sources {
+func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, fsys vfs.FS) (*veilv1.Kind, error) {
+	sources := make([]*veilv1.Source, 0, len(k.SourceDefs()))
+	for _, def := range k.SourceDefs() {
+		src := def.GetPath()
 		abs := src
 		if !filepath.IsAbs(abs) {
 			abs = filepath.Join(k.Dir, src)
@@ -381,36 +392,51 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 		if err != nil {
 			return nil, fmt.Errorf("reading source %s: %w", src, err)
 		}
-		key, err := filepath.Rel(k.Dir, abs)
+		key, err := sourceKey(k, src)
 		if err != nil {
-			return nil, fmt.Errorf("resolving source key for %s: %w", src, err)
+			return nil, err
 		}
-		sources[filepath.ToSlash(key)] = string(data)
+		compiled := &veilv1.Source{Path: key, Contents: string(data)}
+
+		if schema := def.GetSchema(); schema != "" {
+			schemaData, err := k.ReadSchema(schema)
+			if err != nil {
+				return nil, fmt.Errorf("reading schema for source %s: %w", src, err)
+			}
+			// Fail here rather than at every later render: the source's
+			// own contents have to satisfy the schema it declares.
+			if err := build.ValidateSourceContents(key, data, schemaData); err != nil {
+				return nil, fmt.Errorf("source %s: schema %s: %w", src, schema, err)
+			}
+			compiled.Schema = proto.String(string(schemaData))
+		}
+		sources = append(sources, compiled)
 	}
 
-	render, err := compileRenderHookDefs(k, projectRoot, fsys, k.RenderHooks())
+	render, err := compileRenderHookDefs(k, fsys, k.RenderHooks())
 	if err != nil {
 		return nil, fmt.Errorf("render hooks: %w", err)
 	}
 
-	validate, err := compileRenderHookDefs(k, projectRoot, fsys, k.ValidateHooks())
+	validate, err := compileRenderHookDefs(k, fsys, k.ValidateHooks())
 	if err != nil {
 		return nil, fmt.Errorf("validate hooks: %w", err)
 	}
 
-	postRender, err := compileRenderHookDefs(k, projectRoot, fsys, k.PostRenderHooks())
+	postRender, err := compileRenderHookDefs(k, fsys, k.PostRenderHooks())
 	if err != nil {
 		return nil, fmt.Errorf("post_render hooks: %w", err)
 	}
 
-	dependents, err := compileDependents(k, projectRoot, fsys)
+	dependents, err := compileDependents(k, fsys)
 	if err != nil {
 		return nil, err
 	}
 
 	return &veilv1.Kind{
-		Name:    k.Name,
-		Sources: sources,
+		Name:                k.Name,
+		Sources:             sources,
+		ForwardDependencies: k.GetForwardDependencies(),
 		Hooks: &veilv1.Hooks{
 			Render:     render,
 			Dependents: dependents,
@@ -421,12 +447,27 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, projectR
 	}, nil
 }
 
+// sourceKey resolves a source path to the kind-dir-relative path used
+// as Source.path on each compiled Kind.sources entry — mirrors
+// compileHook's Name normalization so the two stay in lockstep.
+func sourceKey(k *config.Kind, p string) (string, error) {
+	abs := p
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(k.Dir, p)
+	}
+	key, err := filepath.Rel(k.Dir, abs)
+	if err != nil {
+		return "", fmt.Errorf("resolving source key for %s: %w", p, err)
+	}
+	return filepath.ToSlash(key), nil
+}
+
 // compileHookList bundles+minifies every hook path in paths, resolving
 // each entrypoint relative to the kind's project root.
-func compileHookList(k *config.Kind, projectRoot string, fsys fs.FS, paths []string) ([]*veilv1.Hook, error) {
+func compileHookList(k *config.Kind, fsys vfs.FS, paths []string) ([]*veilv1.Hook, error) {
 	hooks := make([]*veilv1.Hook, 0, len(paths))
 	for _, h := range paths {
-		hk, err := compileHook(k, projectRoot, fsys, h)
+		hk, err := compileHook(k, fsys, h)
 		if err != nil {
 			return nil, err
 		}
@@ -439,10 +480,10 @@ func compileHookList(k *config.Kind, projectRoot string, fsys fs.FS, paths []str
 // bundling each path and stamping the entry's declared `access` onto
 // the resulting compiled Hook so the runner can pre-flight required
 // env vars at render time.
-func compileRenderHookDefs(k *config.Kind, projectRoot string, fsys fs.FS, defs []*veilv1.RenderHookDefinition) ([]*veilv1.Hook, error) {
+func compileRenderHookDefs(k *config.Kind, fsys vfs.FS, defs []*veilv1.RenderHookDefinition) ([]*veilv1.Hook, error) {
 	hooks := make([]*veilv1.Hook, 0, len(defs))
 	for _, d := range defs {
-		hk, err := compileHook(k, projectRoot, fsys, d.GetPath())
+		hk, err := compileHook(k, fsys, d.GetPath())
 		if err != nil {
 			return nil, err
 		}
@@ -454,12 +495,12 @@ func compileRenderHookDefs(k *config.Kind, projectRoot string, fsys fs.FS, defs 
 
 // compileHook bundles a single hook source file and returns it as a
 // compiled Hook (without any access info — callers attach that).
-func compileHook(k *config.Kind, projectRoot string, fsys fs.FS, h string) (*veilv1.Hook, error) {
+func compileHook(k *config.Kind, fsys vfs.FS, h string) (*veilv1.Hook, error) {
 	abs := h
 	if !filepath.IsAbs(abs) {
 		abs = filepath.Join(k.Dir, h)
 	}
-	entrypoint, err := filepath.Rel(projectRoot, abs)
+	entrypoint, err := filepath.Rel(fsys.Root(), abs)
 	if err != nil {
 		return nil, fmt.Errorf("resolving hook entrypoint for %s: %w", h, err)
 	}
@@ -483,27 +524,20 @@ func compileHook(k *config.Kind, projectRoot string, fsys fs.FS, h string) (*vei
 // compileDependents bundles each per-consumer dependent entry's hooks and
 // inlines the params JSON Schema referenced by params_path. Returns nil
 // when the kind declares no dependents.
-func compileDependents(k *config.Kind, projectRoot string, fsys fs.FS) ([]*veilv1.DependentHook, error) {
+func compileDependents(k *config.Kind, fsys vfs.FS) ([]*veilv1.DependentHook, error) {
 	dependents := k.GetHooks().GetDependents()
 	if len(dependents) == 0 {
 		return nil, nil
 	}
 	out := make([]*veilv1.DependentHook, 0, len(dependents))
 	for _, d := range dependents {
-		hooks, err := compileHookList(k, projectRoot, fsys, d.Paths)
+		hooks, err := compileHookList(k, fsys, d.Paths)
 		if err != nil {
 			return nil, fmt.Errorf("dependents[%q]: %w", d.Kind, err)
 		}
-		paramsAbs := d.ParamsPath
-		if !filepath.IsAbs(paramsAbs) {
-			paramsAbs = filepath.Join(k.Dir, d.ParamsPath)
-		}
-		// Source may be authored in JSON or YAML; the compiled
-		// kind.json always embeds JSON-encoded params so downstream
-		// consumers (render, hook bundler) don't need a YAML parser
-		// to interpret it.
+		// Normalize JSON/YAML params to embedded JSON for offline consumers.
 		var probe map[string]any
-		if err := protoencode.ReadFile(paramsAbs, &probe); err != nil {
+		if err := k.DecodeSchema(d.ParamsPath, &probe); err != nil {
 			return nil, fmt.Errorf("dependents[%q]: reading params_path %s: %w", d.Kind, d.ParamsPath, err)
 		}
 		paramsJSON, err := json.Marshal(probe)
@@ -544,7 +578,7 @@ func writeKindTypes(k *config.Kind, variables map[string]*veilv1.Variable, graph
 // scaffold time. Resources without render hooks have nothing to type and
 // are skipped. Per-resource errors are collected so one bad resource
 // doesn't mask the rest, then returned joined.
-func regenResourceTypes(ctx context.Context, reg *config.Registry, graph *build.KindGraph, fsys fs.FS, tp *typesPackage) ([]regeneratedResource, error) {
+func regenResourceTypes(ctx context.Context, reg *project.Project, graph *build.KindGraph, fsys vfs.FS, tp *typesPackage, kindReg registry.Registry) ([]regeneratedResource, error) {
 	p := interact.Default()
 	if reg.ResourceDiscovery == nil {
 		return nil, nil
@@ -553,7 +587,7 @@ func regenResourceTypes(ctx context.Context, reg *config.Registry, graph *build.
 	if err != nil {
 		return nil, fmt.Errorf("discovering resources: %w", err)
 	}
-	catalog, err := resource.NewCatalog(fsys, handles)
+	catalog, err := resource.NewCatalog(fsys, handles, kindReg)
 	if err != nil {
 		return nil, fmt.Errorf("cataloguing resources: %w", err)
 	}
@@ -683,8 +717,7 @@ func hookFiles(k *config.Kind) []string {
 	return files
 }
 
-// validateKind checks that a kind's referenced files exist and that its
-// spec schema parses as JSON.
+// validateKind checks local sources/hooks and parses local or remote schemas.
 func validateKind(k *config.Kind) error {
 	var errs []error
 
@@ -705,7 +738,18 @@ func validateKind(k *config.Kind) error {
 			}
 		}
 	}
-	check("source", k.Sources)
+	checkSchema := func(label, ref string) {
+		var schema map[string]any
+		if err := k.DecodeSchema(ref, &schema); err != nil {
+			errs = append(errs, fmt.Errorf("%s %q: %w", label, ref, err))
+		}
+	}
+	check("source", k.SourcePaths())
+	for _, def := range k.SourceDefs() {
+		if schema := def.GetSchema(); schema != "" {
+			checkSchema(fmt.Sprintf("source %q schema", def.GetPath()), schema)
+		}
+	}
 	for _, d := range k.RenderHooks() {
 		check("render hook", []string{d.GetPath()})
 	}
@@ -718,8 +762,40 @@ func validateKind(k *config.Kind) error {
 
 	for _, d := range k.GetHooks().GetDependents() {
 		check(fmt.Sprintf("dependent[%q] path", d.Kind), d.Paths)
-		check(fmt.Sprintf("dependent[%q] params_path", d.Kind), []string{d.ParamsPath})
+		checkSchema(fmt.Sprintf("dependent[%q] params_path", d.Kind), d.ParamsPath)
 	}
 
 	return errors.Join(errs...)
+}
+
+// marshalArtifact encodes a compiled build artifact — kind.json,
+// registry.json — as canonical JSON: indented two spaces, object keys
+// sorted alphabetically, one trailing newline. Output round-trips
+// through a generic map to get there. protojson always injects an extra
+// space after colons (a deliberate non-canonical marker) which is ugly,
+// and the re-marshal drops it. Sorting keys is stable across runs and
+// fine for compiled artifacts.
+//
+// When schemaURL is non-empty a `$schema` field is injected at the top
+// level so editors can resolve the published schema for the document.
+// `$schema` sorts ahead of every proto field name (the leading `$` is
+// ASCII 0x24, before any letter), so it lands first in the output.
+func marshalArtifact(v any, schemaURL string) ([]byte, error) {
+	var doc any
+	if err := codec.Convert(v, &doc); err != nil {
+		return nil, err
+	}
+	if schemaURL != "" {
+		if obj, ok := doc.(map[string]any); ok {
+			obj["$schema"] = schemaURL
+		}
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(doc); err != nil {
+		return nil, fmt.Errorf("encoding: %w", err)
+	}
+	return buf.Bytes(), nil
 }

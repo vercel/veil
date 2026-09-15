@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "description": "An Acme application service.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "replicas"],
+  "properties": {
+    "image": { "type": "string" },
+    "replicas": { "type": "integer", "minimum": 1 },
+    "port": { "type": "integer", "default": 8080 },
+    "public": { "type": "boolean", "default": false }
+  }
+}

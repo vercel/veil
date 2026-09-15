@@ -1,0 +1,5 @@
+image: placeholder
+replicas: 1
+port: 8080
+region: unset
+public: false

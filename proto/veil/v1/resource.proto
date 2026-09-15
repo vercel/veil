@@ -40,6 +40,20 @@ message Dependency {
   // Arbitrary parameters the target's `dependent` hook receives. The
   // shape is defined by the target kind's matching dependents entry.
   google.protobuf.Struct params = 3;
+
+  // Whether this dependency is part of the declaring resource's public
+  // surface: when true, anything that depends on this resource also
+  // picks up this edge, and the target's dependent hooks run against
+  // that consumer too. Forwarding chains — a forwarded edge carries on
+  // up through every consumer that forwards the resource holding it.
+  //
+  // Off by default. A service that depends on a package should not
+  // inherit the package's private table just because the package uses
+  // one; the package has to say that the table is part of what it
+  // offers. The kind-level equivalent is
+  // KindDefinition.forward_dependencies, which turns this on for every
+  // dependency of a given kind without repeating it per resource.
+  bool forward = 4;
 }
 
 // Metadata contains fields common to every resource. The presence of

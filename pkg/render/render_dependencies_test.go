@@ -57,7 +57,7 @@ func (s *RenderSuite) writeSimpleKind(name string) {
 	s.Require().NoError(os.MkdirAll(kindDir, 0755))
 	s.writeJSON(filepath.Join(kindDir, "kind.json"), map[string]any{
 		"name":    name,
-		"sources": map[string]string{},
+		"sources": compiledSources(nil, nil),
 	})
 	s.writeJSON(filepath.Join(kindDir, "kind.schema.json"), permissiveDependencySchema)
 }
@@ -73,7 +73,7 @@ func (s *RenderSuite) writeDependentKind(name, consumerKind, hookContent string)
 
 	compiled := map[string]any{
 		"name":    name,
-		"sources": map[string]string{},
+		"sources": compiledSources(nil, nil),
 		"hooks": map[string]any{
 			"dependents": []map[string]any{
 				{
@@ -126,20 +126,65 @@ func (s *RenderSuite) renderKind(kind, name, dir, outDir string) (*RenderedResou
 		Name:      name,
 		OutDir:    outDir,
 		FS:        fsys,
-		Registry:  s.registry,
 		Catalog:   cat,
 		Variables: map[string]any{},
 	})
 }
 
-// TestMultiHopDependencyAppliesTransitiveDependentHooks is the direct
-// regression test for the scenario in PLAT-8321: a service depends on
-// package/api-rate-limits, which itself depends on
-// dynamo-table/rate-limit-exceeded. The dynamo-table dependent hook
-// must fire against the service's bundle even though the service never
-// declares dynamo-table as a direct dependency — veil's core walks the
-// full transitive graph, not just the root's own `dependencies` list.
-func (s *RenderSuite) TestMultiHopDependencyAppliesTransitiveDependentHooks() {
+// TestMultiHopDependencyFollowsForwarding is the scenario from
+// PLAT-8321: a service depends on package/api-rate-limits, which itself
+// depends on dynamo-table/rate-limit-exceeded. The table's dependent
+// hook reaches the service only because the package forwards that edge
+// — the package is declaring the table part of what it offers. Run with
+// forward off, the same graph leaves the service untouched by the
+// table, which is the whole point of the flag.
+func (s *RenderSuite) TestMultiHopDependencyFollowsForwarding() {
+	s.writeSimpleKind("service")
+	s.writeDependentKind("package", "service", dependentHookIIFE("from-package.txt"))
+	s.writeDependentKind("dynamo-table", "service", dependentHookIIFE("from-dynamo.txt"))
+	s.reloadRegistryWithKinds("service", "package", "dynamo-table")
+
+	dir := filepath.Join(s.root, "svc")
+	s.Require().NoError(os.MkdirAll(dir, 0755))
+	s.writeJSON(filepath.Join(dir, "my-service.json"), map[string]any{
+		"metadata": map[string]any{"kind": "service", "name": "my-service"},
+		"spec":     map[string]any{},
+		"dependencies": []map[string]any{
+			{"kind": "package", "name": "api-rate-limits", "params": map[string]any{}},
+		},
+	})
+	s.writeJSON(filepath.Join(dir, "api-rate-limits.json"), map[string]any{
+		"metadata": map[string]any{"kind": "package", "name": "api-rate-limits"},
+		"spec":     map[string]any{},
+		"dependencies": []map[string]any{
+			{"kind": "dynamo-table", "name": "rate-limit-exceeded", "params": map[string]any{}, "forward": true},
+		},
+	})
+	s.writeJSON(filepath.Join(dir, "rate-limit-exceeded.json"), map[string]any{
+		"metadata": map[string]any{"kind": "dynamo-table", "name": "rate-limit-exceeded"},
+		"spec":     map[string]any{},
+	})
+
+	out := filepath.Join(s.root, "out")
+	rendered, err := s.renderKind("service", "my-service", dir, out)
+	s.Require().NoError(err)
+	s.Equal("my-service", rendered.Name)
+
+	fromPackage, err := os.ReadFile(filepath.Join(out, "my-service", "from-package.txt"))
+	s.Require().NoError(err)
+	s.Equal("target=api-rate-limits consumer=my-service", string(fromPackage))
+
+	// Only present because the package forwards its table.
+	fromDynamo, err := os.ReadFile(filepath.Join(out, "my-service", "from-dynamo.txt"))
+	s.Require().NoError(err)
+	s.Equal("target=rate-limit-exceeded consumer=my-service", string(fromDynamo))
+}
+
+// TestUnforwardedDependencyStaysPrivate is the other half: the same
+// three-resource chain with forwarding off. The service gets the
+// package's hooks and nothing else — the table the package happens to
+// use is none of the service's business.
+func (s *RenderSuite) TestUnforwardedDependencyStaysPrivate() {
 	s.writeSimpleKind("service")
 	s.writeDependentKind("package", "service", dependentHookIIFE("from-package.txt"))
 	s.writeDependentKind("dynamo-table", "service", dependentHookIIFE("from-dynamo.txt"))
@@ -167,31 +212,19 @@ func (s *RenderSuite) TestMultiHopDependencyAppliesTransitiveDependentHooks() {
 	})
 
 	out := filepath.Join(s.root, "out")
-	rendered, err := s.renderKind("service", "my-service", dir, out)
+	_, err := s.renderKind("service", "my-service", dir, out)
 	s.Require().NoError(err)
-	s.Equal("my-service", rendered.Name)
 
-	fromPackage, err := os.ReadFile(filepath.Join(out, "my-service", "from-package.txt"))
-	s.Require().NoError(err)
-	s.Equal("target=api-rate-limits consumer=my-service", string(fromPackage))
-
-	// This file only exists if the walk continues past the service's
-	// direct dependency into the package's own dependency on
-	// dynamo-table — the regression this test guards against.
-	fromDynamo, err := os.ReadFile(filepath.Join(out, "my-service", "from-dynamo.txt"))
-	s.Require().NoError(err)
-	s.Equal("target=rate-limit-exceeded consumer=my-service", string(fromDynamo))
+	s.FileExists(filepath.Join(out, "my-service", "from-package.txt"))
+	s.NoFileExists(filepath.Join(out, "my-service", "from-dynamo.txt"))
 }
 
-// TestDependencyCycleAppliesEachEdgeOnceWithoutInfiniteLoop covers the
-// cycle-safety half of the BFS walk: alpha depends on beta and beta
-// depends back on alpha. ctx.consumer is always the render root
-// (alpha/a1), so alpha's own dependents list must accept its own kind
-// to allow the back-edge — beta's back-edge into alpha is checked
-// against the root's kind, not beta's. The walk must apply each real
-// edge's hooks exactly once and terminate instead of looping forever
-// re-visiting the same pair.
-func (s *RenderSuite) TestDependencyCycleAppliesEachEdgeOnceWithoutInfiniteLoop() {
+// TestDependencyCycleIsRejected covers the cycle case: alpha depends on
+// beta and beta depends back on alpha. The catalog links the whole
+// graph up front, so the loop is caught there — the render fails before
+// any hook runs, naming the chain that closes it rather than looping or
+// silently applying an arbitrary subset of the edges.
+func (s *RenderSuite) TestDependencyCycleIsRejected() {
 	s.writeDependentKind("alpha", "alpha", dependentHookIIFE("from-alpha.txt"))
 	s.writeDependentKind("beta", "alpha", dependentHookIIFE("from-beta.txt"))
 	s.reloadRegistryWithKinds("alpha", "beta")
@@ -210,31 +243,22 @@ func (s *RenderSuite) TestDependencyCycleAppliesEachEdgeOnceWithoutInfiniteLoop(
 	})
 
 	out := filepath.Join(s.root, "out")
-	rendered, err := s.renderKind("alpha", "a1", dir, out)
-	s.Require().NoError(err)
-	s.Equal("a1", rendered.Name)
-
-	fromBeta, err := os.ReadFile(filepath.Join(out, "a1", "from-beta.txt"))
-	s.Require().NoError(err)
-	s.Equal("target=b1 consumer=a1", string(fromBeta))
-
-	fromAlpha, err := os.ReadFile(filepath.Join(out, "a1", "from-alpha.txt"))
-	s.Require().NoError(err)
-	s.Equal("target=a1 consumer=a1", string(fromAlpha))
+	_, err := s.renderKind("alpha", "a1", dir, out)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "dependency cycle")
+	s.Contains(err.Error(), "alpha/a1 -> beta/b1 -> alpha/a1")
+	// Nothing was rendered — the failure precedes every hook.
+	s.NoDirExists(filepath.Join(out, "a1"))
 }
 
-// TestDiamondDependencyFiresTargetHookOncePerIncomingEdge covers the
-// other half of the multi-hop semantic the cycle test doesn't reach:
-// a target with two independent incoming edges (root depends on both
-// branch/b1 and branch/c1; both branches depend on the same
-// leaf/d1). leaf/d1 is resolved once (the walk is visit-once for node
-// expansion), but its dependent hook must still fire once per
-// incoming edge — the visited-set dedup is about not re-expanding a
-// node's own dependencies, not about suppressing repeat edges into
-// it. ctx.consumer is always the render root (diamond-root/r1) for
-// both firings, identical either way, so the two edges are
-// distinguished by their own params instead — the one thing that
-// still varies per edge.
+// TestDiamondDependencyFiresTargetHookOncePerIncomingEdge covers a
+// target reached by two forwarded edges: root depends on branch/b1 and
+// branch/c1, and both branches forward the same leaf/d1. The leaf is
+// resolved once, but its dependent hook fires once per incoming edge —
+// deduping targets is about not resolving one twice, not about dropping
+// an edge. ctx.consumer is the render root for both firings, identical
+// either way, so the two are distinguished by their own params, the one
+// thing that still varies per edge.
 func (s *RenderSuite) TestDiamondDependencyFiresTargetHookOncePerIncomingEdge() {
 	s.writeSimpleKind("diamond-root")
 	s.writeDependentKind("diamond-branch", "diamond-root", noopDependentHookIIFE)
@@ -255,14 +279,14 @@ func (s *RenderSuite) TestDiamondDependencyFiresTargetHookOncePerIncomingEdge() 
 		"metadata": map[string]any{"kind": "diamond-branch", "name": "b1"},
 		"spec":     map[string]any{},
 		"dependencies": []map[string]any{
-			{"kind": "diamond-leaf", "name": "d1", "params": map[string]any{"tag": "b1"}},
+			{"kind": "diamond-leaf", "name": "d1", "params": map[string]any{"tag": "b1"}, "forward": true},
 		},
 	})
 	s.writeJSON(filepath.Join(dir, "c1.json"), map[string]any{
 		"metadata": map[string]any{"kind": "diamond-branch", "name": "c1"},
 		"spec":     map[string]any{},
 		"dependencies": []map[string]any{
-			{"kind": "diamond-leaf", "name": "d1", "params": map[string]any{"tag": "c1"}},
+			{"kind": "diamond-leaf", "name": "d1", "params": map[string]any{"tag": "c1"}, "forward": true},
 		},
 	})
 	s.writeJSON(filepath.Join(dir, "d1.json"), map[string]any{

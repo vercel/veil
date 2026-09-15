@@ -1,3 +1,11 @@
+# Compiled binaries. `make build` writes ./veil; `go build ./cmd/veil`
+# without -o drops one next to main.go, which is how a 39 MB blob reached
+# the history once already.
 /veil
+/cmd/veil/veil
 .idea
 example
+
+# Build output. `veil build` regenerates it, and the e2e suite builds
+# before it renders, so the compiled registry never belongs in the repo.
+/e2e/playground/public/

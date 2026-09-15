@@ -1,0 +1,3 @@
+engine: redis-7
+nodes: 1
+evictionPolicy: allkeys-lru

@@ -10,10 +10,11 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"github.com/vercel/veil/pkg/config"
 	"github.com/vercel/veil/pkg/interact"
+	"github.com/vercel/veil/pkg/project"
 	"github.com/vercel/veil/pkg/registry"
 	"github.com/vercel/veil/pkg/resource"
+	"github.com/vercel/veil/pkg/vfs"
 )
 
 const (
@@ -26,7 +27,7 @@ const (
 func Graph() *cli.Command {
 	configDefault := "veil.json"
 	if cwd, err := os.Getwd(); err == nil {
-		if reg, err := config.Discover(cwd); err == nil {
+		if reg, err := project.Discover(cwd); err == nil {
 			configDefault = reg.ConfigPath
 		}
 	}
@@ -51,6 +52,11 @@ func Graph() *cli.Command {
 				Name:  "format",
 				Usage: "Output format: \"tree\" (default), \"mermaid\", or \"dot\"",
 				Value: graphFormatTree,
+			},
+			&cli.BoolFlag{
+				Name:    "build",
+				Aliases: []string{"b"},
+				Usage:   "Compile the project's kinds into an in-memory registry first, instead of reading a prebuilt one from disk",
 			},
 		},
 		Action: withResult(runGraph),
@@ -91,17 +97,34 @@ func runGraph(ctx context.Context, c *cli.Command) (*graphResponse, error) {
 		return nil, fmt.Errorf("graph: unknown --format %q (want tree|mermaid|dot)", format)
 	}
 
-	reg, err := registry.LoadProject(c.String("config"))
+	reg, err := project.LoadProject(c.String("config"))
 	if err != nil {
 		return nil, err
 	}
 
-	projectFS := os.DirFS(reg.Root)
+	// The graph's shape depends on each kind's forwarding policy, so the
+	// compiled registry is required here for the same reason render needs
+	// it. -b compiles it in memory, for a project that has not built yet.
+	var kindReg registry.Registry
+	if c.Bool("build") {
+		mem := vfs.NewMem()
+		if _, err := runBuildPipeline(ctx, reg, mem, buildPipelineOpts{}); err != nil {
+			return nil, fmt.Errorf("building registry: %w", err)
+		}
+		kindReg, err = registry.FromStore(&registry.FSStore{FS: mem})
+		if err != nil {
+			return nil, fmt.Errorf("reading built registry: %w", err)
+		}
+	} else if kindReg, err = loadKindRegistry(reg, nil, true); err != nil {
+		return nil, err
+	}
+
+	projectFS := reg.FS()
 	handles, err := resource.Discover(ctx, projectFS, reg.ResourceDiscovery.GetPaths())
 	if err != nil {
 		return nil, fmt.Errorf("discovering resources: %w", err)
 	}
-	catalog, err := resource.NewCatalog(projectFS, handles)
+	catalog, err := resource.NewCatalog(projectFS, handles, kindReg)
 	if err != nil {
 		return nil, fmt.Errorf("building resource catalog: %w", err)
 	}
@@ -122,7 +145,7 @@ func runGraph(ctx context.Context, c *cli.Command) (*graphResponse, error) {
 		return nil, err
 	}
 
-	g, err := buildResourceGraph(catalog, root)
+	g, err := buildResourceGraph(root)
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +225,7 @@ func nodeID(kind, name string) string { return kind + "/" + name }
 // each target via the catalog. Resources visited more than once collapse
 // to a single node (graph, not tree); cycles are tolerated and pruned.
 // A missing target is reported with the chain that led to it.
-func buildResourceGraph(catalog resource.Catalog, root *resource.Resource) (*resourceGraph, error) {
+func buildResourceGraph(root *resource.Resource) (*resourceGraph, error) {
 	rootID := nodeID(root.GetMetadata().GetKind(), root.GetMetadata().GetName())
 	g := &resourceGraph{
 		rootID: rootID,
@@ -223,16 +246,12 @@ func buildResourceGraph(catalog resource.Catalog, root *resource.Resource) (*res
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
-		for _, dep := range cur.res.GetDependencies() {
-			depID := nodeID(dep.GetKind(), dep.GetName())
-			edge := &graphEdge{to: depID, params: dep.GetParams().AsMap()}
-			g.edges[cur.id] = append(g.edges[cur.id], edge)
+		for _, dep := range cur.res.Dependencies {
+			target := dep.Resource
+			depID := nodeID(target.GetMetadata().GetKind(), target.GetMetadata().GetName())
+			g.edges[cur.id] = append(g.edges[cur.id], &graphEdge{to: depID, params: dep.GetParams().AsMap()})
 			if _, seen := g.nodes[depID]; seen {
 				continue
-			}
-			target, err := catalog.LoadResource(dep.GetKind(), dep.GetName())
-			if err != nil {
-				return nil, fmt.Errorf("loading dependency %s required by %s: %w", depID, cur.id, err)
 			}
 			g.nodes[depID] = &graphNode{
 				kind: target.GetMetadata().GetKind(),

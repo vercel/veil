@@ -12,6 +12,7 @@ import (
 
 	"github.com/vercel/veil/pkg/build"
 	"github.com/vercel/veil/pkg/config"
+	"github.com/vercel/veil/pkg/project"
 )
 
 // typesPackage is the resolved shared types package for a build: the absolute
@@ -30,7 +31,7 @@ type typesPackage struct {
 // disagree on the package name or omit a module subpath, or when the
 // repo-owned package.json at output_dir is missing or names a different
 // package than the imports reference (veil manages only its `exports`).
-func resolveTypesPackage(reg *config.Registry) (*typesPackage, error) {
+func resolveTypesPackage(reg *project.Project) (*typesPackage, error) {
 	dir := reg.TypesOutputDir()
 	if dir == "" {
 		// An import without output_dir would silently degrade to a broken
@@ -142,7 +143,7 @@ func (tp *typesPackage) hostImportFor(kindName string) string {
 // every kind module imports). The package.json `exports` are updated
 // incrementally by writeManifest as each kind's module is written in the build
 // loop, so they stay scoped to kinds that actually built.
-func (tp *typesPackage) writeShared(reg *config.Registry) error {
+func (tp *typesPackage) writeShared(reg *project.Project) error {
 	if err := os.MkdirAll(tp.dir, 0755); err != nil {
 		return err
 	}
@@ -155,7 +156,7 @@ func (tp *typesPackage) writeShared(reg *config.Registry) error {
 
 // writeKindModule writes one kind's generated module (output_dir/<subpath>.ts),
 // importing the shared host types, and returns the file's absolute path.
-func (tp *typesPackage) writeKindModule(k *config.Kind, reg *config.Registry, graph *build.KindGraph) (string, error) {
+func (tp *typesPackage) writeKindModule(k *config.Kind, reg *project.Project, graph *build.KindGraph) (string, error) {
 	ts, err := build.VeilTypes(k, reg.Variables, graph, tp.hostImportFor(k.Name))
 	if err != nil {
 		return "", err
@@ -288,7 +289,7 @@ func decodePackageJSON(data []byte) (map[string]any, error) {
 }
 
 // encodeJSONValue marshals v with 2-space indent under the given line prefix
-// and — matching the rest of the repo's JSON output (see pkg/protoencode) —
+// and — matching the rest of the repo's JSON output (see pkg/codec) —
 // with HTML escaping OFF, so &, <, > in existing fields (npm scripts,
 // repository URLs) round-trip verbatim instead of being mangled to & etc.
 func encodeJSONValue(v any, prefix string) ([]byte, error) {

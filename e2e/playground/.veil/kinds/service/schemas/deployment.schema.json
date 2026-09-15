@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "replicas", "port", "region"],
+  "properties": {
+    "image": { "type": "string" },
+    "replicas": { "type": "integer", "minimum": 1 },
+    "port": { "type": "integer" },
+    "region": { "type": "string" },
+    "public": { "type": "boolean" }
+  }
+}

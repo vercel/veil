@@ -1,26 +1,31 @@
-package config
+package project
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+
+	"github.com/vercel/veil/pkg/config"
 
 	"github.com/stretchr/testify/suite"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
 )
 
-type DiscoverSuite struct {
+type ProjectSuite struct {
 	suite.Suite
 }
 
-func TestDiscoverSuite(t *testing.T) {
-	suite.Run(t, new(DiscoverSuite))
+func TestProjectSuite(t *testing.T) {
+	suite.Run(t, new(ProjectSuite))
 }
 
 // writeBareVeilJSON writes a minimal veil.json at the given root directory
 // and returns its path. Most tests use this to set up a project root.
-func (s *DiscoverSuite) writeVeilJSON(root, body string) string {
+func (s *ProjectSuite) writeVeilJSON(root, body string) string {
 	path := filepath.Join(root, "veil.json")
 	s.Require().NoError(os.WriteFile(path, []byte(body), 0644))
 	return path
@@ -32,7 +37,7 @@ func (s *DiscoverSuite) writeVeilJSON(root, body string) string {
 // config.Load doesn't try to fetch registry contents at load time.
 const stockRegistries = `"registries": { "": "./registry.json" }`
 
-func (s *DiscoverSuite) TestFindsBareVeilJSON() {
+func (s *ProjectSuite) TestFindsBareVeilJSON() {
 	root := s.T().TempDir()
 	nested := filepath.Join(root, "services", "api")
 	s.Require().NoError(os.MkdirAll(nested, 0755))
@@ -43,7 +48,7 @@ func (s *DiscoverSuite) TestFindsBareVeilJSON() {
 	s.Equal(root, reg.Root, "Root is the directory housing veil.json")
 }
 
-func (s *DiscoverSuite) TestFindsVeilJSONFromNestedDirectory() {
+func (s *ProjectSuite) TestFindsVeilJSONFromNestedDirectory() {
 	root := s.T().TempDir()
 	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
 	nested := filepath.Join(root, "services", "api")
@@ -65,24 +70,24 @@ func (s *DiscoverSuite) TestFindsVeilJSONFromNestedDirectory() {
 	s.Require().Len(reg.Kinds, 1)
 	k := reg.Kinds[0]
 	s.Equal("service", k.Name)
-	s.Equal([]string{"./sources/deployment.yaml"}, k.Sources)
+	s.Equal([]string{"./sources/deployment.yaml"}, k.SourcePaths())
 	s.Equal(kindsDir, k.Dir)
 }
 
-func (s *DiscoverSuite) TestErrorsWhenNoVeilJSON() {
+func (s *ProjectSuite) TestErrorsWhenNoVeilJSON() {
 	dir := s.T().TempDir()
 	_, err := Discover(dir)
 	s.Error(err)
 }
 
-func (s *DiscoverSuite) TestErrorsOnMissingKindFile() {
+func (s *ProjectSuite) TestErrorsOnMissingKindFile() {
 	root := s.T().TempDir()
 	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/missing.json"], `+stockRegistries+`}`)
 	_, err := Discover(root)
 	s.Error(err)
 }
 
-func (s *DiscoverSuite) TestErrorsWhenKindMissingName() {
+func (s *ProjectSuite) TestErrorsWhenKindMissingName() {
 	root := s.T().TempDir()
 	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
 	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
@@ -94,7 +99,7 @@ func (s *DiscoverSuite) TestErrorsWhenKindMissingName() {
 	s.Error(err)
 }
 
-func (s *DiscoverSuite) TestLoadsVariablesWithDefaults() {
+func (s *ProjectSuite) TestLoadsVariablesWithDefaults() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -113,26 +118,26 @@ func (s *DiscoverSuite) TestLoadsVariablesWithDefaults() {
 
 	env := reg.Variables["env"]
 	s.Equal(veilv1.VariableType_string, env.Type)
-	s.True(HasDefault(env))
-	defVal, err := ParsedDefault(env)
+	s.True(config.HasDefault(env))
+	defVal, err := config.ParsedDefault(env)
 	s.Require().NoError(err)
 	s.Equal("dev", defVal)
 
 	region := reg.Variables["region"]
-	s.False(HasDefault(region))
+	s.False(config.HasDefault(region))
 
 	replicas := reg.Variables["replicas"]
-	rv, err := ParsedDefault(replicas)
+	rv, err := config.ParsedDefault(replicas)
 	s.Require().NoError(err)
 	s.Equal(float64(3), rv)
 
 	debug := reg.Variables["debug"]
-	dv, err := ParsedDefault(debug)
+	dv, err := config.ParsedDefault(debug)
 	s.Require().NoError(err)
 	s.Equal(false, dv)
 }
 
-func (s *DiscoverSuite) TestLoadsCliVersion() {
+func (s *ProjectSuite) TestLoadsCliVersion() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -145,7 +150,7 @@ func (s *DiscoverSuite) TestLoadsCliVersion() {
 	s.Equal("v1.4.0", reg.CliVersion)
 }
 
-func (s *DiscoverSuite) TestCliVersionDefaultsEmptyWhenUnset() {
+func (s *ProjectSuite) TestCliVersionDefaultsEmptyWhenUnset() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{"kinds": [], `+stockRegistries+`}`)
 
@@ -154,7 +159,7 @@ func (s *DiscoverSuite) TestCliVersionDefaultsEmptyWhenUnset() {
 	s.Empty(reg.CliVersion)
 }
 
-func (s *DiscoverSuite) TestRejectsUnknownVariableType() {
+func (s *ProjectSuite) TestRejectsUnknownVariableType() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -167,7 +172,7 @@ func (s *DiscoverSuite) TestRejectsUnknownVariableType() {
 	s.Contains(err.Error(), `"string"`)
 }
 
-func (s *DiscoverSuite) TestAcceptsEnumOnStringAndNumber() {
+func (s *ProjectSuite) TestAcceptsEnumOnStringAndNumber() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -180,12 +185,12 @@ func (s *DiscoverSuite) TestAcceptsEnumOnStringAndNumber() {
 	reg, err := Load(path)
 	s.Require().NoError(err)
 	env := reg.Variables["env"]
-	vals, err := ParsedEnum(env)
+	vals, err := config.ParsedEnum(env)
 	s.Require().NoError(err)
 	s.Equal([]any{"dev", "staging", "prod"}, vals)
 }
 
-func (s *DiscoverSuite) TestRejectsEnumOnBool() {
+func (s *ProjectSuite) TestRejectsEnumOnBool() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -197,7 +202,7 @@ func (s *DiscoverSuite) TestRejectsEnumOnBool() {
 	s.Contains(err.Error(), "enum is not supported for bool")
 }
 
-func (s *DiscoverSuite) TestRejectsDefaultNotInEnum() {
+func (s *ProjectSuite) TestRejectsDefaultNotInEnum() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -212,7 +217,7 @@ func (s *DiscoverSuite) TestRejectsDefaultNotInEnum() {
 	s.Contains(err.Error(), "enum")
 }
 
-func (s *DiscoverSuite) TestKindVariablesMergeIntoRegistry() {
+func (s *ProjectSuite) TestKindVariablesMergeIntoRegistry() {
 	root := s.T().TempDir()
 	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
 	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
@@ -242,12 +247,12 @@ func (s *DiscoverSuite) TestKindVariablesMergeIntoRegistry() {
 
 	replicas := reg.Variables["replicas"]
 	s.Equal(veilv1.VariableType_number, replicas.Type)
-	rv, err := ParsedDefault(replicas)
+	rv, err := config.ParsedDefault(replicas)
 	s.Require().NoError(err)
 	s.Equal(float64(3), rv)
 }
 
-func (s *DiscoverSuite) TestKindVariablesConflictWithVeilJSON() {
+func (s *ProjectSuite) TestKindVariablesConflictWithVeilJSON() {
 	root := s.T().TempDir()
 	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
 	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
@@ -275,7 +280,7 @@ func (s *DiscoverSuite) TestKindVariablesConflictWithVeilJSON() {
 	s.Contains(err.Error(), `kind "service"`)
 }
 
-func (s *DiscoverSuite) TestKindVariablesConflictAcrossKinds() {
+func (s *ProjectSuite) TestKindVariablesConflictAcrossKinds() {
 	root := s.T().TempDir()
 	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
 	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
@@ -309,7 +314,7 @@ func (s *DiscoverSuite) TestKindVariablesConflictAcrossKinds() {
 	s.Contains(err.Error(), `kind "worker"`)
 }
 
-func (s *DiscoverSuite) TestKindVariableValidationErrorsMentionKind() {
+func (s *ProjectSuite) TestKindVariableValidationErrorsMentionKind() {
 	root := s.T().TempDir()
 	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
 	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
@@ -331,7 +336,7 @@ func (s *DiscoverSuite) TestKindVariableValidationErrorsMentionKind() {
 	s.Contains(err.Error(), "expected number")
 }
 
-func (s *DiscoverSuite) TestRejectsDefaultTypeMismatch() {
+func (s *ProjectSuite) TestRejectsDefaultTypeMismatch() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -344,7 +349,7 @@ func (s *DiscoverSuite) TestRejectsDefaultTypeMismatch() {
 	s.Contains(err.Error(), "expected number")
 }
 
-func (s *DiscoverSuite) TestAcceptsRenderHookStringShorthand() {
+func (s *ProjectSuite) TestAcceptsRenderHookStringShorthand() {
 	root := s.T().TempDir()
 	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
 	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
@@ -374,7 +379,7 @@ func (s *DiscoverSuite) TestAcceptsRenderHookStringShorthand() {
 	s.Equal("./hooks/inject-probes.ts", render[2].GetPath())
 }
 
-func (s *DiscoverSuite) TestAcceptsValidRegistryAliases() {
+func (s *ProjectSuite) TestAcceptsValidRegistryAliases() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -389,7 +394,7 @@ func (s *DiscoverSuite) TestAcceptsValidRegistryAliases() {
 	s.Require().NoError(err)
 }
 
-func (s *DiscoverSuite) TestRejectsAliasStartingWithDot() {
+func (s *ProjectSuite) TestRejectsAliasStartingWithDot() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -401,7 +406,7 @@ func (s *DiscoverSuite) TestRejectsAliasStartingWithDot() {
 	s.Contains(err.Error(), "pattern")
 }
 
-func (s *DiscoverSuite) TestRejectsAliasContainingSlash() {
+func (s *ProjectSuite) TestRejectsAliasContainingSlash() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -413,7 +418,7 @@ func (s *DiscoverSuite) TestRejectsAliasContainingSlash() {
 	s.Contains(err.Error(), "pattern")
 }
 
-func (s *DiscoverSuite) TestRejectsAliasContainingColon() {
+func (s *ProjectSuite) TestRejectsAliasContainingColon() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -425,7 +430,7 @@ func (s *DiscoverSuite) TestRejectsAliasContainingColon() {
 	s.Contains(err.Error(), "pattern")
 }
 
-func (s *DiscoverSuite) TestAcceptsValidRegistryLocations() {
+func (s *ProjectSuite) TestAcceptsValidRegistryLocations() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -440,7 +445,7 @@ func (s *DiscoverSuite) TestAcceptsValidRegistryLocations() {
 	s.Require().NoError(err)
 }
 
-func (s *DiscoverSuite) TestRejectsRegistryLocationWithUnsupportedScheme() {
+func (s *ProjectSuite) TestRejectsRegistryLocationWithUnsupportedScheme() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -452,7 +457,7 @@ func (s *DiscoverSuite) TestRejectsRegistryLocationWithUnsupportedScheme() {
 	s.Contains(err.Error(), "pattern")
 }
 
-func (s *DiscoverSuite) TestRejectsRegistryLocationFileScheme() {
+func (s *ProjectSuite) TestRejectsRegistryLocationFileScheme() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -463,7 +468,7 @@ func (s *DiscoverSuite) TestRejectsRegistryLocationFileScheme() {
 	s.Contains(err.Error(), "pattern")
 }
 
-func (s *DiscoverSuite) TestRejectsEmptyRegistryLocation() {
+func (s *ProjectSuite) TestRejectsEmptyRegistryLocation() {
 	root := s.T().TempDir()
 	path := s.writeVeilJSON(root, `{
 		"kinds": [],
@@ -477,7 +482,7 @@ func (s *DiscoverSuite) TestRejectsEmptyRegistryLocation() {
 // TestLoadsVeilYAML exercises the YAML ingestion path: a project rooted
 // at veil.yaml is discovered the same way as one rooted at veil.json,
 // and a kind declared in kind.yaml loads through the same code path.
-func (s *DiscoverSuite) TestLoadsVeilYAML() {
+func (s *ProjectSuite) TestLoadsVeilYAML() {
 	root := s.T().TempDir()
 	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
 	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
@@ -508,7 +513,7 @@ registries:
 
 	k := reg.Kinds[0]
 	s.Equal("service", k.Name)
-	s.Equal([]string{"./sources/deployment.yaml"}, k.Sources)
+	s.Equal([]string{"./sources/deployment.yaml"}, k.SourcePaths())
 	s.Equal(filepath.Join(kindsDir, "service.yaml"), k.Path)
 	s.Equal(kindsDir, k.Dir)
 	render := k.RenderHooks()
@@ -519,7 +524,7 @@ registries:
 // TestVeilJSONWinsOverYAMLAtSameDir documents the precedence rule:
 // when both veil.json and veil.yaml exist in the same directory, JSON
 // wins (matches the historical behavior + scaffolder default).
-func (s *DiscoverSuite) TestVeilJSONWinsOverYAMLAtSameDir() {
+func (s *ProjectSuite) TestVeilJSONWinsOverYAMLAtSameDir() {
 	root := s.T().TempDir()
 	jsonPath := s.writeVeilJSON(root, `{"kinds":[], `+stockRegistries+`}`)
 	s.Require().NoError(os.WriteFile(filepath.Join(root, "veil.yaml"),
@@ -530,7 +535,7 @@ func (s *DiscoverSuite) TestVeilJSONWinsOverYAMLAtSameDir() {
 	s.Equal(jsonPath, reg.ConfigPath)
 }
 
-func (s *DiscoverSuite) TestAcceptsRenderHookObjectWithAccess() {
+func (s *ProjectSuite) TestAcceptsRenderHookObjectWithAccess() {
 	root := s.T().TempDir()
 	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
 	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
@@ -561,4 +566,118 @@ func (s *DiscoverSuite) TestAcceptsRenderHookObjectWithAccess() {
 	s.Require().Len(envs, 1)
 	s.Equal("API_KEY", envs[0].GetName())
 	s.Equal("auth token", envs[0].GetDescription())
+}
+
+func (s *ProjectSuite) TestAcceptsSourceObjectWithSchema() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.MkdirAll(filepath.Join(kindsDir, "schemas"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "schemas", "deployment.schema.json"), []byte(`{"type": "object"}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": [
+			"./sources/plain.yaml",
+			{ "path": "./sources/deployment.yaml", "schema": "./schemas/deployment.schema.json" }
+		],
+		"schema": "./schemas/service.schema.json"
+	}`), 0644))
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
+
+	reg, err := Load(filepath.Join(root, "veil.json"))
+	s.Require().NoError(err)
+	s.Require().Len(reg.Kinds, 1)
+
+	k := reg.Kinds[0]
+	s.Equal([]string{"./sources/plain.yaml", "./sources/deployment.yaml"}, k.SourcePaths())
+	defs := k.SourceDefs()
+	s.Require().Len(defs, 2)
+	s.Equal("", defs[0].GetSchema())
+	s.Equal("./schemas/deployment.schema.json", defs[1].GetSchema())
+}
+
+func (s *ProjectSuite) TestRejectsSourceWithMissingSchemaFile() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": [
+			{ "path": "./sources/deployment.yaml", "schema": "./schemas/missing.schema.json" }
+		],
+		"schema": "./schemas/service.schema.json"
+	}`), 0644))
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
+
+	_, err := Load(filepath.Join(root, "veil.json"))
+	s.Require().Error(err)
+	s.Contains(err.Error(), "missing.schema.json")
+}
+
+func (s *ProjectSuite) TestRejectsSchemaDeclaredSourceWithUnsupportedExtension() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.MkdirAll(filepath.Join(kindsDir, "schemas"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "schemas", "deployment.schema.json"), []byte(`{"type":"object"}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": [
+			{ "path": "./sources/deployment.conf", "schema": "./schemas/deployment.schema.json" }
+		],
+		"schema": "./schemas/service.schema.json"
+	}`), 0644))
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
+
+	_, err := Load(filepath.Join(root, "veil.json"))
+	s.Require().Error(err)
+	s.Contains(err.Error(), "deployment.conf")
+	s.Contains(err.Error(), ".json, .yaml, or .yml")
+}
+
+func (s *ProjectSuite) TestAcceptsSchemaDeclaredSourceWithSupportedExtensions() {
+	root := s.T().TempDir()
+	kindsDir := filepath.Join(root, ArtifactsDir, "kinds")
+	s.Require().NoError(os.MkdirAll(kindsDir, 0755))
+	s.Require().NoError(os.MkdirAll(filepath.Join(kindsDir, "schemas"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "schemas", "deployment.schema.json"), []byte(`{"type":"object"}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(kindsDir, "service.json"), []byte(`{
+		"name": "service",
+		"sources": [
+			{ "path": "./sources/a.json", "schema": "./schemas/deployment.schema.json" },
+			{ "path": "./sources/b.yaml", "schema": "./schemas/deployment.schema.json" },
+			{ "path": "./sources/c.yml", "schema": "./schemas/deployment.schema.json" }
+		],
+		"schema": "./schemas/service.schema.json"
+	}`), 0644))
+	s.writeVeilJSON(root, `{"kinds": ["./.veil/kinds/service.json"], `+stockRegistries+`}`)
+
+	reg, err := Load(filepath.Join(root, "veil.json"))
+	s.Require().NoError(err)
+	s.Require().Len(reg.Kinds, 1)
+}
+
+func (s *ProjectSuite) TestLoadsRemoteSchemasWithoutNetwork() {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	root := s.T().TempDir()
+	ref := server.URL + "/schema.json?version=1"
+	s.Require().NoError(os.WriteFile(filepath.Join(root, "kind.json"), []byte(`{
+		"name": "service",
+		"schema": "`+ref+`",
+		"sources": [{"path": "source.yaml", "schema": "`+ref+`"}],
+		"hooks": {"dependents": [{"kind": "consumer", "paths": ["hook.ts"], "params_path": "`+ref+`"}]}
+	}`), 0644))
+	configPath := s.writeVeilJSON(root, `{"kinds": ["kind.json"], `+stockRegistries+`}`)
+	reg, err := Load(configPath)
+	s.Require().NoError(err)
+	s.Require().Len(reg.Kinds, 1)
+	s.Equal(ref, reg.Kinds[0].GetSchema())
+	s.Equal(ref, reg.Kinds[0].SourceDefs()[0].GetSchema())
+	s.Equal(ref, reg.Kinds[0].GetHooks().GetDependents()[0].GetParamsPath())
+	s.Equal(int32(0), requests.Load())
 }

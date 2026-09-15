@@ -1,4 +1,4 @@
-package protoencode
+package codec
 
 import (
 	"bytes"
@@ -10,15 +10,15 @@ import (
 	"github.com/stretchr/testify/suite"
 )
 
-type YAMLSuite struct {
+type CodecSuite struct {
 	suite.Suite
 }
 
-func TestYAMLSuite(t *testing.T) {
-	suite.Run(t, new(YAMLSuite))
+func TestCodecSuite(t *testing.T) {
+	suite.Run(t, new(CodecSuite))
 }
 
-func (s *YAMLSuite) TestIsYAMLOnExtensions() {
+func (s *CodecSuite) TestIsYAMLOnExtensions() {
 	cases := map[string]bool{
 		"foo.json":             false,
 		"foo.yaml":             true,
@@ -42,7 +42,7 @@ func (s *YAMLSuite) TestIsYAMLOnExtensions() {
 
 // TestReadFileDispatchesByExtension confirms the decoder map: a .json
 // path goes through the JSON decoder, a .yaml path through yaml.v3.
-func (s *YAMLSuite) TestReadFileDispatchesByExtension() {
+func (s *CodecSuite) TestReadFileDispatchesByExtension() {
 	dir := s.T().TempDir()
 	jsonPath := filepath.Join(dir, "doc.json")
 	s.Require().NoError(os.WriteFile(jsonPath, []byte(`{"a":1,"b":["x","y"]}`), 0644))
@@ -69,7 +69,7 @@ func (s *YAMLSuite) TestReadFileDispatchesByExtension() {
 // extension isn't in the decoder map — anything unknown is treated
 // as JSON. Mirrors how legacy callers (HTTP URLs without an explicit
 // suffix) still work.
-func (s *YAMLSuite) TestReadFileFallsBackToJSON() {
+func (s *CodecSuite) TestReadFileFallsBackToJSON() {
 	dir := s.T().TempDir()
 	path := filepath.Join(dir, "no-extension")
 	s.Require().NoError(os.WriteFile(path, []byte(`{"a":1}`), 0644))
@@ -81,7 +81,7 @@ func (s *YAMLSuite) TestReadFileFallsBackToJSON() {
 
 // TestWriteFileAnyDispatchesByExtension confirms the encoder map
 // produces format-appropriate output for each extension.
-func (s *YAMLSuite) TestWriteFileAnyDispatchesByExtension() {
+func (s *CodecSuite) TestWriteFileAnyDispatchesByExtension() {
 	dir := s.T().TempDir()
 	doc := map[string]any{"a": 1, "b": []any{"x", "y"}}
 
@@ -103,7 +103,7 @@ func (s *YAMLSuite) TestWriteFileAnyDispatchesByExtension() {
 
 // TestRoundTripPreservesData runs decode → encode → decode and
 // confirms semantic equivalence after the YAML round-trip.
-func (s *YAMLSuite) TestRoundTripPreservesData() {
+func (s *CodecSuite) TestRoundTripPreservesData() {
 	dir := s.T().TempDir()
 	orig := map[string]any{
 		"a": 1,
@@ -125,7 +125,7 @@ func (s *YAMLSuite) TestRoundTripPreservesData() {
 // — used by registry's HTTP fetches — and confirms NewDecoder picks
 // JSON vs YAML by peeking the first non-whitespace byte rather than
 // any path/extension hint.
-func (s *YAMLSuite) TestDecodeAutoDetectsFormatFromBytes() {
+func (s *CodecSuite) TestDecodeAutoDetectsFormatFromBytes() {
 	var doc map[string]any
 	s.Require().NoError(Decode(strings.NewReader("a: 1\n"), &doc))
 	s.NotZero(doc["a"])

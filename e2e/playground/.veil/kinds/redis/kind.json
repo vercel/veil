@@ -1,0 +1,15 @@
+{
+  "name": "redis",
+  "schema": "./schema.json",
+  "sources": [{ "path": "./sources/cache.yaml", "schema": "./schemas/cache.schema.json" }],
+  "hooks": {
+    "render": [{ "path": "./hooks/src/size-nodes.ts" }],
+    "dependents": [
+      {
+        "kind": "service",
+        "paths": ["./hooks/src/dependents/inject-redis-url.ts"],
+        "params_path": "./schemas/service.params.json"
+      }
+    ]
+  }
+}

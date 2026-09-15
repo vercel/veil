@@ -1,0 +1,1 @@
+{ "engine": "postgres-16", "instanceClass": "db.t4g.micro", "storageGb": 20, "multiAz": false }

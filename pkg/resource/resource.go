@@ -11,11 +11,11 @@ import (
 	"fmt"
 	"io/fs"
 
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	veilv1 "github.com/vercel/veil/api/go/veil/v1"
-	"github.com/vercel/veil/pkg/protoencode"
+	"github.com/vercel/veil/pkg/codec"
+	"github.com/vercel/veil/pkg/registry"
 )
 
 // Resource pairs a proto-defined Resource with the fs.FS-relative
@@ -30,6 +30,38 @@ type Resource struct {
 	*veilv1.Resource
 	Path        string
 	RenderHooks []*veilv1.RenderHookDefinition
+
+	// Kind is the compiled kind this resource declares, resolved when
+	// the resource loaded — its schema, validators, and hooks, ready to
+	// use. A Catalog fills it in; Load leaves it nil, since resolving a
+	// kind name needs the registry.
+	Kind *registry.LoadedKind
+
+	// Dependencies are the edges that act on this resource: its own
+	// declared `dependencies`, in order, plus every edge forwarded up
+	// from them. A dependency forwards when its `forward` flag is set or
+	// its target kind is listed in the declaring kind's
+	// forward_dependencies, and forwarding chains — so for
+	// A -> B -> table, A sees the table only if B forwards it.
+	//
+	// Each entry pairs the declaration — which carries the params the
+	// target's dependent hooks receive — with the resolved target, so
+	// nothing has to line two slices up by index. One target can appear
+	// more than once when several edges reach it; that is deliberate,
+	// since each edge carries its own params.
+	//
+	// A Catalog fills this in; Load leaves it nil, since resolving a
+	// (kind, name) reference needs the catalog's index.
+	Dependencies []*Dependency
+}
+
+// Dependency is one edge of the resource graph: the declaration as
+// authored — target kind and name, the params its dependent hooks
+// receive, whether it forwards — paired with the resource it names.
+type Dependency struct {
+	*veilv1.Dependency
+	// Resource is the target, itself fully resolved.
+	Resource *Resource
 }
 
 // Load reads a single resource file from fsys, unmarshals it via
@@ -45,7 +77,7 @@ func Load(fsys fs.FS, path string) (*Resource, error) {
 	defer f.Close()
 
 	r := &veilv1.Resource{}
-	if err := protoencode.UnmarshalProto(f, r); err != nil {
+	if err := codec.Decode(f, r); err != nil {
 		return nil, fmt.Errorf("loading %s: %w", path, err)
 	}
 	if err := validateResourceHooks(r.GetMetadata().GetHooks()); err != nil {
@@ -103,13 +135,9 @@ func parseHookEntry(v *structpb.Value) (*veilv1.RenderHookDefinition, error) {
 		}
 		return &veilv1.RenderHookDefinition{Path: kind.StringValue}, nil
 	case *structpb.Value_StructValue:
-		raw, err := protojson.Marshal(kind.StructValue)
-		if err != nil {
-			return nil, fmt.Errorf("marshalling hook entry: %w", err)
-		}
 		def := &veilv1.RenderHookDefinition{}
-		if err := protoencode.Unmarshal.Unmarshal(raw, def); err != nil {
-			return nil, fmt.Errorf("unmarshalling hook entry: %w", err)
+		if err := codec.Convert(kind.StructValue, def); err != nil {
+			return nil, fmt.Errorf("hook entry: %w", err)
 		}
 		if def.GetPath() == "" {
 			return nil, fmt.Errorf("hook entry object missing required `path` field")

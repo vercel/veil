@@ -1,0 +1,7 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "description": "What a service tells a platform when it adopts it.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": { "team": { "type": "string" } }
+}
