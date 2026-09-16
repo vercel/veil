@@ -529,6 +529,11 @@ it only describes the resource-specific data (e.g. `port`, `replicas`, `image`).
 2. A **`veil-types.ts`** file containing TypeScript interfaces generated from each resource's spec schema.
    Hooks can import these types for type-safe access to the resource data.
 
+   `anyOf` and `oneOf` generate TypeScript unions, including nullable types such as
+   `string | null`. Root unions use type aliases rather than interfaces. Sibling
+   type constraints intersect with the union; `oneOf`'s exactly-one-match rule
+   remains a JSON Schema validation constraint, not a TypeScript guarantee.
+
 Output is written to `.veil/resource-schemas/` by default (configurable via `--out`).
 
 ## Resource

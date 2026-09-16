@@ -20,6 +20,8 @@ type Schema struct {
 	AdditionalProperties *Schema           `json:"additionalProperties,omitempty"`
 	Description          string            `json:"description,omitempty"`
 	Enum                 []any             `json:"enum,omitempty"`
+	AnyOf                []Schema          `json:"anyOf,omitempty"`
+	OneOf                []Schema          `json:"oneOf,omitempty"`
 	Default              any               `json:"default,omitempty"`
 	HasDefault           bool              `json:"-"`
 }
@@ -37,6 +39,8 @@ type schemaRaw struct {
 	AdditionalProperties json.RawMessage   `json:"additionalProperties,omitempty"`
 	Description          string            `json:"description,omitempty"`
 	Enum                 []any             `json:"enum,omitempty"`
+	AnyOf                []Schema          `json:"anyOf,omitempty"`
+	OneOf                []Schema          `json:"oneOf,omitempty"`
 	Default              *any              `json:"default,omitempty"`
 }
 
@@ -56,6 +60,8 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	s.Items = r.Items
 	s.Description = r.Description
 	s.Enum = r.Enum
+	s.AnyOf = r.AnyOf
+	s.OneOf = r.OneOf
 	if r.Default != nil {
 		s.Default = *r.Default
 		s.HasDefault = true
@@ -78,6 +84,10 @@ func GenerateInterface(name string, s Schema) string {
 	var b strings.Builder
 	if s.Description != "" {
 		b.WriteString(formatComment(s.Description, ""))
+	}
+	if len(s.AnyOf) > 0 || len(s.OneOf) > 0 {
+		fmt.Fprintf(&b, "export type %s = %s;\n", name, tsType(s))
+		return b.String()
 	}
 	b.WriteString(fmt.Sprintf("export interface %s {\n", name))
 
@@ -106,6 +116,30 @@ func GenerateInterface(name string, s Schema) string {
 
 // tsType converts a JSON Schema property to a TypeScript type string.
 func tsType(s Schema) string {
+	if len(s.AnyOf) == 0 && len(s.OneOf) == 0 {
+		return tsBaseType(s)
+	}
+	parts := make([]string, 0, 3)
+	if base := tsBaseType(s); base != "unknown" {
+		parts = append(parts, "("+base+")")
+	}
+	for _, branches := range [][]Schema{s.AnyOf, s.OneOf} {
+		if len(branches) == 0 {
+			continue
+		}
+		types := make([]string, len(branches))
+		for i, branch := range branches {
+			types[i] = tsType(branch)
+		}
+		parts = append(parts, strings.Join(types, " | "))
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return "(" + strings.Join(parts, ") & (") + ")"
+}
+
+func tsBaseType(s Schema) string {
 	if len(s.Enum) > 0 {
 		return enumType(s.Enum)
 	}
@@ -117,9 +151,15 @@ func tsType(s Schema) string {
 		return "number"
 	case "boolean":
 		return "boolean"
+	case "null":
+		return "null"
 	case "array":
 		if s.Items != nil {
-			return tsType(*s.Items) + "[]"
+			item := tsType(*s.Items)
+			if strings.ContainsAny(item, "|&") {
+				return "(" + item + ")[]"
+			}
+			return item + "[]"
 		}
 		return "unknown[]"
 	case "object":
