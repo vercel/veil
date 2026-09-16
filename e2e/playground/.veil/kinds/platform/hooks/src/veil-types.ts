@@ -145,6 +145,17 @@ export interface Platform {
   tier: string;
 }
 
+/** What a service tells a database when it depends on it. */
+export interface PostgresDependencyParams {
+  /** Env var the connection string is written to */
+  envVar: string;
+  poolSize: number;
+}
+
+export interface RedisDependencyParams {
+  envVar: string;
+}
+
 /** Nothing is required to be placed in a VPC. */
 export interface VpcDependencyParams {
   note?: string;
@@ -153,6 +164,8 @@ export interface VpcDependencyParams {
 /** A single dependency this kind may declare. The discriminator
  *  `kind` selects the params shape. */
 export type Dependency =
+  | { kind: "postgres"; name: string; params: PostgresDependencyParams }
+  | { kind: "redis"; name: string; params: RedisDependencyParams }
   | { kind: "vpc"; name: string; params: VpcDependencyParams };
 
 export interface Override {

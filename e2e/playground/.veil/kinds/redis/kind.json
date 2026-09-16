@@ -21,6 +21,13 @@
           "./hooks/src/dependents/inject-redis-url.ts"
         ],
         "params_path": "./schemas/service.params.json"
+      },
+      {
+        "kind": "platform",
+        "paths": [
+          "./hooks/src/dependents/register-with-platform.ts"
+        ],
+        "params_path": "./schemas/service.params.json"
       }
     ]
   }

@@ -281,6 +281,67 @@ export interface ValidateHook {
 // kind. Each block replicates the consumer's spec / FS shape so the
 // per-consumer hook receives concretely-typed `consumer` and `fs`.
 
+/** A bundle of shared infrastructure a team adopts as one unit. Its dependencies are forwarded, so a service that depends on a platform inherits the platform's database and cache. */
+export interface PlatformSpec {
+  owner: string;
+  tier: string;
+}
+
+export interface PlatformFS {
+  /** Handle for the declared source "./sources/platform.json". */
+  getSourcesPlatformJson(): File<PlatformPlatform>;
+
+  /** Look up a file handle by its path. Returns undefined if absent.
+   *  Always File<string> — still schema-enforced, just doesn't parse
+   *  for you. */
+  get(path: string): File | undefined;
+  /** Every file handle currently present (including tombstoned ones —
+   *  filter via `file.isDeleted()` if you only want live files). */
+  getAll(): File[];
+  /** Create a new file at the given path. Errors if a file with that path already exists. */
+  add(path: string, content: string): File;
+  /** Tombstone the file at the given path (soft delete — downstream hooks still see it). */
+  delete(path: string): void;
+  /** All paths currently present. */
+  keys(): string[];
+}
+
+export interface PlatformPlatform {
+  owner: string;
+  provides: string[];
+  tier: string;
+}
+
+/** What a service tells a database when it depends on it. */
+export interface PlatformParams {
+  /** Env var the connection string is written to */
+  envVar: string;
+  poolSize: number;
+}
+
+export interface PlatformDependentHookContext {
+  /** This kind's resolved resource. */
+  self: Resource<PostgresSpec, Dependency>;
+  /** The consumer resource that declared a dependency on us. */
+  consumer: Resource<PlatformSpec>;
+  /** Path of the consumer resource file being rendered, relative
+   *  to the veil project root. */
+  path: string;
+  /** Params the consumer supplied for this dependency. */
+  params: PlatformParams;
+  vars: RegistryVariables;
+  root: string;
+  std: Std;
+  os: Os;
+  fetch: Fetch;
+}
+
+export interface PlatformDependentHook {
+  /** Runs after the consumer's render hooks complete. Mutates the
+   *  consumer's bundle to wire it up against this resource. */
+  render(ctx: PlatformDependentHookContext, fs: PlatformFS): PlatformFS | void | Promise<PlatformFS | void>;
+}
+
 /** An Acme application service. */
 export interface ServiceSpec {
   image: string;

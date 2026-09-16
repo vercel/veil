@@ -685,3 +685,85 @@ func (s *E2ESuite) TestLegacySourcesOnlyRegistryRenders() {
 		s.read(got, "orders-db", "sources/database.json"),
 		"a registry with only `sources` must render exactly as one with `files`")
 }
+
+// intentionalRenderFailures are the playground resources that are
+// supposed to fail, each a fixture some other test asserts on. Anything
+// else under resources/ has to render — that is what makes
+// TestEveryResourceRenders able to catch a fixture that quietly stopped
+// working, which is how a kind ended up depending on one that listed no
+// dependent hooks for it.
+var intentionalRenderFailures = map[string]string{
+	"resources/edge-cases/bad-rotation-secret.json": "a hook writes past its source's schema",
+	"resources/edge-cases/orphan-service.json":      "a validate hook rejects a service with no database",
+}
+
+// TestEveryResourceRenders renders the whole playground. Overlays are
+// skipped — they are fragments of another resource, not resources — and
+// the fixtures above are asserted to fail rather than silently excluded.
+func (s *E2ESuite) TestEveryResourceRenders() {
+	var renderable, expectedFailures []string
+	err := filepath.Walk(filepath.Join(s.root, "resources"), func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".json") {
+			return err
+		}
+		rel, relErr := filepath.Rel(s.root, path)
+		if relErr != nil {
+			return relErr
+		}
+		rel = filepath.ToSlash(rel)
+
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		var doc struct {
+			Metadata struct {
+				Kind     string `json:"kind"`
+				FileType string `json:"file_type"`
+			} `json:"metadata"`
+		}
+		if jsonErr := json.Unmarshal(raw, &doc); jsonErr != nil {
+			return jsonErr
+		}
+		switch {
+		case doc.Metadata.FileType == "overlay":
+			// Applied to the resource it overlays, never rendered alone.
+		case intentionalRenderFailures[rel] != "":
+			expectedFailures = append(expectedFailures, rel)
+		default:
+			renderable = append(renderable, rel)
+		}
+		return nil
+	})
+	s.Require().NoError(err)
+	s.Require().NotEmpty(renderable)
+
+	// One pass over everything, which is also how a real project renders:
+	// many resources, one invocation.
+	out := s.T().TempDir()
+	args := append([]string{"render"}, renderable...)
+	stdout, err := s.run(append(args, "--out", out, "--quiet")...)
+	s.Require().NoError(err, "the whole playground should render: %s", stdout)
+
+	// Every one of them produced files.
+	for _, rel := range renderable {
+		raw, readErr := os.ReadFile(filepath.Join(s.root, rel))
+		s.Require().NoError(readErr)
+		var doc struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		}
+		s.Require().NoError(json.Unmarshal(raw, &doc))
+		entries, readErr := os.ReadDir(filepath.Join(out, doc.Metadata.Name))
+		s.Require().NoError(readErr, "%s rendered no directory", rel)
+		s.NotEmpty(entries, "%s rendered no files", rel)
+	}
+
+	// And the fixtures that are meant to fail still do, for their reason
+	// rather than by having rotted into some unrelated error.
+	for _, rel := range expectedFailures {
+		msg := s.renderFails(rel)
+		s.NotEmpty(msg, "%s: %s", rel, intentionalRenderFailures[rel])
+	}
+}
