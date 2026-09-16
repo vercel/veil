@@ -782,3 +782,36 @@ func (s *E2ESuite) TestAssetPromotedToOutputPerResource() {
 	s.NoFileExists(filepath.Join(checkout, "checkout", "files", "labels.json"),
 		"checkout does not, so the same asset stays unwritten")
 }
+
+// TestRenderedAndDeletedAreOneFlag drives the whole of it through the
+// real binary on one resource. `reports` promotes the kind's labels
+// asset into its output and drops the generated manifest, so the two
+// files trade places: the thing the kind never meant to write is
+// written, and the thing it did is not.
+//
+// Both directions come from the same flag — setRendered(true) on the
+// asset, setDeleted(true) on the manifest — and the hooks assert the
+// inverse reads back (isRendered false after deleting) as they go, so a
+// regression fails the render rather than just the file list.
+func (s *E2ESuite) TestRenderedAndDeletedAreOneFlag() {
+	out := s.render("resources/services/reports.json")
+
+	// The asset was promoted.
+	s.FileExists(filepath.Join(out, "reports", "files", "labels.json"))
+	s.Contains(s.read(out, "reports", "files/labels.json"), "app.acme.io/tier")
+
+	// The render file was dropped, after post_render had created it.
+	s.NoFileExists(filepath.Join(out, "reports", "sources", "manifest.json"))
+
+	// Everything else is untouched — deleting one file does not disturb
+	// the rest of the bundle.
+	s.FileExists(filepath.Join(out, "reports", "sources", "deployment.yaml"))
+	s.Contains(s.read(out, "reports", "sources/env"), "REPORTS_DATABASE_URL=postgres://")
+
+	// And the same kind renders the other way round for a resource that
+	// asks for neither, so this is the resource's decision and not the
+	// declaration's.
+	checkout := s.render("resources/services/checkout.json")
+	s.NoFileExists(filepath.Join(checkout, "checkout", "files", "labels.json"))
+	s.FileExists(filepath.Join(checkout, "checkout", "sources", "manifest.json"))
+}

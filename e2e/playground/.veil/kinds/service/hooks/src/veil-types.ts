@@ -2,6 +2,8 @@
 
 /** An Acme application service. */
 export interface ServiceSpec {
+  /** Drop the generated manifest from the rendered output. */
+  dropManifest?: boolean;
   image: string;
   port: number;
   public: boolean;

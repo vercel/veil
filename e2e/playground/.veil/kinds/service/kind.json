@@ -32,6 +32,9 @@
       },
       {
         "path": "./hooks/src/write-manifest.ts"
+      },
+      {
+        "path": "./hooks/src/drop-manifest.ts"
       }
     ],
     "validate": [

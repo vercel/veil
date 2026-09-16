@@ -26,6 +26,10 @@
     "publishLabels": {
       "type": "boolean",
       "description": "Emit the kind's standard labels as a file alongside the deployment."
+    },
+    "dropManifest": {
+      "type": "boolean",
+      "description": "Drop the generated manifest from the rendered output."
     }
   }
 }
