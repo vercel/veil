@@ -17,7 +17,6 @@ import (
 
 	"github.com/vercel/veil/pkg/interact"
 	"github.com/vercel/veil/pkg/logging"
-	"github.com/vercel/veil/pkg/output"
 	"github.com/vercel/veil/pkg/project"
 	"github.com/vercel/veil/pkg/registry"
 	"github.com/vercel/veil/pkg/render"
@@ -65,14 +64,6 @@ func Render() *cli.Command {
 			},
 		},
 		Flags: []cli.Flag{
-			&cli.BoolFlag{
-				Name:  "managed",
-				Usage: "Track ownership and reconcile selected roots after all renders succeed",
-			},
-			&cli.BoolFlag{
-				Name:  "adopt",
-				Usage: "With --managed, adopt existing byte-identical unowned outputs",
-			},
 			&cli.StringFlag{
 				Name:  "out",
 				Usage: "Output directory for rendered files (each resource gets a subdirectory)",
@@ -113,9 +104,6 @@ func Render() *cli.Command {
 
 func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 	p := interact.Default()
-	if c.Bool("adopt") && !c.Bool("managed") {
-		return nil, fmt.Errorf("--adopt requires --managed")
-	}
 
 	pathArgs := c.StringArgs("paths")
 	if len(pathArgs) == 0 {
@@ -211,7 +199,6 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 	// run concurrently. Results land in a fixed-index slice so the response
 	// order is deterministic regardless of completion order.
 	results := make([]renderedResource, len(pathArgs))
-	computed := make([]*render.RenderedResource, len(pathArgs))
 	jobErrs := make([]error, len(pathArgs))
 	sem := make(chan struct{}, jobsN)
 	var wg sync.WaitGroup
@@ -226,13 +213,12 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 				jobErrs[i] = fmt.Errorf("%s: %w", pathArg, err)
 				return
 			}
-			rr, bundle, err := renderEntry(catalog, projectFS, vars, outDir, relFS, c.Bool("managed"))
+			rr, err := renderEntry(catalog, projectFS, vars, outDir, relFS)
 			if err != nil {
 				jobErrs[i] = fmt.Errorf("%s: %w", pathArg, err)
 				return
 			}
 			results[i] = rr
-			computed[i] = bundle
 		}(i, pathArg)
 	}
 	wg.Wait()
@@ -245,19 +231,7 @@ func runRender(ctx context.Context, c *cli.Command) (*renderResponse, error) {
 		resp.Rendered = append(resp.Rendered, results[i])
 	}
 	if len(errs) > 0 {
-		if c.Bool("managed") {
-			return &renderResponse{Rendered: []renderedResource{}}, errors.Join(errs...)
-		}
 		return resp, errors.Join(errs...)
-	}
-	if c.Bool("managed") {
-		roots := make([]output.Root, len(computed))
-		for i, resource := range computed {
-			roots[i] = output.Root{Kind: resource.Kind, Name: resource.Name, Bundle: resource.Bundle}
-		}
-		if err := output.Publish(outDir, roots, output.Options{Adopt: c.Bool("adopt")}); err != nil {
-			return &renderResponse{Rendered: []renderedResource{}}, err
-		}
 	}
 	return resp, nil
 }
@@ -291,17 +265,13 @@ func resolveProjectRel(root, pathArg string) (string, error) {
 // hook runtime mounts Root as its filesystem root, so no process-global
 // working directory is involved. Returns the rendered-resource descriptor
 // for the JSON response.
-func renderEntry(catalog resource.Catalog, projectFS vfs.FS, vars map[string]any, outDir, relFS string, managed bool) (renderedResource, *render.RenderedResource, error) {
+func renderEntry(catalog resource.Catalog, projectFS vfs.FS, vars map[string]any, outDir, relFS string) (renderedResource, error) {
 	entry, err := catalog.LoadByPath(relFS)
 	if err != nil {
-		return renderedResource{}, nil, err
+		return renderedResource{}, err
 	}
 
-	compute := render.Render
-	if managed {
-		compute = render.Compute
-	}
-	rendered, err := compute(&render.Options{
+	rendered, err := render.Render(&render.Options{
 		Kind:      entry.GetMetadata().GetKind(),
 		Name:      entry.GetMetadata().GetName(),
 		OutDir:    outDir,
@@ -310,7 +280,7 @@ func renderEntry(catalog resource.Catalog, projectFS vfs.FS, vars map[string]any
 		Variables: vars,
 	})
 	if err != nil {
-		return renderedResource{}, nil, err
+		return renderedResource{}, err
 	}
 
 	return renderedResource{
@@ -319,7 +289,7 @@ func renderEntry(catalog resource.Catalog, projectFS vfs.FS, vars map[string]any
 		Path:   relFS,
 		OutDir: rendered.OutDir,
 		Files:  rendered.Files,
-	}, rendered, nil
+	}, nil
 }
 
 // resolveRegistries returns the alias→path sources to load, honoring

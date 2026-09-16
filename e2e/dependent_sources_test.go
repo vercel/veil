@@ -5,9 +5,8 @@ import (
 	"path/filepath"
 )
 
-func (s *E2ESuite) TestDependentSourcesManagedLifecycle() {
-	dir, err := filepath.EvalSymlinks(s.T().TempDir())
-	s.Require().NoError(err)
+func (s *E2ESuite) TestDependentSourcesCompiledRegistry() {
+	dir := s.T().TempDir()
 	files := map[string]string{
 		"veil.json": `{
   "kinds": ["kinds/service/kind.json", "kinds/table/kind.json"],
@@ -72,28 +71,12 @@ export default grant;
 }`)
 	out := filepath.Join(dir, "out")
 	s.write(dir, "out/one/notes.txt", "handwritten\n")
-	stdout, err = s.runIn(dir, "render", "resources/one.json", "resources/two.json", "--out", out, "--managed", "--quiet")
+	stdout, err = s.runIn(dir, "render", "resources/one.json", "resources/two.json", "--out", out, "--quiet")
 	s.Require().NoError(err, stdout)
 	s.Equal("access template:alpha:one:read", s.read(out, "one", "grants/alpha.txt"))
 	s.Equal("access template:beta:one:write", s.read(out, "one", "grants/beta.txt"))
 	s.Equal("access template:alpha:two:write", s.read(out, "two", "grants/alpha.txt"))
 	s.Equal("access template:beta:two:read", s.read(out, "two", "grants/beta.txt"))
-
-	s.write(dir, "resources/one.json", `{
-  "metadata":{"kind":"service","name":"one"}, "spec":{},
-  "dependencies":[{"kind":"table","name":"beta","params":{"access":"write"}}]
-}`)
-	stdout, err = s.runIn(dir, "render", "resources/one.json", "--out", out, "--managed", "--quiet")
-	s.Require().NoError(err, stdout)
-	s.NoFileExists(filepath.Join(out, "one", "grants", "alpha.txt"))
-	s.Equal("access template:beta:one:write", s.read(out, "one", "grants/beta.txt"))
 	s.Equal("service application\n", s.read(out, "one", "app.txt"))
 	s.Equal("handwritten\n", s.read(out, "one", "notes.txt"))
-	s.Equal("access template:alpha:two:write", s.read(out, "two", "grants/alpha.txt"))
-	s.Equal("access template:beta:two:read", s.read(out, "two", "grants/beta.txt"))
-
-	stdout, err = s.runIn(dir, "render", "resources/one.json", "--out", out, "--managed", "--quiet")
-	s.Require().NoError(err, stdout)
-	s.NoFileExists(filepath.Join(out, "one", "grants", "alpha.txt"))
-	s.Equal("access template:beta:one:write", s.read(out, "one", "grants/beta.txt"))
 }

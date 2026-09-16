@@ -1126,57 +1126,8 @@ Each root receives its own fresh source bundle and dependency-template instances
 11. Restore every `skip_hooks` override's bytes and live state, retaining its final destination.
 12. Publish the final files, rejecting normalized destination collisions before writing.
 
-### Managed output ownership
-
-Unmanaged rendering retains its existing write-only behavior. Opt in to reconciliation with:
-
-```sh
-veil render resources/one.json resources/two.json --managed --out /canonical/output
-```
-
-Managed rendering computes and validates every selected resource before publishing any bundle.
-The output directory's `.veil/manifest.json` records each root as the JSON tuple
-`[registry-qualified metadata.kind, metadata.name]`, with normalized output-relative paths and
-SHA-256 content hashes. Empty roots remain recorded. A successful render removes only previously
-owned files absent from the selected root's new bundle; other roots and handwritten files remain.
-Changing the render-root identity does not implicitly retire its previous identity.
-
-Initial adoption is explicit: `--managed --adopt` accepts pre-existing files only when their bytes
-exactly match the intended output. Differing unowned files, modified or missing tracked files,
-and conflicting owners fail before publication, including when a tracked file would be deleted.
-Save manual edits separately and restore the last published bytes before rerendering. Move
-conflicting unowned files aside, or make their bytes identical and use `--adopt`. Ownership
-transfers require explicit removal of the previous owner first.
-
-Destinations may use `../` to leave a resource's subdirectory, but must remain within `--out`.
-Absolute paths, escapes, `.veil` metadata paths, normalized/case/Unicode-equivalent collisions,
-file-parent collisions, and symlinks are rejected. The output directory and its ancestors must
-be canonical, non-symlink paths; on macOS use `/private/var/...` rather than `/var/...`.
-
-Deleting a resource declaration does not select its old outputs for cleanup. Remove them explicitly,
-without requiring its declaration, project configuration, or registry:
-
-```sh
-veil outputs remove --out /canonical/output --kind service --name retired-service
-```
-
-Publication is **not atomic across files**. Veil persists `.veil/intent.json` before changing
-outputs and atomically replaces the manifest only after successful publication. An interrupted
-publication blocks new publication until recovery:
-
-```sh
-veil outputs recover --out /canonical/output
-```
-
-Recovery first checks that affected files match their recorded before or after state. Unknown
-edits stop recovery before additional writes: save those edits separately and restore recorded
-bytes before retrying. Never remove an intent to bypass these checks.
-
-An exclusive `.veil/lock` records the publisher's PID, hostname, and start time. Locks are never
-automatically stolen. After verifying that the recorded process on the recorded host has stopped
-publishing, manually remove only `.veil/lock`, then run recovery if an intent exists. Crash-leftover
-`.veil/write-*` files are inert reserved metadata. Removing a generated file does not revoke live
-infrastructure access or coordinate workload retirement.
+Rendering writes the current bundle only. Removing a dependency does not delete files left on disk
+by earlier renders; output cleanup remains the caller's responsibility.
 
 ### Registries
 

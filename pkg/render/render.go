@@ -72,9 +72,6 @@ type Options struct {
 
 // RenderedResource describes one successfully rendered resource.
 type RenderedResource struct {
-	// Kind retains the registry-qualified reference used for root ownership.
-	Kind   string
-	Bundle hook.Bundle
 	Name   string
 	OutDir string
 	Files  []string
@@ -85,21 +82,6 @@ type RenderedResource struct {
 // targets it reaches. Overlays and dependent hooks fan out from this
 // single starting point.
 func Render(opts *Options) (*RenderedResource, error) {
-	rendered, err := Compute(opts)
-	if err != nil {
-		return nil, err
-	}
-	files, err := writeBundle(rendered.OutDir, rendered.Bundle)
-	if err != nil {
-		return nil, err
-	}
-	rendered.Files = files
-	return rendered, nil
-}
-
-// Compute runs the complete render pipeline without publishing any files.
-// Its result can be collected with other roots for one managed publication.
-func Compute(opts *Options) (*RenderedResource, error) {
 	if opts.Catalog == nil {
 		return nil, fmt.Errorf("no catalog configured")
 	}
@@ -294,22 +276,12 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	}
 
 	outDir := filepath.Join(opts.OutDir, resourceName)
-	files := make([]string, 0, len(bundle))
-	for key, file := range bundle {
-		if file.Deleted {
-			continue
-		}
-		destination := file.Path
-		if destination == "" {
-			destination = key
-		}
-		files = append(files, destination)
+	files, err := writeBundle(outDir, bundle)
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(files)
 
 	return &RenderedResource{
-		Kind:   kindName,
-		Bundle: bundle,
 		Name:   resourceName,
 		OutDir: outDir,
 		Files:  files,

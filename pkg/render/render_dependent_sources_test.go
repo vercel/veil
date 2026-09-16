@@ -37,12 +37,13 @@ func (s *RenderSuite) TestDependentSourcesFreshPerTargetAndRoot() {
 	s.sourceResources("two", "alpha", "beta")
 	fsys, cat := s.catalogFor(dir)
 	for _, name := range []string{"one", "two"} {
-		result, err := Compute(&Options{Kind: "service", Name: name, FS: fsys, Catalog: cat})
+		result, err := Render(&Options{Kind: "service", Name: name, FS: fsys, Catalog: cat, OutDir: filepath.Join(s.root, "out")})
 		s.Require().NoError(err)
 		for _, target := range []string{"alpha", "beta"} {
 			id := registry.DependencySourceID("table", target, "grant.txt")
-			s.Equal("base:"+name+":"+target, result.Bundle[id].Content)
-			s.Equal(id, result.Bundle[id].Path)
+			content, err := os.ReadFile(filepath.Join(result.OutDir, id))
+			s.Require().NoError(err)
+			s.Equal("base:"+name+":"+target, string(content))
 		}
 	}
 }
@@ -108,9 +109,11 @@ func (s *RenderSuite) TestDependentSourcesDiamondInstantiatedOnce() {
 	s.reloadRegistryWithKinds("diamond-root", "diamond-branch", "diamond-leaf")
 	dir := s.writeDiamond(map[string]string{"b1": "shared", "c1": "shared"})
 	fsys, cat := s.catalogFor(dir)
-	result, err := Compute(&Options{Kind: "diamond-root", Name: "r1", FS: fsys, Catalog: cat})
+	result, err := Render(&Options{Kind: "diamond-root", Name: "r1", FS: fsys, Catalog: cat, OutDir: filepath.Join(s.root, "out")})
 	s.Require().NoError(err)
-	s.Equal("base:shared", result.Bundle[registry.DependencySourceID("diamond-leaf", "d1", "grant.txt")].Content)
+	content, err := os.ReadFile(filepath.Join(result.OutDir, registry.DependencySourceID("diamond-leaf", "d1", "grant.txt")))
+	s.Require().NoError(err)
+	s.Equal("base:shared", string(content))
 }
 
 func (s *RenderSuite) TestDependentSourcesQualifiedKindsNeverAlias() {
@@ -125,10 +128,12 @@ func (s *RenderSuite) TestDependentSourcesQualifiedKindsNeverAlias() {
 	s.writeJSON(filepath.Join(dir, "vendor.json"), map[string]any{"metadata": map[string]any{"kind": "vendor/table", "name": "same"}, "spec": map[string]any{}})
 	s.writeJSON(filepath.Join(dir, "one.json"), map[string]any{"metadata": map[string]any{"kind": "service", "name": "one"}, "spec": map[string]any{}, "dependencies": []map[string]any{{"kind": "table", "name": "same", "params": map[string]any{}}, {"kind": "vendor/table", "name": "same", "params": map[string]any{}}}})
 	fsys, cat := s.catalogFor(dir)
-	result, err := Compute(&Options{Kind: "service", Name: "one", FS: fsys, Catalog: cat})
+	result, err := Render(&Options{Kind: "service", Name: "one", FS: fsys, Catalog: cat, OutDir: filepath.Join(s.root, "out")})
 	s.Require().NoError(err)
 	for _, kind := range []string{"table", "vendor/table"} {
-		s.Equal("base:one:same", result.Bundle[registry.DependencySourceID(kind, "same", "grant.txt")].Content)
+		content, err := os.ReadFile(filepath.Join(result.OutDir, registry.DependencySourceID(kind, "same", "grant.txt")))
+		s.Require().NoError(err)
+		s.Equal("base:one:same", string(content))
 	}
 }
 
@@ -155,9 +160,11 @@ func (s *RenderSuite) TestDependentSourceDefaultOverrideFlowsThroughHooks() {
 	id := registry.DependencySourceID("table", "alpha", "grant.txt")
 	s.writeJSON(filepath.Join(dir, "one.json"), map[string]any{"metadata": map[string]any{"kind": "service", "name": "one", "overrides": []map[string]any{{"source": id, "path": "override.txt"}}}, "spec": map[string]any{}, "dependencies": []map[string]any{{"kind": "table", "name": "alpha", "params": map[string]any{}}}})
 	fsys, cat := s.catalogFor(dir)
-	result, err := Compute(&Options{Kind: "service", Name: "one", FS: fsys, Catalog: cat})
+	result, err := Render(&Options{Kind: "service", Name: "one", FS: fsys, Catalog: cat, OutDir: filepath.Join(s.root, "out")})
 	s.Require().NoError(err)
-	s.Equal("override:one:alpha", result.Bundle[id].Content)
+	content, err := os.ReadFile(filepath.Join(result.OutDir, id))
+	s.Require().NoError(err)
+	s.Equal("override:one:alpha", string(content))
 }
 
 func (s *RenderSuite) TestDependentSourcesDirectParamsWinAfterConflictingDiamond() {
@@ -168,9 +175,11 @@ func (s *RenderSuite) TestDependentSourcesDirectParamsWinAfterConflictingDiamond
 	dir := s.writeDiamond(map[string]string{"b1": "left", "c1": "right"})
 	s.writeJSON(filepath.Join(dir, "r1.json"), map[string]any{"metadata": map[string]any{"kind": "diamond-root", "name": "r1"}, "spec": map[string]any{}, "dependencies": []map[string]any{{"kind": "diamond-branch", "name": "b1", "params": map[string]any{}}, {"kind": "diamond-branch", "name": "c1", "params": map[string]any{}}, {"kind": "diamond-leaf", "name": "d1", "params": map[string]any{"tag": "direct"}}}})
 	fsys, cat := s.catalogFor(dir)
-	result, err := Compute(&Options{Kind: "diamond-root", Name: "r1", FS: fsys, Catalog: cat})
+	result, err := Render(&Options{Kind: "diamond-root", Name: "r1", FS: fsys, Catalog: cat, OutDir: filepath.Join(s.root, "out")})
 	s.Require().NoError(err)
-	s.Equal("base:direct", result.Bundle[registry.DependencySourceID("diamond-leaf", "d1", "grant.txt")].Content)
+	content, err := os.ReadFile(filepath.Join(result.OutDir, registry.DependencySourceID("diamond-leaf", "d1", "grant.txt")))
+	s.Require().NoError(err)
+	s.Equal("base:direct", string(content))
 }
 
 func (s *RenderSuite) TestDependentSourceFrozenOverrideRestoresDroppedEntry() {
@@ -182,11 +191,11 @@ func (s *RenderSuite) TestDependentSourceFrozenOverrideRestoresDroppedEntry() {
 	id := registry.DependencySourceID("table", "alpha", "grant.txt")
 	s.writeJSON(filepath.Join(dir, "one.json"), map[string]any{"metadata": map[string]any{"kind": "service", "name": "one", "overrides": []map[string]any{{"source": id, "path": "override.txt", "skip_hooks": true}}}, "spec": map[string]any{}, "dependencies": []map[string]any{{"kind": "table", "name": "alpha", "params": map[string]any{}}}})
 	fsys, cat := s.catalogFor(dir)
-	result, err := Compute(&Options{Kind: "service", Name: "one", FS: fsys, Catalog: cat})
+	result, err := Render(&Options{Kind: "service", Name: "one", FS: fsys, Catalog: cat, OutDir: filepath.Join(s.root, "out")})
 	s.Require().NoError(err)
-	s.Equal("final", result.Bundle[id].Content)
-	s.Equal(id, result.Bundle[id].Path)
-	s.False(result.Bundle[id].Deleted)
+	content, err := os.ReadFile(filepath.Join(result.OutDir, id))
+	s.Require().NoError(err)
+	s.Equal("final", string(content))
 }
 
 func (s *RenderSuite) TestDependentSourceSchemaPersistsIntoLaterConsumerHook() {
