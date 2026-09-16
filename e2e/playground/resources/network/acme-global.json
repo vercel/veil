@@ -1,4 +1,11 @@
 {
-  "metadata": { "kind": "vpc", "name": "acme-global" },
-  "spec": { "cidr": "10.0.0.0/16", "availabilityZones": 3 }
+  "$schema": "../../public/r/vpc/kind.schema.json",
+  "metadata": {
+    "kind": "vpc",
+    "name": "acme-global"
+  },
+  "spec": {
+    "cidr": "10.0.0.0/16",
+    "availabilityZones": 3
+  }
 }

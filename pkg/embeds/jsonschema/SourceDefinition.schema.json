@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "SourceDefinition is one kind.json source entry: a path plus optional\n `schema` — a JSON Schema file describing the source's shape. No\n `schema` means raw content, as before. Declaring one makes the\n source's content a contract the runner enforces at render time: reads\n and writes go through the parsed value, not the raw string.",
   "properties": {
     "path": {

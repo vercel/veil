@@ -1,4 +1,5 @@
 {
+  "$schema": "../../public/r/service/kind.schema.json",
   "metadata": {
     "kind": "service",
     "name": "billing"

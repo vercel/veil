@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "Variable declares a named input available to overlay regex matches\n (and to hooks via the render context). Lives in both the local\n VeilConfigDefinition and the published Kind (carried verbatim\n through compilation), so it has no Definition suffix — the same\n shape applies in both contexts.",
   "properties": {
     "default": {

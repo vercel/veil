@@ -53,18 +53,26 @@ func main() {
 		simplifyEnums(resolvedMap)
 		wrapRenderHookSchema(resolvedMap)
 
+		outName := simplifyName(e.Name())
+		if pointedAtByFiles[outName] {
+			allowSchemaKey(resolvedMap)
+		}
+
 		out, err := json.MarshalIndent(resolvedMap, "", "  ")
 		if err != nil {
 			log.Fatalf("marshalling: %v", err)
 		}
 
-		outName := simplifyName(e.Name())
 		outPath := filepath.Join(dir, outName)
 
 		if err := os.WriteFile(outPath, out, 0644); err != nil {
 			log.Fatalf("writing %s: %v", outPath, err)
 		}
 		fmt.Printf("%s -> %s\n", e.Name(), outName)
+	}
+
+	if err := narrowSourceEntries(dir); err != nil {
+		log.Fatalf("narrowing source entries: %v", err)
 	}
 
 	// Clean up original bundle and non-bundle files.
@@ -75,6 +83,104 @@ func main() {
 			os.Remove(filepath.Join(dir, name))
 		}
 	}
+}
+
+// pointedAtByFiles are the schemas something writes a "$schema" key
+// against: the three hand-authored shapes (`veil init` writes veil.json,
+// `veil new kind` writes kind.json, resources reference Resource) and the
+// two build artifacts (`veil build` stamps the compiled kind.json and
+// registry.json). Every generated object schema sets
+// additionalProperties:false, so without declaring the key the pointer is
+// the file's first validation error — including in files veil wrote
+// itself.
+var pointedAtByFiles = map[string]bool{
+	"VeilConfigDefinition.schema.json": true,
+	"KindDefinition.schema.json":       true,
+	"Resource.schema.json":             true,
+	"Kind.schema.json":                 true,
+	"Registry.schema.json":             true,
+}
+
+// allowSchemaKey declares the "$schema" property on a schema that files
+// point at, so a validator checks the file instead of rejecting the
+// reference to itself. veil ignores the value.
+func allowSchemaKey(root map[string]any) {
+	props, ok := root["properties"].(map[string]any)
+	if !ok {
+		return
+	}
+	if _, exists := props["$schema"]; exists {
+		return
+	}
+	props["$schema"] = map[string]any{
+		"type":        "string",
+		"description": "URI of the JSON Schema this file is written against. Ignored by veil.",
+	}
+}
+
+// narrowSourceEntries retypes KindDefinition's `sources` items. The proto
+// field is a repeated google.protobuf.Value — protojson cannot express
+// "string or message" — so the generated schema types every entry as
+// anything at all: no completion, and no typo caught, on one of the
+// fields a kind.json edits most. The two shapes it actually accepts are a
+// bare path string and a SourceDefinition object, so say that, the same
+// way `hooks` is already handled.
+func narrowSourceEntries(dir string) error {
+	var srcDef map[string]any
+	if err := readJSON(filepath.Join(dir, "SourceDefinition.schema.json"), &srcDef); err != nil {
+		return err
+	}
+	kindPath := filepath.Join(dir, "KindDefinition.schema.json")
+	var kindDef map[string]any
+	if err := readJSON(kindPath, &kindDef); err != nil {
+		return err
+	}
+
+	props, ok := kindDef["properties"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("KindDefinition has no properties")
+	}
+	sources, ok := props["sources"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("KindDefinition has no sources property")
+	}
+
+	objectAlt := make(map[string]any, len(srcDef))
+	for k, v := range srcDef {
+		if k == "$schema" || k == "$id" || k == "title" {
+			continue
+		}
+		objectAlt[k] = v
+	}
+
+	stringAlt := map[string]any{
+		"type":      "string",
+		"minLength": float64(1),
+	}
+	if defProps, ok := srcDef["properties"].(map[string]any); ok {
+		if path, ok := defProps["path"].(map[string]any); ok {
+			if desc, ok := path["description"].(string); ok {
+				stringAlt["description"] = desc
+			}
+		}
+	}
+
+	sources["items"] = map[string]any{"oneOf": []any{stringAlt, objectAlt}}
+
+	out, err := json.MarshalIndent(kindDef, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(kindPath, out, 0644)
+}
+
+// readJSON unmarshals a JSON file into v.
+func readJSON(path string, v any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, v)
 }
 
 // deref recursively resolves all $ref pointers in a JSON Schema node.

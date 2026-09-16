@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "Entries in the render / validate / post_render arrays are typed as\n `google.protobuf.Value` so each entry can be EITHER a bare string\n (treated as the hook's source path with no extra access grants) OR\n an object matching RenderHookDefinition (path plus optional\n `access` block). The wire format is whatever the user wrote;\n the build pipeline converts each Value into a RenderHookDefinition\n before compilation.",
   "patternProperties": {
     "^(postRender)$": {
@@ -15,7 +15,7 @@
     "dependents": {
       "description": "Per-consumer dependent hooks. Each entry binds a consumer kind to\n hook(s) that run when a resource of that kind declares a\n dependency on this one, plus the params schema the consumer must\n supply. See SPEC.md \"Dependencies\" for the full design.",
       "items": {
-        "additionalProperties": false,
+        "additionalProperties": true,
         "description": "DependentDefinition declares a consumer kind that may depend on this\n kind, the hook file path(s) that run when such a dependency is\n rendered, and the JSON Schema describing the `params` the consumer\n must supply.",
         "patternProperties": {
           "^(paramsPath)$": {

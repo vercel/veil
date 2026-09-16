@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "Overlay is a conditional data merge applied before transforms. The\n overlay applies when every entry in `if` matches: the resolved\n value of each named variable (stringified) must match the\n corresponding Go regular expression.",
   "properties": {
     "file": {

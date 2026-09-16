@@ -1,11 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "Registry is the top-level index written to \u003cout\u003e/registry.json by\n `veil build`. It maps kind name → entry describing how to find that kind's\n compiled artifacts. Consumers (e.g. `veil render`) read this to discover\n which kinds are available in a build artifact.",
   "properties": {
+    "$schema": {
+      "description": "URI of the JSON Schema this file is written against. Ignored by veil.",
+      "type": "string"
+    },
     "kinds": {
       "additionalProperties": {
-        "additionalProperties": false,
+        "additionalProperties": true,
         "description": "RegistryEntry describes a single kind in a Registry.",
         "properties": {
           "name": {

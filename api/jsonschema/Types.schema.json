@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "Types configures the central package that generated veil-types are written\n into when a kind opts in via its `kinds` entry's `import`. The shared\n host-types module (Std/Os/Fetch/File/Resource/RegistryVariables/\n ValidationIssue+Result) is written there once and imported by every kind\n module, so a shared-type change touches one file instead of every\n generated veil-types.ts.",
   "patternProperties": {
     "^(outputDir)$": {

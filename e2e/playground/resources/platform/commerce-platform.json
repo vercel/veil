@@ -1,4 +1,5 @@
 {
+  "$schema": "../../public/r/platform/kind.schema.json",
   "metadata": {
     "kind": "platform",
     "name": "commerce-platform"

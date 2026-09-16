@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "Override maps a kind source file to a local replacement.",
   "patternProperties": {
     "^(skipHooks)$": {

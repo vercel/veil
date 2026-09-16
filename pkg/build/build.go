@@ -283,6 +283,11 @@ func ResourceSchemaBytes(k *config.Kind, metadataSchema map[string]any, graph *K
 	delete(specSchema, "$id")
 
 	properties := map[string]any{
+		// A resource points at this file with a "$schema" key — that is
+		// how an editor finds it, and what `veil new resource` writes.
+		// Declared so it carries a description, not just tolerated by
+		// additionalProperties.
+		"$schema":  schemaKeyProperty,
 		"metadata": metadataSchema,
 		"spec":     specSchema,
 	}
@@ -291,9 +296,12 @@ func ResourceSchemaBytes(k *config.Kind, metadataSchema map[string]any, graph *K
 	}
 
 	schema := map[string]any{
-		"$schema":              "https://json-schema.org/draft/2020-12/schema",
-		"type":                 "object",
-		"additionalProperties": false,
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"type":    "object",
+		// Unknown keys are ignored so a resource written against a newer
+		// veil still validates against a schema an older one generated.
+		// The spec's own schema is the kind author's and is untouched.
+		"additionalProperties": true,
 		"title":                k.Name,
 		"description":          fmt.Sprintf("Resource schema for kind %q.", k.Name),
 		"required":             []string{"metadata", "spec"},
@@ -305,6 +313,15 @@ func ResourceSchemaBytes(k *config.Kind, metadataSchema map[string]any, graph *K
 		return nil, fmt.Errorf("marshalling schema: %w", err)
 	}
 	return data, nil
+}
+
+// schemaKeyProperty declares the "$schema" key that hand-authored files
+// use to point at the schema validating them, so it shows up with a
+// description rather than merely being tolerated. veil ignores the
+// value; it is there for editors.
+var schemaKeyProperty = map[string]any{
+	"type":        "string",
+	"description": "URI of the JSON Schema this file is written against. Ignored by veil.",
 }
 
 // LoadSpecSchema reads a kind's local or remote JSON/YAML schema.

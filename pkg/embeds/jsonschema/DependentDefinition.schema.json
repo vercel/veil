@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "DependentDefinition declares a consumer kind that may depend on this\n kind, the hook file path(s) that run when such a dependency is\n rendered, and the JSON Schema describing the `params` the consumer\n must supply.",
   "patternProperties": {
     "^(paramsPath)$": {

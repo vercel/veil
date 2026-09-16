@@ -1,14 +1,30 @@
 {
+  "$schema": "https://raw.githubusercontent.com/vercel/veil/main/api/jsonschema/KindDefinition.schema.json",
   "name": "postgres",
   "schema": "./schema.json",
-  "sources": [{ "path": "./sources/database.json", "schema": "./schemas/database.schema.json" }],
+  "sources": [
+    {
+      "path": "./sources/database.json",
+      "schema": "./schemas/database.schema.json"
+    }
+  ],
   "hooks": {
-    "render": [{ "path": "./hooks/src/size-instance.ts" }],
-    "validate": [{ "path": "./hooks/src/no-tiny-prod.ts" }],
+    "render": [
+      {
+        "path": "./hooks/src/size-instance.ts"
+      }
+    ],
+    "validate": [
+      {
+        "path": "./hooks/src/no-tiny-prod.ts"
+      }
+    ],
     "dependents": [
       {
         "kind": "service",
-        "paths": ["./hooks/src/dependents/inject-database-url.ts"],
+        "paths": [
+          "./hooks/src/dependents/inject-database-url.ts"
+        ],
         "params_path": "./schemas/service.params.json"
       }
     ]

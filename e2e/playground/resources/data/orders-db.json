@@ -1,4 +1,5 @@
 {
+  "$schema": "../../public/r/postgres/kind.schema.json",
   "metadata": {
     "kind": "postgres",
     "name": "orders-db"

@@ -1,4 +1,11 @@
 {
-  "metadata": { "kind": "service", "name": "orphan-service" },
-  "spec": { "image": "acme/orphan:0.1.0", "replicas": 1 }
+  "$schema": "../../public/r/service/kind.schema.json",
+  "metadata": {
+    "kind": "service",
+    "name": "orphan-service"
+  },
+  "spec": {
+    "image": "acme/orphan:0.1.0",
+    "replicas": 1
+  }
 }
