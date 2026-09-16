@@ -9,10 +9,18 @@
     },
     "./sources/env"
   ],
+  "files": [
+    {
+      "path": "./files/labels.json"
+    }
+  ],
   "hooks": {
     "render": [
       {
         "path": "./hooks/src/shape-deployment.ts"
+      },
+      {
+        "path": "./hooks/src/apply-labels.ts"
       }
     ],
     "post_render": [

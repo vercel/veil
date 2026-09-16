@@ -80,6 +80,12 @@ type File struct {
 	// storing it, so a hook that writes something invalid throws at the
 	// call site instead of failing a whole render later.
 	MustValidate bool `json:"mustValidate,omitempty"`
+
+	// Render marks an entry that becomes rendered output. False for an
+	// asset the kind ships purely for its hooks to read: it is in the FS
+	// like any other entry, and dropped at write time. A file a hook
+	// creates is output, so it is true.
+	Render bool `json:"render,omitempty"`
 }
 
 // ContentType names how a source's bytes encode a document. Anything
@@ -1070,19 +1076,23 @@ func (h *jsHook) RenderHook(ctx any, bundle Bundle) (Bundle, error) {
 	return restoreEncoding(bundle, result.FS), nil
 }
 
-// restoreEncoding re-stamps Type and MustValidate from the bundle that
-// went in. They describe how a source was declared, which is fixed for
-// the whole render: whatever a hook does to its own copy stays in that
-// hook, rather than carrying into every hook after it. Entries a hook
-// added are new files with no declared source behind them, so they keep
-// the zero value.
+// restoreEncoding re-stamps Type, MustValidate and Render from the
+// bundle that went in. They describe how a file was declared, which is
+// fixed for the whole render: whatever a hook does to its own copy stays
+// in that hook, rather than carrying into every hook after it — a hook
+// cannot promote an asset to output, or demote a source away from it.
+// Entries a hook added have no declared file behind them: they are
+// untyped, and they render, since producing output is the only reason to
+// add one.
 func restoreEncoding(in, out Bundle) Bundle {
 	for key, file := range out {
 		original, existed := in[key]
 		if !existed {
-			file.Type, file.MustValidate = "", false
+			// A file the hook created: untyped, and output, since
+			// producing it is the only reason a hook would add one.
+			file.Type, file.MustValidate, file.Render = "", false, true
 		} else {
-			file.Type, file.MustValidate = original.Type, original.MustValidate
+			file.Type, file.MustValidate, file.Render = original.Type, original.MustValidate, original.Render
 		}
 		out[key] = file
 	}

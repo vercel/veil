@@ -129,7 +129,7 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 		return nil, fmt.Errorf("loading kind %q: %w", kindName, err)
 	}
 
-	sources := loadedKind.Sources
+	sources := loadedKind.Files
 
 	// Discovery mode: only the resource was given. List the kind's
 	// sources so the user can pick one for the next invocation.
@@ -141,7 +141,7 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 	// Validate every requested source up front so we don't half-apply
 	// when one is misspelled.
 	for _, s := range sourceArgs {
-		if loadedKind.Source(s) == nil {
+		if loadedKind.File(s) == nil {
 			return nil, fmt.Errorf(
 				"kind %q does not declare a source named %q (known sources: %s)",
 				kindName, s, strings.Join(sourcePaths(sources), ", "),
@@ -162,7 +162,7 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 
 	resp := &overrideResponse{Kind: kindName, SkipHooks: skipHooks}
 	for _, sourceName := range sourceArgs {
-		sourceContent := loadedKind.Source(sourceName).GetContents()
+		sourceContent := loadedKind.File(sourceName).GetContents()
 
 		// Default output path: same basename as the source, dropped
 		// alongside the resource file. With --out the file lands under
@@ -216,7 +216,7 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 }
 
 // discoveryResponse builds the JSON payload for override discovery mode.
-func discoveryResponse(kindName string, existing []*veilv1.Override, sources []*registry.LoadedSource) *overrideResponse {
+func discoveryResponse(kindName string, existing []*veilv1.Override, sources []*registry.LoadedFile) *overrideResponse {
 	taken := make(map[string]bool, len(existing))
 	for _, ov := range existing {
 		taken[ov.GetSource()] = true
@@ -232,7 +232,7 @@ func discoveryResponse(kindName string, existing []*veilv1.Override, sources []*
 // when the override command is invoked without a source. Already-
 // overridden entries are flagged so the user knows what's already
 // taken without re-reading the resource JSON.
-func listOverridableSources(kindName, resourceArg string, existing []*veilv1.Override, sources []*registry.LoadedSource) {
+func listOverridableSources(kindName, resourceArg string, existing []*veilv1.Override, sources []*registry.LoadedFile) {
 	p := interact.Default()
 	taken := make(map[string]bool, len(existing))
 	for _, ov := range existing {
@@ -258,7 +258,7 @@ func listOverridableSources(kindName, resourceArg string, existing []*veilv1.Ove
 
 // sourcePaths returns the sources' paths in lexical order. Used so the
 // override listing is stable across runs regardless of wire order.
-func sourcePaths(sources []*registry.LoadedSource) []string {
+func sourcePaths(sources []*registry.LoadedFile) []string {
 	paths := make([]string, 0, len(sources))
 	for _, src := range sources {
 		paths = append(paths, src.GetPath())

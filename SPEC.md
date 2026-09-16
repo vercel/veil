@@ -179,9 +179,10 @@ A resource definition is a JSON file at `.veil/kinds/<name>/kind.json` with the 
 ```json
 {
   "name": "service",
-  "sources": [
-    "./sources/service/hpa.yaml",
-    { "path": "./sources/service/deployment.yaml", "schema": "./schemas/deployment.schema.json" }
+  "files": [
+    { "path": "./sources/service/hpa.yaml", "render": true },
+    { "path": "./sources/service/deployment.yaml", "schema": "./schemas/deployment.schema.json", "render": true },
+    { "path": "./files/labels.json" }
   ],
   "hooks": {
     "render": [
@@ -203,31 +204,50 @@ A resource definition is a JSON file at `.veil/kinds/<name>/kind.json` with the 
 All types are defined as protobuf messages (`proto/veil/v1/`) with `buf.validate` constraints and generated as
 both Go code and JSON Schemas. The JSON schemas are embedded in the CLI binary via `//go:embed`.
 
-### `sources`
+### `files`
 
-A set of source configuration files that make up the resource. These are the raw config files — Kubernetes manifests,
-Terraform HCL, Envoy configs, etc. They are the starting point that hooks operate on.
+The files that make up the kind. Most are the raw config files the resource is rendered from — Kubernetes
+manifests, Terraform HCL, Envoy configs — and are the starting point hooks operate on.
 
 Each entry is either a bare path string, or an object with `path` plus an optional `schema` — a JSON Schema
-file (relative to `kind.json`) or HTTP(S) URL describing that one
-source's shape. The string short-form (`["./sources/hpa.yaml"]`) is equivalent to `{path: "./sources/hpa.yaml"}`
-with no declared schema, and is the only form that existed before `schema` was added — every kind.json written
-against the older shape keeps working unchanged.
+file (relative to `kind.json`) or HTTP(S) URL describing that one file's shape — and an optional `render`.
+The string short-form (`["./files/hpa.yaml"]`) is equivalent to `{path: "./files/hpa.yaml"}` with no declared
+schema and no render.
 
-A source with no `schema` is exactly what it always was: veil does not parse or understand its contents, and
-passes it through the hook pipeline as an opaque string. Declaring `schema` changes that: from then on, that
-source's content is a contract the runner enforces at render time — see [Schema-typed sources](#schema-typed-sources)
-for what that buys a hook author, and [Schema enforcement](#schema-enforcement) for exactly when and how it's checked.
+`render` is what separates the two things a kind ships:
 
-A schema-declared source's own path must end in `.json`, `.yaml`, or `.yml` — the only formats a
+- **`render: true`** — the file seeds the rendered resource. It starts in the hook FS and is written to the
+  output directory. This is what a `sources` entry always was.
+- **`render` unset** — the file is an asset: a template, a fragment, a lookup table the kind's hooks read. It
+  is in the hook FS like any other file, and is never written to the output.
+
+The default is unset, so bundling an asset takes no extra keys and seeding output is the deliberate choice.
+
+A file with no `schema` is passed through the hook pipeline as an opaque string: veil does not parse or
+understand its contents. Declaring `schema` changes that: from then on, that file's content is a contract the
+runner enforces at render time — see [Schema-typed sources](#schema-typed-sources) for what that buys a hook
+author, and [Schema enforcement](#schema-enforcement) for exactly when and how it's checked.
+
+### `sources` (deprecated)
+
+`sources` is the former spelling of `files` and takes the same entries, minus `render`. Every entry loads as a
+file with `render: true`, since seeding the output is all a source ever was, so an existing kind.json keeps
+working unchanged. A kind may declare both — the lists are concatenated, `sources` first — and declaring the
+same path in both is an error rather than a silent resolution.
+
+`veil build` still writes `sources` into the compiled registry, mirroring exactly the files with `render: true`,
+so a registry built by a newer veil stays readable by an older one. Assets are deliberately left out of that
+mirror: an older reader would write them to the output.
+
+A schema-declared file's own path must end in `.json`, `.yaml`, or `.yml` — the only formats a
 typed `File<T>` accessor knows how to parse and re-serialize. Anything else is rejected at kind-load
 time. Local schema paths must exist; URL syntax is checked without fetching. This restriction
-doesn't apply to a source with no `schema`: its content stays an opaque string regardless of
+doesn't apply to a file with no `schema`: its content stays an opaque string regardless of
 extension, same as before `schema` existed at all.
 
 ### Schema locations
 
-The kind's `schema`, `sources[].schema`, and `hooks.dependents[].params_path` accept local paths
+The kind's `schema`, `files[].schema`, and `hooks.dependents[].params_path` accept local paths
 or HTTP(S) URLs. Relative paths resolve against the kind definition's directory.
 
 ```yaml

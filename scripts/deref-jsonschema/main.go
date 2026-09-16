@@ -71,8 +71,8 @@ func main() {
 		fmt.Printf("%s -> %s\n", e.Name(), outName)
 	}
 
-	if err := narrowSourceEntries(dir); err != nil {
-		log.Fatalf("narrowing source entries: %v", err)
+	if err := narrowPolymorphicLists(dir); err != nil {
+		log.Fatalf("narrowing polymorphic lists: %v", err)
 	}
 
 	// Clean up original bundle and non-bundle files.
@@ -118,54 +118,63 @@ func allowSchemaKey(root map[string]any) {
 	}
 }
 
-// narrowSourceEntries retypes KindDefinition's `sources` items. The proto
-// field is a repeated google.protobuf.Value — protojson cannot express
-// "string or message" — so the generated schema types every entry as
-// anything at all: no completion, and no typo caught, on one of the
-// fields a kind.json edits most. The two shapes it actually accepts are a
-// bare path string and a SourceDefinition object, so say that, the same
-// way `hooks` is already handled.
-func narrowSourceEntries(dir string) error {
-	var srcDef map[string]any
-	if err := readJSON(filepath.Join(dir, "SourceDefinition.schema.json"), &srcDef); err != nil {
-		return err
-	}
+// polymorphicLists are the KindDefinition array fields whose proto type
+// is a repeated google.protobuf.Value, mapped to the message an object
+// entry has to match. protojson cannot express "string or message", so
+// the field is a Value and the generated schema types every entry as
+// anything at all — no completion, and no typo caught, on fields a
+// kind.json edits most.
+var polymorphicLists = map[string]string{
+	"sources": "SourceDefinition.schema.json",
+	"files":   "FileDefinition.schema.json",
+}
+
+// narrowPolymorphicLists retypes those fields to the two shapes they
+// actually accept: a bare path string, or the message. Same treatment
+// `hooks` already gets from wrapRenderHookSchema.
+func narrowPolymorphicLists(dir string) error {
 	kindPath := filepath.Join(dir, "KindDefinition.schema.json")
 	var kindDef map[string]any
 	if err := readJSON(kindPath, &kindDef); err != nil {
 		return err
 	}
-
 	props, ok := kindDef["properties"].(map[string]any)
 	if !ok {
 		return fmt.Errorf("KindDefinition has no properties")
 	}
-	sources, ok := props["sources"].(map[string]any)
-	if !ok {
-		return fmt.Errorf("KindDefinition has no sources property")
-	}
 
-	objectAlt := make(map[string]any, len(srcDef))
-	for k, v := range srcDef {
-		if k == "$schema" || k == "$id" || k == "title" {
-			continue
+	for field, defFile := range polymorphicLists {
+		list, ok := props[field].(map[string]any)
+		if !ok {
+			return fmt.Errorf("KindDefinition has no %s property", field)
 		}
-		objectAlt[k] = v
-	}
+		var def map[string]any
+		if err := readJSON(filepath.Join(dir, defFile), &def); err != nil {
+			return err
+		}
 
-	stringAlt := map[string]any{
-		"type":      "string",
-		"minLength": float64(1),
-	}
-	if defProps, ok := srcDef["properties"].(map[string]any); ok {
-		if path, ok := defProps["path"].(map[string]any); ok {
-			if desc, ok := path["description"].(string); ok {
-				stringAlt["description"] = desc
+		objectAlt := make(map[string]any, len(def))
+		for k, v := range def {
+			if k == "$schema" || k == "$id" || k == "title" {
+				continue
+			}
+			objectAlt[k] = v
+		}
+
+		stringAlt := map[string]any{
+			"type":      "string",
+			"minLength": float64(1),
+		}
+		if defProps, ok := def["properties"].(map[string]any); ok {
+			if path, ok := defProps["path"].(map[string]any); ok {
+				if desc, ok := path["description"].(string); ok {
+					stringAlt["description"] = desc
+				}
 			}
 		}
-	}
 
-	sources["items"] = map[string]any{"oneOf": []any{stringAlt, objectAlt}}
+		list["items"] = map[string]any{"oneOf": []any{stringAlt, objectAlt}}
+	}
 
 	out, err := json.MarshalIndent(kindDef, "", "  ")
 	if err != nil {

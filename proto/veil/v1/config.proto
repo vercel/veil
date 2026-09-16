@@ -192,14 +192,30 @@ message KindDefinition {
     (buf.validate.field).required = true
   ];
 
-  // Source configuration files that make up the kind. May be empty.
+  // Deprecated: use `files`, which takes the same entries plus a
+  // `render` flag. Entries here load as files with render=true, so an
+  // existing kind.json keeps working unchanged and a kind may declare
+  // both — the two lists are concatenated, `sources` first.
   //
   // google.protobuf.Value so an entry can be a bare string path (no
   // schema) or a SourceDefinition object (path + optional schema) —
   // same polymorphism as `hooks`, same reason: protojson can't type
   // "string OR struct". The build pipeline narrows each Value into a
   // SourceDefinition at load time.
-  repeated google.protobuf.Value sources = 2;
+  repeated google.protobuf.Value sources = 2 [deprecated = true];
+
+  // Files that make up the kind. May be empty.
+  //
+  // Supersedes `sources`. A file with render=true seeds the rendered
+  // resource exactly as a source did; one with render=false is an asset
+  // the kind ships for its hooks to read — a template, a fragment, a
+  // lookup table — present in the hook FS but never written to the
+  // output. render defaults to false, so bundling an asset is the
+  // no-extra-keys case and seeding output is the deliberate one.
+  //
+  // google.protobuf.Value for the same reason as `sources`: an entry is
+  // either a bare string path or a FileDefinition object.
+  repeated google.protobuf.Value files = 8;
 
   // Hook code files grouped by lifecycle point. The dependents block —
   // the per-consumer hooks that fire when another kind declares a
@@ -244,6 +260,32 @@ message SourceDefinition {
   // Local path (relative to kind.json) or HTTP(S) URL to this source's
   // JSON Schema. Omit for no declared shape.
   string schema = 2;
+}
+
+// FileDefinition is one kind.json `files` entry: a path, an optional
+// `schema` describing the file's shape, and whether the file seeds the
+// rendered resource.
+//
+// Supersedes SourceDefinition, which it matches field for field apart
+// from `render`. A `sources` entry loads as a FileDefinition with
+// render=true.
+message FileDefinition {
+  // Resolved relative to the enclosing kind.json.
+  string path = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Local path (relative to kind.json) or HTTP(S) URL to this file's
+  // JSON Schema. Omit for no declared shape. Declaring one makes the
+  // file's content a contract the runner enforces at render time: reads
+  // and writes go through the parsed value, not the raw string.
+  string schema = 2;
+
+  // Whether this file seeds the rendered resource. Leave it false — the
+  // default — for an asset the kind ships purely for its hooks to read;
+  // the file is in the hook FS but never written to the output.
+  bool render = 3;
 }
 
 // HooksDefinition groups a kind's hook files by lifecycle point. Each

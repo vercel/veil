@@ -35,7 +35,7 @@ type Kind struct {
 	// `kinds` entry used the {path, import} object form. nil for a bare
 	// path string — in which case the kind's types are inlined per hook.
 	Import          *veilv1.KindImport
-	sources         []*veilv1.SourceDefinition
+	files           []*veilv1.FileDefinition
 	renderHooks     []*veilv1.RenderHookDefinition
 	validateHooks   []*veilv1.RenderHookDefinition
 	postRenderHooks []*veilv1.RenderHookDefinition
@@ -68,19 +68,32 @@ func (k *Kind) DecodeSchema(ref string, v any) error {
 	return codec.Decode(r, v)
 }
 
-// SourceDefs returns the parsed `sources` entries — path plus optional
-// `schema`.
-func (k *Kind) SourceDefs() []*veilv1.SourceDefinition { return k.sources }
+// FileDefs returns the kind's files in declaration order — the
+// deprecated `sources` list first, folded in as render=true, then
+// `files` as written.
+func (k *Kind) FileDefs() []*veilv1.FileDefinition { return k.files }
 
-// SourcePaths returns just the declared paths, in order — for call
-// sites that don't need per-source schema info (FS accessor gen,
-// dependency graph, override discovery).
-func (k *Kind) SourcePaths() []string {
-	paths := make([]string, len(k.sources))
-	for i, s := range k.sources {
-		paths[i] = s.GetPath()
+// FilePaths returns just the declared paths, in order — for call sites
+// that don't need per-file schema info (FS accessor gen, dependency
+// graph, override discovery).
+func (k *Kind) FilePaths() []string {
+	paths := make([]string, len(k.files))
+	for i, f := range k.files {
+		paths[i] = f.GetPath()
 	}
 	return paths
+}
+
+// RenderFileDefs returns only the files that seed the rendered
+// resource, in order. This is what `sources` used to mean.
+func (k *Kind) RenderFileDefs() []*veilv1.FileDefinition {
+	out := make([]*veilv1.FileDefinition, 0, len(k.files))
+	for _, f := range k.files {
+		if f.GetRender() {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // RenderHooks returns the parsed render-lifecycle entries.
@@ -210,12 +223,12 @@ func LoadKind(path string) (*Kind, error) {
 	}
 	k := &Kind{KindDefinition: pk, Path: path, Dir: filepath.Dir(path)}
 
-	sources, err := parseSourceEntries(pk.GetSources())
+	files, err := parseFileEntries(pk.GetSources(), pk.GetFiles())
 	if err != nil {
-		return nil, fmt.Errorf("kind at %s: sources: %w", path, err)
+		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
-	k.sources = sources
-	if err := validateSourceSchemas(k); err != nil {
+	k.files = files
+	if err := validateFileSchemas(k); err != nil {
 		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
 
@@ -237,10 +250,10 @@ func LoadKind(path string) (*Kind, error) {
 	return k, nil
 }
 
-// validateSourceSchemas checks schema references without fetching URLs and
-// preserves the supported extensions for typed source accessors.
-func validateSourceSchemas(k *Kind) error {
-	for _, s := range k.sources {
+// validateFileSchemas checks schema references without fetching URLs and
+// preserves the supported extensions for typed file accessors.
+func validateFileSchemas(k *Kind) error {
+	for _, s := range k.files {
 		schema := s.GetSchema()
 		if schema == "" {
 			continue
@@ -249,13 +262,13 @@ func validateSourceSchemas(k *Kind) error {
 		switch strings.ToLower(filepath.Ext(path)) {
 		case ".json", ".yaml", ".yml":
 		default:
-			return fmt.Errorf("source %q: schema-declared sources must have a .json, .yaml, or .yml extension", path)
+			return fmt.Errorf("file %q: schema-declared files must have a .json, .yaml, or .yml extension", path)
 		}
 		if ioutil.IsRemote(schema) {
 			continue
 		}
 		if _, err := os.Stat(k.SchemaURI(schema)); err != nil {
-			return fmt.Errorf("source %q: schema %q: %w", path, schema, err)
+			return fmt.Errorf("file %q: schema %q: %w", path, schema, err)
 		}
 	}
 	return nil
@@ -264,39 +277,76 @@ func validateSourceSchemas(k *Kind) error {
 // parseSourceEntries narrows each on-wire google.protobuf.Value into a
 // SourceDefinition — a bare string path or a {path, schema?} object,
 // same polymorphism as parseHookEntries.
-func parseSourceEntries(entries []*structpb.Value) ([]*veilv1.SourceDefinition, error) {
-	out := make([]*veilv1.SourceDefinition, 0, len(entries))
-	for i, v := range entries {
-		def, err := parseSourceEntry(v)
-		if err != nil {
-			return nil, fmt.Errorf("[%d]: %w", i, err)
+// parseFileEntries folds a kind's two file lists into one. `sources` is
+// the deprecated spelling and comes first, each entry render=true since
+// that is all a source ever was; `files` follows as written, where
+// render defaults to false. A kind may use either or both. Declaring the
+// same path twice is rejected rather than silently resolved — whichever
+// entry won would decide whether the file is written at all.
+func parseFileEntries(sources, files []*structpb.Value) ([]*veilv1.FileDefinition, error) {
+	out := make([]*veilv1.FileDefinition, 0, len(sources)+len(files))
+	seen := make(map[string]string, len(sources)+len(files))
+
+	add := func(field string, i int, def *veilv1.FileDefinition) error {
+		if prev, dup := seen[def.GetPath()]; dup {
+			return fmt.Errorf("%s[%d]: %q is already declared by %s", field, i, def.GetPath(), prev)
 		}
+		seen[def.GetPath()] = fmt.Sprintf("%s[%d]", field, i)
 		out = append(out, def)
+		return nil
+	}
+
+	for i, v := range sources {
+		def, err := parseFileEntry("source", v)
+		if err != nil {
+			return nil, fmt.Errorf("sources[%d]: %w", i, err)
+		}
+		// A source has always seeded the rendered output; that is the
+		// whole of what it meant.
+		def.Render = true
+		if err := add("sources", i, def); err != nil {
+			return nil, err
+		}
+	}
+	for i, v := range files {
+		def, err := parseFileEntry("file", v)
+		if err != nil {
+			return nil, fmt.Errorf("files[%d]: %w", i, err)
+		}
+		if err := add("files", i, def); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
 
-func parseSourceEntry(v *structpb.Value) (*veilv1.SourceDefinition, error) {
+// parseFileEntry narrows one on-wire Value into a FileDefinition. label
+// names the field in errors so a `sources` entry still reads as a
+// source. A bare string is the path; an object carries path, schema and
+// render. Reading a `sources` entry through FileDefinition is safe
+// because the two messages share field numbers for path and schema, and
+// a source may not set render — it is forced on by the caller.
+func parseFileEntry(label string, v *structpb.Value) (*veilv1.FileDefinition, error) {
 	if v == nil {
-		return nil, fmt.Errorf("source entry is nil")
+		return nil, fmt.Errorf("%s entry is nil", label)
 	}
 	switch kind := v.Kind.(type) {
 	case *structpb.Value_StringValue:
 		if kind.StringValue == "" {
-			return nil, fmt.Errorf("source entry path is empty")
+			return nil, fmt.Errorf("%s entry path is empty", label)
 		}
-		return &veilv1.SourceDefinition{Path: kind.StringValue}, nil
+		return &veilv1.FileDefinition{Path: kind.StringValue}, nil
 	case *structpb.Value_StructValue:
-		def := &veilv1.SourceDefinition{}
+		def := &veilv1.FileDefinition{}
 		if err := codec.Convert(kind.StructValue, def); err != nil {
-			return nil, fmt.Errorf("source entry: %w", err)
+			return nil, fmt.Errorf("%s entry: %w", label, err)
 		}
 		if def.GetPath() == "" {
-			return nil, fmt.Errorf("source entry object missing required `path` field")
+			return nil, fmt.Errorf("%s entry object missing required `path` field", label)
 		}
 		return def, nil
 	default:
-		return nil, fmt.Errorf("source entry must be a string path or {path, schema?} object, got %T", v.Kind)
+		return nil, fmt.Errorf("%s entry must be a string path or {path, schema?} object, got %T", label, v.Kind)
 	}
 }
 

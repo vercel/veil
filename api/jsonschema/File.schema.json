@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "Supersedes Source, which it matches field for field apart from\n `render`. A kind's `sources` load as files with render=true.",
+  "properties": {
+    "contents": {
+      "default": "",
+      "description": "Raw file contents. May be empty: an empty file is valid.",
+      "type": "string"
+    },
+    "path": {
+      "description": "Path relative to the kind directory (e.g. \"files/app.json\"). Also\n the file's identity through the render pipeline — hooks may remap\n where a file is written without changing this.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "render": {
+      "default": false,
+      "description": "Whether this file seeds the rendered resource. True and it starts\n the render bundle and is written to the output directory; false and\n it is an asset the kind ships for its hooks to read, present in the\n hook FS but never written. Files folded in from `sources` are\n always true.",
+      "type": "boolean"
+    },
+    "schema": {
+      "description": "Inlined JSON Schema for this file, as raw JSON text — like\n DependentHook.params_schema, so validation needs no filesystem\n access to the kind directory. Unset when the file declared no\n schema, in which case its contents are never schema-checked.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path"
+  ],
+  "title": "File is one compiled file belonging to a kind: where it lives, what it\n contains, the schema it is checked against, and whether it seeds the\n rendered output. Everything a consumer needs to read and validate the\n file is inlined here, so render never reaches back to the kind\n directory.",
+  "type": "object"
+}

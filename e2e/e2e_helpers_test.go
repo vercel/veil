@@ -172,3 +172,29 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// compiledKind is the slice of a built kind.json these tests care
+// about: the file list and the deprecated mirror of it.
+type compiledKind struct {
+	Files []struct {
+		Path     string  `json:"path"`
+		Contents string  `json:"contents"`
+		Schema   *string `json:"schema"`
+		Render   bool    `json:"render"`
+	} `json:"files"`
+	Sources []struct {
+		Path     string  `json:"path"`
+		Contents string  `json:"contents"`
+		Schema   *string `json:"schema"`
+	} `json:"sources"`
+}
+
+// readRegistryKind decodes a compiled kind from the built registry.
+func (s *E2ESuite) readRegistryKind(name string) compiledKind {
+	s.T().Helper()
+	raw, err := os.ReadFile(filepath.Join(s.root, "public", "r", name, "kind.json"))
+	s.Require().NoError(err)
+	var ck compiledKind
+	s.Require().NoError(json.Unmarshal(raw, &ck))
+	return ck
+}

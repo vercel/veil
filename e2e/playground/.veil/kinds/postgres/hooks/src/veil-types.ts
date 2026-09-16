@@ -290,6 +290,8 @@ export interface ServiceSpec {
 }
 
 export interface ServiceFS {
+  /** Handle for the declared source "./files/labels.json". */
+  getFilesLabelsJson(): File;
   /** Handle for the declared source "./sources/deployment.yaml". */
   getSourcesDeploymentYaml(): File<ServiceDeployment>;
   /** Handle for the declared source "./sources/env". */
@@ -312,6 +314,8 @@ export interface ServiceFS {
 
 export interface ServiceDeployment {
   image: string;
+  /** Standard labels, seeded from the kind's labels.json asset. */
+  labels?: Record<string, string>;
   port: number;
   public?: boolean;
   region: string;

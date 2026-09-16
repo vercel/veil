@@ -382,7 +382,7 @@ func SourceSchemaTypes(k *config.Kind, prefix string) (string, map[string]string
 	nameOwner := make(map[string]string)        // type name -> first schema path that claimed it
 	sourceTypeNames := make(map[string]string)  // source path -> type name
 
-	defs := append([]*veilv1.SourceDefinition(nil), k.SourceDefs()...)
+	defs := append([]*veilv1.FileDefinition(nil), k.FileDefs()...)
 	sort.Slice(defs, func(i, j int) bool { return defs[i].GetPath() < defs[j].GetPath() })
 
 	for _, def := range defs {
@@ -527,7 +527,7 @@ func fsInterface(k *config.Kind) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fsInterfaceNamed("FS", k.SourcePaths(), typeNameByPath)
+	return fsInterfaceNamed("FS", k.FilePaths(), typeNameByPath)
 }
 
 // fsInterfaceNamed emits an FS-shaped interface under an arbitrary

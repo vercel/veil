@@ -147,16 +147,28 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		return nil, fmt.Errorf("schema validation: %w", err)
 	}
 
-	// Promote the compiled sources to the identity → File structure that
+	// Promote the compiled files to the identity → File structure that
 	// flows through the hook pipeline. Identity starts as the declared
-	// source path; hooks may remap the destination via File.setOutputPath
+	// file path; hooks may remap the destination via File.setOutputPath
 	// without changing identity.
-	bundle := make(hook.Bundle, len(kind.Sources))
-	for _, src := range kind.Sources {
-		// A source is typed — and validated on write — exactly when its
+	//
+	// Read from the loaded kind, not the wire message: a registry built
+	// before `files` existed carries only `sources`, and the loader is
+	// what folds those in.
+	bundle := make(hook.Bundle, len(loaded.Files))
+	for _, src := range loaded.Files {
+		// A file is typed — and validated on write — exactly when its
 		// kind declared a schema for it. Everything else stays a string
 		// the hook can do what it likes with.
-		entry := hook.File{Path: src.GetPath(), Content: src.GetContents(), Type: hook.ContentPlaintext}
+		entry := hook.File{
+			Path:    src.GetPath(),
+			Content: src.GetContents(),
+			Type:    hook.ContentPlaintext,
+			// Assets ride through the bundle so hooks can read them, and
+			// are dropped at write time. Only a render file becomes
+			// rendered output.
+			Render: src.GetRender(),
+		}
 		if loaded.HasSourceSchema(src.GetPath()) {
 			entry.Type = sourceContentType(src.GetPath())
 			entry.MustValidate = true
@@ -1054,6 +1066,10 @@ func writeBundle(outDir string, bundle hook.Bundle) ([]string, error) {
 		// Tombstoned entries are skipped at write time — downstream hooks
 		// already had their chance to observe them via File.isDeleted().
 		if file.Deleted {
+			continue
+		}
+		// An asset the kind ships for its hooks to read is not output.
+		if !file.Render {
 			continue
 		}
 		path := file.Path

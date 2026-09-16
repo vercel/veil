@@ -123,6 +123,8 @@ export interface File<T = string> {
 }
 
 export interface FS {
+  /** Handle for the declared source "./files/labels.json". */
+  getFilesLabelsJson(): File;
   /** Handle for the declared source "./sources/deployment.yaml". */
   getSourcesDeploymentYaml(): File<Deployment>;
   /** Handle for the declared source "./sources/env". */
@@ -145,6 +147,8 @@ export interface FS {
 
 export interface Deployment {
   image: string;
+  /** Standard labels, seeded from the kind's labels.json asset. */
+  labels?: Record<string, string>;
   port: number;
   public?: boolean;
   region: string;

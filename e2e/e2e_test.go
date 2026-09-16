@@ -579,3 +579,109 @@ func (s *E2ESuite) TestDirectDependencyWinsOverForwardedParams() {
 	s.NotContains(env, "ORDERS_DATABASE_URL=", "the platform's forwarded params must not also apply")
 	s.NotContains(env, "pool=25")
 }
+
+// TestKindAssetReachesHooksButNotOutput covers the point of `files`: a
+// kind can ship something for its hooks to read that is not part of the
+// rendered resource. The service kind declares files/labels.json with
+// render unset, and apply-labels.ts reads it — so the labels land in the
+// deployment while the asset itself never does.
+func (s *E2ESuite) TestKindAssetReachesHooksButNotOutput() {
+	out := s.render("resources/services/checkout.json")
+
+	deployment := s.read(out, "checkout", "sources/deployment.yaml")
+	s.Contains(deployment, "app.acme.io/managed-by: veil",
+		"the hook should have read the asset and applied it")
+
+	s.NoFileExists(filepath.Join(out, "checkout", "files", "labels.json"),
+		"an asset is not rendered output")
+	// Nor anywhere else under the resource, whatever the layout.
+	var rendered []string
+	s.Require().NoError(filepath.Walk(filepath.Join(out, "checkout"), func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		rendered = append(rendered, filepath.Base(p))
+		return nil
+	}))
+	s.NotContains(rendered, "labels.json")
+}
+
+// TestKindDeclaresSourcesAndFilesTogether pins that the two lists
+// coexist: the service kind still declares its sources the old way while
+// adding an asset through `files`, and everything from both is present
+// to hooks.
+func (s *E2ESuite) TestKindDeclaresSourcesAndFilesTogether() {
+	compiled := s.readRegistryKind("service")
+
+	paths := map[string]bool{}
+	for _, f := range compiled.Files {
+		paths[f.Path] = f.Render
+	}
+	s.Equal(true, paths["sources/deployment.yaml"], "a source seeds the output")
+	s.Equal(true, paths["sources/env"], "a source seeds the output")
+	s.Equal(false, paths["files/labels.json"], "a file without render is an asset")
+
+	// And rendering still produces exactly the sources.
+	out := s.render("resources/services/checkout.json")
+	s.FileExists(filepath.Join(out, "checkout", "sources", "deployment.yaml"))
+	s.FileExists(filepath.Join(out, "checkout", "sources", "env"))
+}
+
+// TestBuildMirrorsRenderFilesIntoSources is the forward half of
+// compatibility: a registry this veil builds has to stay readable by one
+// that predates `files`. Such a reader only knows `sources`, so every
+// render file is mirrored there — and assets are not, since that reader
+// would write them out.
+func (s *E2ESuite) TestBuildMirrorsRenderFilesIntoSources() {
+	compiled := s.readRegistryKind("service")
+
+	var mirrored []string
+	for _, src := range compiled.Sources {
+		mirrored = append(mirrored, src.Path)
+	}
+	s.ElementsMatch([]string{"sources/deployment.yaml", "sources/env"}, mirrored,
+		"sources should mirror exactly the render files")
+	s.NotContains(mirrored, "files/labels.json",
+		"an older veil would render an asset it found in sources")
+
+	for _, src := range compiled.Sources {
+		for _, f := range compiled.Files {
+			if f.Path == src.Path {
+				s.Equal(f.Contents, src.Contents, "%s: mirrored contents must match", src.Path)
+				s.Equal(f.Schema, src.Schema, "%s: mirrored schema must match", src.Path)
+			}
+		}
+	}
+}
+
+// TestLegacySourcesOnlyRegistryRenders is the backward half: a registry
+// built before `files` existed carries only `sources`, with no `files`
+// key at all. Stripping `files` from every compiled kind reproduces that
+// exactly, and the render has to come out byte for byte the same.
+func (s *E2ESuite) TestLegacySourcesOnlyRegistryRenders() {
+	// Baseline from the current registry.
+	want := s.render("resources/data/orders-db.json")
+
+	dir := s.sandbox()
+	kinds, err := filepath.Glob(filepath.Join(dir, "public", "r", "*", "kind.json"))
+	s.Require().NoError(err)
+	s.Require().NotEmpty(kinds)
+	for _, path := range kinds {
+		raw, err := os.ReadFile(path)
+		s.Require().NoError(err)
+		var doc map[string]any
+		s.Require().NoError(json.Unmarshal(raw, &doc))
+		delete(doc, "files")
+		out, err := json.MarshalIndent(doc, "", "  ")
+		s.Require().NoError(err)
+		s.Require().NoError(os.WriteFile(path, out, 0644))
+	}
+
+	got := s.T().TempDir()
+	stdout, err := s.runIn(dir, "render", "resources/data/orders-db.json", "--out", got, "--quiet")
+	s.Require().NoError(err, "a sources-only registry must still render: %s", stdout)
+
+	s.Equal(s.read(want, "orders-db", "sources/database.json"),
+		s.read(got, "orders-db", "sources/database.json"),
+		"a registry with only `sources` must render exactly as one with `files`")
+}
