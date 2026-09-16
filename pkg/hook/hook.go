@@ -85,6 +85,10 @@ type File struct {
 	// asset the kind ships purely for its hooks to read: it is in the FS
 	// like any other entry, and dropped at write time. A file a hook
 	// creates is output, so it is true.
+	//
+	// Unlike Type and MustValidate this is the hook's to change —
+	// setRendered, setOutputPath and delete all move it — so it survives
+	// the round trip rather than being re-stamped.
 	Render bool `json:"render,omitempty"`
 }
 
@@ -186,9 +190,30 @@ class SourceFile {
   }
 
   getPath() { return this.entry.path; }
-  setOutputPath(p) { this.entry.path = String(p); }
+
+  // Routing a file somewhere is a statement that it should be written,
+  // so it renders from here on — otherwise a layout hook would silently
+  // move an asset to a destination nothing ever writes.
+  setOutputPath(p) {
+    this.entry.path = String(p);
+    this.setRendered(true);
+  }
+
+  isRendered() { return !!this.entry.render; }
+
+  // Rendering and the tombstone are two sides of one question, so each
+  // setter settles the other: a file cannot be both deleted and written.
+  setRendered(v) {
+    this.entry.render = !!v;
+    if (this.entry.render) this.entry.deleted = false;
+  }
+
   isDeleted() { return !!this.entry.deleted; }
-  setDeleted(v) { this.entry.deleted = !!v; }
+
+  setDeleted(v) {
+    this.entry.deleted = !!v;
+    if (this.entry.deleted) this.entry.render = false;
+  }
 }
 
 // __veilMakeFS wraps a raw bundle in the FS a hook receives. identity is
@@ -202,14 +227,15 @@ function __veilMakeFS(initial, identity) {
     if (!Object.prototype.hasOwnProperty.call(initial, k)) continue;
     var v = initial[k];
     if (typeof v === 'string') {
-      entries[k] = { path: k, content: v, deleted: false, type: 'plaintext', mustValidate: false };
+      entries[k] = { path: k, content: v, deleted: false, type: 'plaintext', mustValidate: false, render: true };
     } else {
       entries[k] = {
         path: typeof v.path === 'string' ? v.path : k,
         content: typeof v.content === 'string' ? v.content : '',
         deleted: !!v.deleted,
         type: typeof v.type === 'string' ? v.type : 'plaintext',
-        mustValidate: !!v.mustValidate
+        mustValidate: !!v.mustValidate,
+        render: !!v.render
       };
     }
   }
@@ -233,7 +259,8 @@ function __veilMakeFS(initial, identity) {
       if (Object.prototype.hasOwnProperty.call(entries, path)) {
         throw new Error('fs.add: path ' + JSON.stringify(path) + ' already exists');
       }
-      entries[path] = { path: path, content: '', deleted: false, type: 'plaintext', mustValidate: false };
+      // Producing output is the only reason to add a file.
+      entries[path] = { path: path, content: '', deleted: false, type: 'plaintext', mustValidate: false, render: true };
       // Through setContent, not by assigning content here, so every write
       // in the runtime goes down one path.
       var file = fileFor(path);
@@ -241,7 +268,7 @@ function __veilMakeFS(initial, identity) {
       return file;
     },
     delete: function(path) {
-      if (Object.prototype.hasOwnProperty.call(entries, path)) entries[path].deleted = true;
+      if (Object.prototype.hasOwnProperty.call(entries, path)) fileFor(path).setDeleted(true);
     },
     keys: function() { return Object.keys(entries); },
     getAll: function() {
@@ -251,16 +278,18 @@ function __veilMakeFS(initial, identity) {
       }
       return out;
     },
-    // Only what a hook is allowed to change crosses back: path, content
-    // and the tombstone. type and mustValidate are host state — the
-    // runner re-stamps them from the bundle it sent in, so emitting them
-    // here would just be something to tamper with.
+    // Only what a hook is allowed to change crosses back: path, content,
+    // the tombstone, and whether the file renders. type and mustValidate
+    // are host state — the runner re-stamps them from the bundle it sent
+    // in, so emitting them here would just be something to tamper with.
+    // render is always emitted, never omitted when false: turning a file
+    // off is exactly the change that has to survive the trip.
     toJSON: function() {
       var out = {};
       for (var k in entries) {
         if (!Object.prototype.hasOwnProperty.call(entries, k)) continue;
         var e = entries[k];
-        var obj = { path: e.path, content: e.content };
+        var obj = { path: e.path, content: e.content, render: !!e.render };
         if (e.deleted) obj.deleted = true;
         out[k] = obj;
       }
@@ -1088,11 +1117,9 @@ func restoreEncoding(in, out Bundle) Bundle {
 	for key, file := range out {
 		original, existed := in[key]
 		if !existed {
-			// A file the hook created: untyped, and output, since
-			// producing it is the only reason a hook would add one.
-			file.Type, file.MustValidate, file.Render = "", false, true
+			file.Type, file.MustValidate = "", false
 		} else {
-			file.Type, file.MustValidate, file.Render = original.Type, original.MustValidate, original.Render
+			file.Type, file.MustValidate = original.Type, original.MustValidate
 		}
 		out[key] = file
 	}

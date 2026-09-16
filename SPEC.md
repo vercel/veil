@@ -223,6 +223,19 @@ schema and no render.
 
 The default is unset, so bundling an asset takes no extra keys and seeding output is the deliberate choice.
 
+`render` is the declared starting point, not a fixed property: a hook decides what this particular render
+writes. `file.isRendered()` reads the current state and `file.setRendered(...)` changes it, so a kind can ship
+an asset that only some resources publish. Two other calls move it as a consequence of what they mean:
+
+- **`file.setOutputPath(...)`** marks the file rendered. Routing a file somewhere is a statement that it should
+  be written, so a layout hook cannot quietly move an asset to a destination nothing writes.
+- **`file.setDeleted(true)`** and **`fs.delete(...)`** clear it. The entry stays in the FS for downstream hooks
+  to observe via `file.isDeleted()`, and is not written.
+
+The two cannot disagree: turning rendering on clears the tombstone, and tombstoning turns rendering off. Unlike
+a file's type and schema — which the runner re-stamps between hooks, so they are fixed for the whole render —
+a render decision carries into every hook after the one that made it.
+
 A file with no `schema` is passed through the hook pipeline as an opaque string: veil does not parse or
 understand its contents. Declaring `schema` changes that: from then on, that file's content is a contract the
 runner enforces at render time — see [Schema-typed sources](#schema-typed-sources) for what that buys a hook

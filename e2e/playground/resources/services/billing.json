@@ -6,7 +6,8 @@
   },
   "spec": {
     "image": "acme/billing:0.9.0",
-    "replicas": 3
+    "replicas": 3,
+    "publishLabels": true
   },
   "dependencies": [
     {

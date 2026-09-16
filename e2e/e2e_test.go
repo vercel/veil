@@ -767,3 +767,18 @@ func (s *E2ESuite) TestEveryResourceRenders() {
 		s.NotEmpty(msg, "%s: %s", rel, intentionalRenderFailures[rel])
 	}
 }
+
+// TestAssetPromotedToOutputPerResource covers setRendered end to end and,
+// with it, that the decision is per render rather than per kind: billing
+// asks for the kind's labels asset in its output, checkout does not, and
+// the same declaration serves both.
+func (s *E2ESuite) TestAssetPromotedToOutputPerResource() {
+	billing := s.render("resources/services/billing.json")
+	s.FileExists(filepath.Join(billing, "billing", "files", "labels.json"),
+		"billing sets publishLabels, so the hook promotes the asset")
+	s.Contains(s.read(billing, "billing", "files/labels.json"), "app.acme.io/tier")
+
+	checkout := s.render("resources/services/checkout.json")
+	s.NoFileExists(filepath.Join(checkout, "checkout", "files", "labels.json"),
+		"checkout does not, so the same asset stays unwritten")
+}

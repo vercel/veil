@@ -21,6 +21,9 @@
       },
       {
         "path": "./hooks/src/apply-labels.ts"
+      },
+      {
+        "path": "./hooks/src/publish-labels.ts"
       }
     ],
     "post_render": [

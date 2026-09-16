@@ -11,6 +11,7 @@ import type {
 // the datastore's own kind knows.
 const registerWithPlatform: PlatformDependentHook = {
   render(ctx: PlatformDependentHookContext, fs: PlatformFS): PlatformFS {
+
     const line = `postgres=${ctx.self.metadata.name}.${ctx.vars.region}.rds.acme.internal`;
     const existing = fs.get('sources/backing-services');
     if (existing) {
