@@ -838,9 +838,25 @@ export interface ServiceDependentHookContext {
 ```
 
 The `fs` argument is the **consumer's** filesystem after all of the consumer's render hooks have
-completed. A dependent hook can only read and mutate the consumer's FS — it has no handle to its
-own. This is deliberate: dependent hooks express how to *plug into* the target, not how to construct
-the target.
+completed, and it is the only thing the hook can mutate. Dependent hooks express how to *plug into*
+the target, not how to construct it — so nothing a hook does here can change the target's own render.
+
+`ctx.selfFS` is the target kind's own files, the same FS its own hooks see, typed accessors included.
+It is there to be **read**: a kind ships a file and hands a filled-in copy to each consumer, so the
+file lives with the kind that knows what it is for rather than being pasted into every consumer. A
+database shipping the IAM policy that grants access to it is the shape of this:
+
+```ts
+const template = ctx.selfFS.get('files/iam-policy.tf');
+fs.add(
+  `terraform/${ctx.self.metadata.name}-access.tf`,
+  String(template.getContent()).replace(/DB_NAME/g, ctx.self.metadata.name),
+);
+```
+
+Pair it with an asset — a `files` entry with no `render` — and the template never appears in the
+target's own output, only in the consumers it is handed to. Nothing is read back from `selfFS`, so
+writing to it changes nothing anywhere; only the returned consumer FS is kept.
 
 Example — a bucket injects env vars into a service that depends on it:
 

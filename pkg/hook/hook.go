@@ -356,6 +356,15 @@ const (
   __ctx.os = globalThis.__veilHost.os;
   __ctx.fetch = globalThis.__veilHost.fetch;
   __ctx.env = globalThis.__veilHost.env;
+  // A dependent hook gets its own kind's files as ctx.selfFS, so it can
+  // hand one to the consumer it is wiring up. Nothing is read back from
+  // it — only the consumer's FS returns — so this is a reading surface
+  // that happens to share the FS shape, typed accessors included.
+  if (__ctx.selfFiles) {
+    __ctx.selfFS = __veilMakeFS(__ctx.selfFiles, __ctx.selfIdentity || {});
+    delete __ctx.selfFiles;
+    delete __ctx.selfIdentity;
+  }
   const __fs = __veilMakeFS(`
 	// splices in the resource identity, __veilMakeFS's 2nd arg — see its
 	// doc comment above.

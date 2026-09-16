@@ -8,6 +8,11 @@
       "schema": "./schemas/database.schema.json"
     }
   ],
+  "files": [
+    {
+      "path": "./files/iam-policy.tf"
+    }
+  ],
   "hooks": {
     "render": [
       {
@@ -23,7 +28,8 @@
       {
         "kind": "service",
         "paths": [
-          "./hooks/src/dependents/inject-database-url.ts"
+          "./hooks/src/dependents/inject-database-url.ts",
+          "./hooks/src/dependents/attach-iam-policy.ts"
         ],
         "params_path": "./schemas/service.params.json"
       },

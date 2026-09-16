@@ -350,6 +350,12 @@ export interface ServiceParams {
 export interface ServiceDependentHookContext {
   /** This kind's resolved resource. */
   self: Resource<PlatformSpec, Dependency>;
+  /** This kind's own files — the same FS its own hooks see,
+   *  typed accessors included. Read from it to hand the consumer
+   *  something this kind ships: `fs.add(path, ctx.selfFS.get(...)
+   *  .getContent())`. Nothing is read back, so changes here do not
+   *  affect this resource's own render. */
+  selfFS: FS;
   /** The consumer resource that declared a dependency on us. */
   consumer: Resource<ServiceSpec>;
   /** Path of the consumer resource file being rendered, relative

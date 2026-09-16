@@ -578,6 +578,19 @@ func applyDependentHooks(parent *slog.Logger, bundle hook.Bundle, dep *veilv1.De
 		"params":   paramsMap,
 		"vars":     opts.Variables,
 		"root":     root,
+		// The target kind's own files, so a dependent hook can copy one
+		// into the consumer it is wiring up — a database handing a
+		// service the IAM policy that grants it access, say. The runtime
+		// turns this into ctx.selfFS; nothing is read back from it, so
+		// the target's own bundle is untouched by whatever the hook does
+		// to its copy.
+		"selfFiles": kindFiles(target.res.Kind),
+		// Whose files those are, so a typed read or write on selfFS is
+		// checked against the target's schema rather than the consumer's.
+		"selfIdentity": map[string]any{
+			"kind":     target.res.GetMetadata().GetKind(),
+			"resource": target.res.GetMetadata().GetName(),
+		},
 	}
 
 	for _, h := range dependentEntry.GetHooks() {
@@ -588,6 +601,35 @@ func applyDependentHooks(parent *slog.Logger, bundle hook.Bundle, dep *veilv1.De
 		bundle = newBundle
 	}
 	return bundle, nil
+}
+
+// kindFiles is the compiled file set of a kind, in the shape the hook
+// runtime builds an FS from. Same typing rule as the render bundle: a
+// file is typed exactly when its kind declared a schema for it.
+//
+// Render is forced on. These are the target's files seen from inside
+// somebody else's render, where the target's own declaration of what it
+// writes has no bearing — the entries exist to be read and copied, and a
+// hook that copies one into the consumer expects it to land.
+func kindFiles(k *registry.LoadedKind) hook.Bundle {
+	if k == nil {
+		return hook.Bundle{}
+	}
+	out := make(hook.Bundle, len(k.Files))
+	for _, f := range k.Files {
+		entry := hook.File{
+			Path:    f.GetPath(),
+			Content: f.GetContents(),
+			Type:    hook.ContentPlaintext,
+			Render:  true,
+		}
+		if k.HasSourceSchema(f.GetPath()) {
+			entry.Type = sourceContentType(f.GetPath())
+			entry.MustValidate = true
+		}
+		out[f.GetPath()] = entry
+	}
+	return out
 }
 
 // resolveTargetResource is the dependent-hook side of the same overlay
