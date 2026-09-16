@@ -165,4 +165,7 @@ message DependentHook {
     (buf.validate.field).string.min_len = 1,
     (buf.validate.field).required = true
   ];
+
+  // Embedded templates instantiated once per resolved target per root.
+  repeated Source sources = 4;
 }

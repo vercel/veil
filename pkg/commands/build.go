@@ -381,36 +381,9 @@ func cwdRel(abs string) string {
 // plus every kind's kind.json), copied verbatim so the compiled document
 // is self-contained at render time.
 func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, fsys vfs.FS) (*veilv1.Kind, error) {
-	sources := make([]*veilv1.Source, 0, len(k.SourceDefs()))
-	for _, def := range k.SourceDefs() {
-		src := def.GetPath()
-		abs := src
-		if !filepath.IsAbs(abs) {
-			abs = filepath.Join(k.Dir, src)
-		}
-		data, err := os.ReadFile(abs)
-		if err != nil {
-			return nil, fmt.Errorf("reading source %s: %w", src, err)
-		}
-		key, err := sourceKey(k, src)
-		if err != nil {
-			return nil, err
-		}
-		compiled := &veilv1.Source{Path: key, Contents: string(data)}
-
-		if schema := def.GetSchema(); schema != "" {
-			schemaData, err := k.ReadSchema(schema)
-			if err != nil {
-				return nil, fmt.Errorf("reading schema for source %s: %w", src, err)
-			}
-			// Fail here rather than at every later render: the source's
-			// own contents have to satisfy the schema it declares.
-			if err := build.ValidateSourceContents(key, data, schemaData); err != nil {
-				return nil, fmt.Errorf("source %s: schema %s: %w", src, schema, err)
-			}
-			compiled.Schema = proto.String(string(schemaData))
-		}
-		sources = append(sources, compiled)
+	sources, err := compileSources(k, k.SourceDefs(), false)
+	if err != nil {
+		return nil, err
 	}
 
 	render, err := compileRenderHookDefs(k, fsys, k.RenderHooks())
@@ -445,6 +418,43 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, fsys vfs
 		},
 		Variables: variables,
 	}, nil
+}
+
+// compileSources embeds both kind sources and dependent templates. Only the
+// latter preserve declared spelling: their path is part of a public identity.
+func compileSources(k *config.Kind, defs []*veilv1.SourceDefinition, preservePath bool) ([]*veilv1.Source, error) {
+	sources := make([]*veilv1.Source, 0, len(defs))
+	for _, def := range defs {
+		src := def.GetPath()
+		abs := src
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(k.Dir, src)
+		}
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			return nil, fmt.Errorf("reading source %s: %w", src, err)
+		}
+		key := src
+		if !preservePath {
+			key, err = sourceKey(k, src)
+			if err != nil {
+				return nil, err
+			}
+		}
+		compiled := &veilv1.Source{Path: key, Contents: string(data)}
+		if schema := def.GetSchema(); schema != "" {
+			schemaData, err := k.ReadSchema(schema)
+			if err != nil {
+				return nil, fmt.Errorf("reading schema for source %s: %w", src, err)
+			}
+			if err := build.ValidateSourceContents(src, data, schemaData); err != nil {
+				return nil, fmt.Errorf("source %s: schema %s: %w", src, schema, err)
+			}
+			compiled.Schema = proto.String(string(schemaData))
+		}
+		sources = append(sources, compiled)
+	}
+	return sources, nil
 }
 
 // sourceKey resolves a source path to the kind-dir-relative path used
@@ -544,10 +554,15 @@ func compileDependents(k *config.Kind, fsys vfs.FS) ([]*veilv1.DependentHook, er
 		if err != nil {
 			return nil, fmt.Errorf("dependents[%q]: encoding params_path %s as JSON: %w", d.Kind, d.ParamsPath, err)
 		}
+		sources, err := compileSources(k, k.DependentSourceDefs(d.Kind), true)
+		if err != nil {
+			return nil, fmt.Errorf("dependents[%q]: %w", d.Kind, err)
+		}
 		out = append(out, &veilv1.DependentHook{
 			Kind:         d.Kind,
 			Hooks:        hooks,
 			ParamsSchema: string(paramsJSON),
+			Sources:      sources,
 		})
 	}
 	return out, nil
@@ -763,6 +778,12 @@ func validateKind(k *config.Kind) error {
 	for _, d := range k.GetHooks().GetDependents() {
 		check(fmt.Sprintf("dependent[%q] path", d.Kind), d.Paths)
 		checkSchema(fmt.Sprintf("dependent[%q] params_path", d.Kind), d.ParamsPath)
+		for _, src := range k.DependentSourceDefs(d.Kind) {
+			check(fmt.Sprintf("dependent[%q] source", d.Kind), []string{src.GetPath()})
+			if schema := src.GetSchema(); schema != "" {
+				checkSchema(fmt.Sprintf("dependent[%q] source %q schema", d.Kind, src.GetPath()), schema)
+			}
+		}
 	}
 
 	return errors.Join(errs...)

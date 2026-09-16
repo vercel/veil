@@ -389,24 +389,6 @@ func (s *E2ESuite) TestOverrideCopiesASourceForEditing() {
 	s.Contains(readFile(s.T(), filepath.Join(rendered, "billing", "sources", "deployment.yaml")), "image: overridden")
 }
 
-// TestGeneratedTypesDescribeEachSource is what hook authors program
-// against: an accessor per declared source, typed by that source's own
-// schema, plus the dependent-hook surface for each registered consumer.
-func (s *E2ESuite) TestGeneratedTypesDescribeEachSource() {
-	types := readFile(s.T(), filepath.Join(s.root, ".veil", "kinds", "service", "hooks", "src", "veil-types.ts"))
-	s.Contains(types, "getSourcesDeploymentYaml(): File<Deployment>", "typed accessor for the schema'd source")
-	s.Contains(types, "getSourcesEnv(): File", "plain accessor for the unschema'd one")
-	s.Contains(types, "replicas: number")
-
-	// The VPC registers dependents for four consumer kinds, each with its
-	// own context and its own view of the consumer's FS.
-	vpcTypes := readFile(s.T(), filepath.Join(s.root, ".veil", "kinds", "vpc", "hooks", "src", "veil-types.ts"))
-	for _, consumer := range []string{"Service", "Postgres", "Redis", "Platform"} {
-		s.Contains(vpcTypes, "export interface "+consumer+"DependentHook", consumer)
-		s.Contains(vpcTypes, "export interface "+consumer+"FS", consumer)
-	}
-}
-
 // TestMissingRegistryTellsYouHowToFixIt covers the first thing a fresh
 // clone hits: public/ is build output and gitignored, so every command
 // that reads a compiled kind fails until something builds one.

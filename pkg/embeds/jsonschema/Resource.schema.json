@@ -109,6 +109,13 @@
                     },
                     "minItems": 1,
                     "type": "array"
+                  },
+                  "sources": {
+                    "description": "Optional dependency-owned templates, string paths or {path, schema}.\n Paths resolve relative to this kind.json; spelling is preserved.",
+                    "items": {
+                      "title": "Value"
+                    },
+                    "type": "array"
                   }
                 },
                 "required": [

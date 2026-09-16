@@ -280,12 +280,13 @@ Four lifecycles exist today:
 #### Pipeline order
 
 For a single resource being rendered, the runner executes hooks in this order:
+All kind and grouped dependency sources are instantiated, overridden, and schema-checked before
+the first hook. This preparation never invokes dependent hooks early.
 
 1. The kind's `hooks.render` (in declaration order).
-2. For every dependency reachable by walking the full transitive dependency graph rooted at this
-   resource (breadth-first, cycle-safe, visit-once — see [Dependencies](#dependencies)), the
-   target kind's `hooks.dependents` matching *this* resource's own kind — never the
-   intermediate resource that actually declared the edge.
+2. Each grouped effective dependency target's `hooks.dependents`, matching this render root's
+   kind. Only forwarded transitive dependencies participate; direct params win over inherited
+   params, otherwise inherited params must agree. Each target runs once.
 3. The resource's own `metadata.hooks.render` (see [Resource](#resource) — paths relative to the
    resource file). Resource hooks see the bundle after every kind-level write.
 4. The kind's `hooks.post_render`. Mutating; runs after resource hooks so the kind owns the final
@@ -655,8 +656,8 @@ local copy. Overrides are tracked in `metadata.overrides`:
 
 Each entry has:
 
-- **`source`** (required) — path to the kind's source being replaced. Must match an entry in the
-  kind's `sources` list.
+- **`source`** (required) — the kind source path or full dependency-owned source identity being
+  replaced. It must match an entry in the root's initial bundle.
 - **`path`** (required) — local override file, resolved relative to the resource file's directory
   (or used as-is when absolute).
 - **`skip_hooks`** (optional, default `false`) — controls how the override interacts with the
@@ -736,7 +737,8 @@ the `hooks.dependents` block — `dependents` is just another lifecycle alongsid
       {
         "kind": "service",
         "paths": ["./hooks/src/dependents/service/inject-env.ts"],
-        "params_path": "./service.params.json"
+        "params_path": "./service.params.json",
+        "sources": [{ "path": "./sources/service/access.json", "schema": "./schemas/access.json" }]
       },
       {
         "kind": "worker",
@@ -759,6 +761,35 @@ Each entry has:
   Hooks run in declaration order. An empty `paths` array is a build error.
 - **`params_path`** — JSON Schema describing the `params` object the consumer must supply. Paths are
   resolved relative to the `kind.json` file. Required.
+- **`sources`** — optional templates owned by this dependent definition, using the same string or
+  `{path, schema?}` entries as kind sources. Template and schema paths resolve relative to the
+  declaring kind. Compilation embeds their contents and schemas, so the original kind directory
+  is not needed to render. The compiled source path preserves the exact declared spelling.
+
+### Dependency-owned source identity
+
+Each grouped resolved target contributes one fresh copy of these templates per render root,
+before overrides or any hooks. The stable bundle key and initial output destination are
+`dependencies/<escaped-qualified-kind>/<escaped-resource-name>/<escaped-template-path>`.
+Each component uses Go `url.PathEscape` (including `/` and `%`); a whole `.` or `..` component
+is additionally percent-escaped. The template path is not normalized: `./a.json` and `a.json`
+have different identities. Registry-qualified kinds are used verbatim, not the unqualified
+compiled kind name. Hooks may change the destination but never the identity. Destination
+collisions after path normalization fail before output writes and identify both source owners.
+
+Dependent hooks still implement `render(ctx, fs)`. `fs` retains the consumer kind's generated
+interface. `ctx.sources: <Consumer>Sources` exposes only this dependent definition's templates,
+via generated `get<Path>(): File<T>` handles and `get(path)`, `keys()`, `getAll()`, `delete(path)`.
+Local paths use their exact declared spelling. These handles share the underlying entries with
+`fs.get(identity)`; edits, destinations, and tombstones are visible through either view and to
+every later hook. No local `add` is exposed: create dynamic consumer files through `fs.add`.
+Schema-declared handles parse and validate exactly like kind source handles, including writes
+through the consumer bundle view. Each dependent's source types are generated in the target
+module in both inline and types-package modes; consumer `FS` is never widened.
+
+`metadata.overrides[].source` and `veil override` accept this full stable identity. Overrides
+seed dependency entries before kind hooks run; `skip_hooks` restores the override's final bytes
+and live state after all hooks while preserving the final output destination.
 
 Because hooks are registered per render-root kind, each hook receives a concretely typed `consumer`
 and `params` — no union narrowing inside the hook body.
@@ -789,27 +820,30 @@ export interface ServiceDependentHookContext {
   self: Resource<BucketSpec, Dependency>; // the target kind's resolved resource
   consumer: Resource<ServiceSpec>;        // the consumer kind's resolved resource
   params: ServiceParams;                  // the consumer-supplied params, typed per params_path
+  sources: ServiceSources;                // this target's dependency-owned templates
   vars: RegistryVariables;
   root: string;
   std: Std; os: Os; fetch: Fetch;
 }
 ```
 
-The `fs` argument is the **consumer's** filesystem after all of the consumer's render hooks have
-completed. A dependent hook can only read and mutate the consumer's FS — it has no handle to its
-own. This is deliberate: dependent hooks express how to *plug into* the target, not how to construct
-the target.
+The `fs` argument is the **consumer's** filesystem after its render hooks have completed.
+`ctx.sources` is a local-path view of this dependent definition's templates in that same bundle,
+not the target's own rendered filesystem. All dependency templates already exist before the
+consumer's render hooks run; dependent hooks themselves still run only at their lifecycle stage.
 
 Example — a bucket injects env vars into a service that depends on it:
 
 ```ts
-import type { DependentHook, DependentHookContext, FS } from './veil-types';
+import type { ServiceDependentHook, ServiceDependentHookContext, ServiceFS } from './veil-types';
 import type { Deployment } from 'kubernetes-types/apps/v1';
 import { load, dump } from 'js-yaml';
 import { appContainer } from '../../shared/k8s';
 
-const injectBucketEnv: DependentHook = {
-  render(ctx: DependentHookContext, fs: FS): FS {
+const injectBucketEnv: ServiceDependentHook = {
+  render(ctx: ServiceDependentHookContext, fs: ServiceFS): ServiceFS {
+    const access = ctx.sources.getSourcesServiceAccessJson();
+    access.setOutputPath(`access/${ctx.self.metadata.name}.json`);
     const { self, params } = ctx;
     const file = fs.getSourcesAppYaml();
     const app = load(file.getContent()) as Deployment;
@@ -826,47 +860,28 @@ const injectBucketEnv: DependentHook = {
 export default injectBucketEnv;
 ```
 
-`dependents[].paths` are bare hook paths — there's no per-entry binding to a specific source, typed
-or otherwise. That's fine: a dependent hook's job is reading/patching whatever the *consumer*
-declared, not one of the *target's* own sources, and if the consumer's own kind declared a `schema`
-on the file a dependent hook reaches for (`app.yaml` above), its accessor is just as typed here as
-it would be inside one of the consumer's own hooks — typing is a property of the `FS`/`File`
-mechanism itself, not of how a given hook got invoked.
+`dependents[].paths` remain bare hook paths. A dependent hook may patch consumer sources through
+`fs` and its own declared templates through `ctx.sources`; schema enforcement belongs to each
+source and applies regardless of which view reaches it.
 
 ## Render-time execution
 
-After a resource's render hooks finish, veil walks the *full* transitive dependency graph rooted
-at the resource — not just its own `dependencies` list. The walk is breadth-first, the same shape
-`veil graph` uses to visualize a resource's dependency graph: cycle-safe and visit-once, so a
-target reached through more than one path (or a cycle back to an already-visited resource)
-resolves once and the walk still terminates. Every kind's dependencies resolve this way — it's a
-global capability of the render pipeline, not something a kind opts into.
+The catalog resolves effective dependencies using each target kind's `forward_dependencies`
+policy. Rendering groups these edges once by registry-qualified target kind and resource name.
+A direct root declaration takes precedence over inherited params; otherwise inherited params
+must agree. A diamond therefore instantiates templates and invokes hooks once per target, not
+once per incoming edge. Conflicting params without a direct declaration are an error.
 
-Starting from the root resource's own `dependencies`, and then from each newly-reached target's
-`dependencies` in turn, every edge (declarer, target) is processed:
+Before overrides, veil resolves each grouped target's overlays and spec defaults, selects the
+dependent definition for the root's kind, and instantiates its sources. It runs no target hooks
+at this stage. The same grouping and selected params are reused for dependent hook execution.
+`ctx.self` is the resolved target and `ctx.consumer` is always the resolved render root, never
+an intermediate forwarding resource. No target is independently rendered.
 
-1. Resolve `(kind, name)` to a target resource in the catalog (built from
-   `resource_discovery.paths`). Missing targets are a hard error.
-2. Apply the target's own overlays + spec defaults so `ctx.self` matches what the target would see
-   at its own render. No schema validation: targets are inspected, not re-rendered. A target
-   reached via more than one edge is resolved only once and reused.
-3. Find the target kind's `hooks.dependents` entry matching the *render root's* kind — never the
-   declarer's kind, even when the declarer (the resource whose own `dependencies` list named this
-   target) is several hops away from the root. A target that doesn't list the root's kind as
-   allowed is a hard error.
-4. Run each registered dependent hook against the render root's FS, in declaration order.
-
-Concretely: if a service depends on `package/api-rate-limits`, which itself depends on
-`dynamo-table/rate-limit-exceeded`, the dynamo-table's dependent hooks for consumer kind
-`service` run — with `ctx.self` set to the resolved dynamo-table resource and `ctx.consumer` set
-to the resolved *service*, not the package that actually declared the edge. `ctx.consumer` is
-always the render root, and the FS the hook mutates is always the render root's bundle, so the two
-stay consistent — a target's `dependents` entry never needs to name every pass-through kind that
-might sit between it and the root; dynamo-table's existing `[service, subscriber]` entries already
-cover it being reached through any number of intermediate packages.
-
-Render hooks cannot observe state injected by dependent hooks — the lifecycles are strictly ordered
-(overrides → render → dependents → re-stamp `skip_hooks` overrides → write).
+Lifecycle order is: instantiate all sources → overrides → source schema gate → kind render →
+grouped dependent hooks → resource hooks → post-render → validate → restore `skip_hooks` →
+publication. Kind render hooks see the initial dependency templates but not later dependent
+hook mutations. All later hooks see the shared dependency-owned entries.
 
 ## Build-time integration
 
@@ -1082,13 +1097,11 @@ Flags:
 - `--out` — output directory. Defaults to `<veil.json dir>/r`.
 - `--no-typecheck` — skip the `tsc`/`tsgo` invocation.
 
-## `veil render <path>`
+## `veil render <paths...>`
 
-The primary command. Renders one resource at a time. The required `<path>` positional is the
-filesystem path to a single resource JSON file. The CLI converts the path to its `fs.FS`-relative
-form against the project root and consults the catalog (`resource_discovery.paths`) to recover the
-resource's `(kind, name)` — those identify the entry point that the renderer pulls in via the
-catalog and walks outward from.
+The primary command. Renders one or more resource files using a shared catalog. Each required
+path is resolved relative to the project root to recover the resource's `(kind, name)` identity.
+Each root receives its own fresh source bundle and dependency-template instances.
 
 1. Build the catalog from `resource_discovery.paths` (lazy `(kind, name)` index — see
    [Resource discovery](#resource-discovery))
@@ -1100,22 +1113,70 @@ catalog and walks outward from.
    themselves are read from the project FS (relative to the resource's own directory).
 5. Validate the merged `spec` against the kind's schema (which also validates `dependencies[].params`
    against the discriminated schema baked in at build time)
-6. Load the `sources` (already embedded in the compiled `kind.json`) into an initial `FS`, then apply any
-   `metadata.overrides` — each entry replaces the corresponding source's contents in the FS so the hook
-   pipeline operates on the override as its starting point. Entries with `skip_hooks: true` are recorded
-   for the re-stamp pass at step 9.
+6. Group effective dependencies and instantiate their embedded dependent sources alongside the
+   kind's sources. Apply `metadata.overrides` by stable identity and validate schema-declared
+   contents before hooks. Record `skip_hooks` entries for the final re-stamp pass.
 7. For each render hook, pre-flight every name in its `access.env` declaration via `os.LookupEnv`. Any
    missing names abort the render with one error listing all of them plus the kind's descriptions. On
    success, log the granted vars and pass them to the hook on `ctx.env`.
 8. Apply `hooks.render` in order (calling each `RenderHook.render`), threading the FS through the pipeline
-9. Walk the full transitive dependency graph rooted at this resource (breadth-first, cycle-safe,
-   visit-once) — for every edge, look up the target via the catalog, find the target kind's
-   matching `hooks.dependents` entry for *this resource's own* kind (the render root, never the
-   declarer at that hop), and run those hooks against the render root's FS. See
-   [Dependencies](#dependencies).
-10. Re-stamp every `skip_hooks: true` override's bytes onto the bundle, discarding any in-flight hook
-    mutations to those files.
-11. Write the final files to disk
+9. Reuse the prepared target grouping to run matching dependent hooks once per target, with the
+   selected params and local `ctx.sources` view of the shared root bundle.
+10. Run resource render hooks, kind post-render hooks, then kind validation hooks.
+11. Restore every `skip_hooks` override's bytes and live state, retaining its final destination.
+12. Publish the final files, rejecting normalized destination collisions before writing.
+
+### Managed output ownership
+
+Unmanaged rendering retains its existing write-only behavior. Opt in to reconciliation with:
+
+```sh
+veil render resources/one.json resources/two.json --managed --out /canonical/output
+```
+
+Managed rendering computes and validates every selected resource before publishing any bundle.
+The output directory's `.veil/manifest.json` records each root as the JSON tuple
+`[registry-qualified metadata.kind, metadata.name]`, with normalized output-relative paths and
+SHA-256 content hashes. Empty roots remain recorded. A successful render removes only previously
+owned files absent from the selected root's new bundle; other roots and handwritten files remain.
+Changing the render-root identity does not implicitly retire its previous identity.
+
+Initial adoption is explicit: `--managed --adopt` accepts pre-existing files only when their bytes
+exactly match the intended output. Differing unowned files, modified or missing tracked files,
+and conflicting owners fail before publication, including when a tracked file would be deleted.
+Save manual edits separately and restore the last published bytes before rerendering. Move
+conflicting unowned files aside, or make their bytes identical and use `--adopt`. Ownership
+transfers require explicit removal of the previous owner first.
+
+Destinations may use `../` to leave a resource's subdirectory, but must remain within `--out`.
+Absolute paths, escapes, `.veil` metadata paths, normalized/case/Unicode-equivalent collisions,
+file-parent collisions, and symlinks are rejected. The output directory and its ancestors must
+be canonical, non-symlink paths; on macOS use `/private/var/...` rather than `/var/...`.
+
+Deleting a resource declaration does not select its old outputs for cleanup. Remove them explicitly,
+without requiring its declaration, project configuration, or registry:
+
+```sh
+veil outputs remove --out /canonical/output --kind service --name retired-service
+```
+
+Publication is **not atomic across files**. Veil persists `.veil/intent.json` before changing
+outputs and atomically replaces the manifest only after successful publication. An interrupted
+publication blocks new publication until recovery:
+
+```sh
+veil outputs recover --out /canonical/output
+```
+
+Recovery first checks that affected files match their recorded before or after state. Unknown
+edits stop recovery before additional writes: save those edits separately and restore recorded
+bytes before retrying. Never remove an intent to bypass these checks.
+
+An exclusive `.veil/lock` records the publisher's PID, hostname, and start time. Locks are never
+automatically stolen. After verifying that the recorded process on the recorded host has stopped
+publishing, manually remove only `.veil/lock`, then run recovery if an intent exists. Crash-leftover
+`.veil/write-*` files are inert reserved metadata. Removing a generated file does not revoke live
+infrastructure access or coordinate workload retirement.
 
 ### Registries
 

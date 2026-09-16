@@ -1081,7 +1081,10 @@ type DependentDefinition struct {
 	Paths []string `protobuf:"bytes,2,rep,name=paths,proto3" json:"paths,omitempty"`
 	// Local path (relative to kind.json) or HTTP(S) URL to the dependency
 	// params' JSON Schema.
-	ParamsPath    string `protobuf:"bytes,3,opt,name=params_path,json=paramsPath,proto3" json:"params_path,omitempty"`
+	ParamsPath string `protobuf:"bytes,3,opt,name=params_path,json=paramsPath,proto3" json:"params_path,omitempty"`
+	// Optional dependency-owned templates, string paths or {path, schema}.
+	// Paths resolve relative to this kind.json; spelling is preserved.
+	Sources       []*structpb.Value `protobuf:"bytes,4,rep,name=sources,proto3" json:"sources,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1135,6 +1138,13 @@ func (x *DependentDefinition) GetParamsPath() string {
 		return x.ParamsPath
 	}
 	return ""
+}
+
+func (x *DependentDefinition) GetSources() []*structpb.Value {
+	if x != nil {
+		return x.Sources
+	}
+	return nil
 }
 
 var File_veil_v1_config_proto protoreflect.FileDescriptor
@@ -1224,13 +1234,14 @@ const file_veil_v1_config_proto_rawDesc = "" +
 	"\tEnvAccess\x128\n" +
 	"\x04name\x18\x01 \x01(\tB$\xbaH!\xc8\x01\x01r\x1c\x10\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12,\n" +
 	"\vdescription\x18\x02 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\vdescription\"\x9c\x01\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\vdescription\"\xce\x01\n" +
 	"\x13DependentDefinition\x122\n" +
 	"\x04kind\x18\x01 \x01(\tB\x1e\xbaH\x1b\xc8\x01\x01r\x16\x10\x012\x12^[a-z][a-z0-9_-]*$R\x04kind\x12$\n" +
 	"\x05paths\x18\x02 \x03(\tB\x0e\xbaH\v\x92\x01\b\b\x01\"\x04r\x02\x10\x01R\x05paths\x12+\n" +
 	"\vparams_path\x18\x03 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\n" +
-	"paramsPathB\x85\x01\n" +
+	"paramsPath\x120\n" +
+	"\asources\x18\x04 \x03(\v2\x16.google.protobuf.ValueR\asourcesB\x85\x01\n" +
 	"\vcom.veil.v1B\vConfigProtoP\x01Z,github.com/vercel/veil/api/go/veil/v1;veilv1\xa2\x02\x03VXX\xaa\x02\aVeil.V1\xca\x02\aVeil\\V1\xe2\x02\x13Veil\\V1\\GPBMetadata\xea\x02\bVeil::V1b\x06proto3"
 
 var (
@@ -1289,13 +1300,14 @@ var file_veil_v1_config_proto_depIdxs = []int32{
 	19, // 16: veil.v1.HooksDefinition.post_render:type_name -> google.protobuf.Value
 	13, // 17: veil.v1.RenderHookDefinition.access:type_name -> veil.v1.HookAccess
 	14, // 18: veil.v1.HookAccess.env:type_name -> veil.v1.EnvAccess
-	8,  // 19: veil.v1.VeilConfigDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
-	8,  // 20: veil.v1.KindDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
-	21, // [21:21] is the sub-list for method output_type
-	21, // [21:21] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	19, // 19: veil.v1.DependentDefinition.sources:type_name -> google.protobuf.Value
+	8,  // 20: veil.v1.VeilConfigDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
+	8,  // 21: veil.v1.KindDefinition.VariablesEntry.value:type_name -> veil.v1.Variable
+	22, // [22:22] is the sub-list for method output_type
+	22, // [22:22] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_veil_v1_config_proto_init() }

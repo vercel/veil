@@ -360,12 +360,16 @@ func typeNameForSchemaPath(prefix, p string) (string, error) {
 // schema are absent from the map. Two schemas PascalCasing to the same
 // name is a build-time error, same as fsInterfaceNamed's accessor guard.
 func SourceSchemaTypes(k *config.Kind, prefix string) (string, map[string]string, error) {
+	return sourceSchemaTypes(k, k.SourceDefs(), prefix)
+}
+
+func sourceSchemaTypes(k *config.Kind, sources []*veilv1.SourceDefinition, prefix string) (string, map[string]string, error) {
 	var b strings.Builder
 	typeNameBySchema := make(map[string]string) // schema path -> type name
 	nameOwner := make(map[string]string)        // type name -> first schema path that claimed it
 	sourceTypeNames := make(map[string]string)  // source path -> type name
 
-	defs := append([]*veilv1.SourceDefinition(nil), k.SourceDefs()...)
+	defs := append([]*veilv1.SourceDefinition(nil), sources...)
 	sort.Slice(defs, func(i, j int) bool { return defs[i].GetPath() < defs[j].GetPath() })
 
 	for _, def := range defs {
@@ -520,6 +524,10 @@ func fsInterface(k *config.Kind) (string, error) {
 // typed to the consumer's schemas exactly like the consumer's own FS
 // is). Accessor-name collisions are a build error.
 func fsInterfaceNamed(name string, sources []string, typeNameByPath map[string]string) (string, error) {
+	return sourceInterfaceNamed(name, sources, typeNameByPath, true)
+}
+
+func sourceInterfaceNamed(name string, sources []string, typeNameByPath map[string]string, allowAdd bool) (string, error) {
 	srcs := append([]string(nil), sources...)
 	sort.Strings(srcs)
 
@@ -563,8 +571,10 @@ func fsInterfaceNamed(name string, sources []string, typeNameByPath map[string]s
 	b.WriteString("  /** Every file handle currently present (including tombstoned ones —\n")
 	b.WriteString("   *  filter via `file.isDeleted()` if you only want live files). */\n")
 	b.WriteString("  getAll(): File[];\n")
-	b.WriteString("  /** Create a new file at the given path. Errors if a file with that path already exists. */\n")
-	b.WriteString("  add(path: string, content: string): File;\n")
+	if allowAdd {
+		b.WriteString("  /** Create a new file at the given path. Errors if a file with that path already exists. */\n")
+		b.WriteString("  add(path: string, content: string): File;\n")
+	}
 	b.WriteString("  /** Tombstone the file at the given path (soft delete — downstream hooks still see it). */\n")
 	b.WriteString("  delete(path: string): void;\n")
 	b.WriteString("  /** All paths currently present. */\n")

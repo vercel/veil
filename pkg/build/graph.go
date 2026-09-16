@@ -49,9 +49,12 @@ type KindNode struct {
 // relationship in the graph, plus the JSON Schema of the params the
 // consumer must supply.
 type DependencyEdge struct {
-	Consumer     *KindNode
-	Target       *KindNode
-	ParamsSchema map[string]any
+	Consumer        *KindNode
+	Target          *KindNode
+	ParamsSchema    map[string]any
+	Sources         []string
+	SourceTypes     string
+	SourceTypeNames map[string]string
 }
 
 // BuildGraph constructs a KindGraph from the source-side registry. Errors
@@ -98,10 +101,22 @@ func BuildGraph(kinds []*config.Kind) (*KindGraph, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s: dependents[%q] params: %w", k.Name, d.Kind, err)
 			}
+			defs := k.DependentSourceDefs(d.Kind)
+			sourceTypes, sourceTypeNames, err := sourceSchemaTypes(k, defs, PascalCase(d.Kind)+"Source")
+			if err != nil {
+				return nil, fmt.Errorf("%s: dependents[%q] sources: %w", k.Name, d.Kind, err)
+			}
+			sources := make([]string, len(defs))
+			for i, def := range defs {
+				sources[i] = def.GetPath()
+			}
 			edge := &DependencyEdge{
-				Consumer:     consumer,
-				Target:       target,
-				ParamsSchema: schema,
+				Consumer:        consumer,
+				Target:          target,
+				ParamsSchema:    schema,
+				Sources:         sources,
+				SourceTypes:     sourceTypes,
+				SourceTypeNames: sourceTypeNames,
 			}
 			target.dependents = append(target.dependents, edge)
 			consumer.dependencies = append(consumer.dependencies, edge)
@@ -296,6 +311,14 @@ func dependentInterfaces(n *KindNode, packageMode bool) (string, error) {
 			b.WriteString(consumer.SourceTypes)
 		}
 
+		sourcesName := consumerPascal + "Sources"
+		sourcesIface, err := sourceInterfaceNamed(sourcesName, edge.Sources, edge.SourceTypeNames, false)
+		if err != nil {
+			return "", fmt.Errorf("consumer %q sources: %w", consumer.Name, err)
+		}
+		b.WriteString(edge.SourceTypes)
+		b.WriteString(sourcesIface)
+		b.WriteString("\n")
 		paramsIface, err := interfaceFromSchemaMap(paramsName, edge.ParamsSchema)
 		if err != nil {
 			return "", fmt.Errorf("consumer %q params: %w", consumer.Name, err)
@@ -313,6 +336,7 @@ func dependentInterfaces(n *KindNode, packageMode bool) (string, error) {
 		b.WriteString("  path: string;\n")
 		fmt.Fprintf(&b, "  /** Params the consumer supplied for this dependency. */\n")
 		fmt.Fprintf(&b, "  params: %s;\n", paramsName)
+		fmt.Fprintf(&b, "  /** This target's templates in the consumer bundle. */\n  sources: %s;\n", sourcesName)
 		b.WriteString("  vars: RegistryVariables;\n")
 		b.WriteString("  root: string;\n")
 		b.WriteString("  std: Std;\n")

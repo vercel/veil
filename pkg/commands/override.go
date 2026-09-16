@@ -18,9 +18,8 @@ import (
 )
 
 // Override returns the "override" subcommand. An override copies a
-// kind's source file next to the resource that's overriding it and
-// records the substitution under metadata.overrides; render replaces
-// the kind's content with the local file before any hook runs.
+// kind or dependency template next to the resource that's overriding it
+// and records the stable source identity under metadata.overrides.
 //
 // `--skip-hooks` additionally re-stamps the local file's bytes after
 // the pipeline finishes, so hook mutations to that file are discarded
@@ -29,7 +28,7 @@ import (
 func Override() *cli.Command {
 	return &cli.Command{
 		Name:      "override",
-		Usage:     "Override one or more kind source files with local replacements",
+		Usage:     "Override kind or dependency source files with local replacements",
 		UsageText: "veil override <resource> [<source>...] [--skip-hooks] [--out <path>]",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
@@ -129,7 +128,40 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 		return nil, fmt.Errorf("loading kind %q: %w", kindName, err)
 	}
 
-	sources := loadedKind.Sources
+	sources := append([]*registry.LoadedSource(nil), loadedKind.Sources...)
+	if len(res.GetDependencies()) > 0 {
+		handles, err := resource.Discover(ctx, reg.FS(), reg.ResourceDiscovery.GetPaths())
+		if err != nil {
+			return nil, fmt.Errorf("discovering dependencies: %w", err)
+		}
+		catalog, err := resource.NewCatalog(reg.FS(), handles, kindReg)
+		if err != nil {
+			return nil, err
+		}
+		resolved, err := catalog.LoadResource(kindName, res.GetMetadata().GetName())
+		if err != nil {
+			return nil, err
+		}
+		seen := make(map[string]bool)
+		for _, dep := range resolved.Dependencies {
+			target := dep.Resource
+			for _, src := range target.Kind.DependentSources[kindName] {
+				id := registry.DependencySourceID(target.GetMetadata().GetKind(), target.GetMetadata().GetName(), src.GetPath())
+				if seen[id] {
+					continue
+				}
+				seen[id] = true
+				sources = append(sources, &registry.LoadedSource{Source: &veilv1.Source{Path: id, Contents: src.GetContents()}})
+			}
+		}
+	}
+	byPath := make(map[string]*registry.LoadedSource, len(sources))
+	for _, src := range sources {
+		if _, exists := byPath[src.GetPath()]; exists {
+			return nil, fmt.Errorf("source identity collision: %q", src.GetPath())
+		}
+		byPath[src.GetPath()] = src
+	}
 
 	// Discovery mode: only the resource was given. List the kind's
 	// sources so the user can pick one for the next invocation.
@@ -141,7 +173,7 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 	// Validate every requested source up front so we don't half-apply
 	// when one is misspelled.
 	for _, s := range sourceArgs {
-		if loadedKind.Source(s) == nil {
+		if byPath[s] == nil {
 			return nil, fmt.Errorf(
 				"kind %q does not declare a source named %q (known sources: %s)",
 				kindName, s, strings.Join(sourcePaths(sources), ", "),
@@ -162,15 +194,20 @@ func runOverride(ctx context.Context, c *cli.Command) (*overrideResponse, error)
 
 	resp := &overrideResponse{Kind: kindName, SkipHooks: skipHooks}
 	for _, sourceName := range sourceArgs {
-		sourceContent := loadedKind.Source(sourceName).GetContents()
+		sourceContent := byPath[sourceName].GetContents()
 
 		// Default output path: same basename as the source, dropped
 		// alongside the resource file. With --out the file lands under
 		// that directory (relative to the resource).
 		basename := filepath.Base(sourceName)
 		outRel := basename
+		// Dependency identities retain target directories so two templates
+		// with the same filename never alias during override authoring.
+		if strings.HasPrefix(sourceName, "dependencies/") {
+			outRel = filepath.FromSlash(sourceName)
+		}
 		if outDir != "" {
-			outRel = filepath.Join(outDir, basename)
+			outRel = filepath.Join(outDir, outRel)
 		}
 		outAbs := outRel
 		if !filepath.IsAbs(outAbs) {

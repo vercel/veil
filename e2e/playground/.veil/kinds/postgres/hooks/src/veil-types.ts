@@ -318,6 +318,20 @@ export interface ServiceDeployment {
   replicas: number;
 }
 
+export interface ServiceSources {
+  /** Look up a file handle by its path. Returns undefined if absent.
+   *  Always File<string> — still schema-enforced, just doesn't parse
+   *  for you. */
+  get(path: string): File | undefined;
+  /** Every file handle currently present (including tombstoned ones —
+   *  filter via `file.isDeleted()` if you only want live files). */
+  getAll(): File[];
+  /** Tombstone the file at the given path (soft delete — downstream hooks still see it). */
+  delete(path: string): void;
+  /** All paths currently present. */
+  keys(): string[];
+}
+
 /** What a service tells a database when it depends on it. */
 export interface ServiceParams {
   /** Env var the connection string is written to */
@@ -335,6 +349,8 @@ export interface ServiceDependentHookContext {
   path: string;
   /** Params the consumer supplied for this dependency. */
   params: ServiceParams;
+  /** This target's templates in the consumer bundle. */
+  sources: ServiceSources;
   vars: RegistryVariables;
   root: string;
   std: Std;

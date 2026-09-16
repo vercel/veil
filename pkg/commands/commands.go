@@ -73,6 +73,7 @@ func NewApp() *cli.Command {
 		},
 		Commands: []*cli.Command{
 			Render(),
+			outputsCommand(),
 			Init(),
 			New(),
 			Build(),

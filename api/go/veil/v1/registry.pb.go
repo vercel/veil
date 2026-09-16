@@ -468,7 +468,9 @@ type DependentHook struct {
 	// Compiled, bundled dependent hooks in declaration order.
 	Hooks []*Hook `protobuf:"bytes,2,rep,name=hooks,proto3" json:"hooks,omitempty"`
 	// Inlined contents of the params JSON Schema (raw JSON text).
-	ParamsSchema  string `protobuf:"bytes,3,opt,name=params_schema,json=paramsSchema,proto3" json:"params_schema,omitempty"`
+	ParamsSchema string `protobuf:"bytes,3,opt,name=params_schema,json=paramsSchema,proto3" json:"params_schema,omitempty"`
+	// Embedded templates instantiated once per resolved target per root.
+	Sources       []*Source `protobuf:"bytes,4,rep,name=sources,proto3" json:"sources,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -524,6 +526,13 @@ func (x *DependentHook) GetParamsSchema() string {
 	return ""
 }
 
+func (x *DependentHook) GetSources() []*Source {
+	if x != nil {
+		return x.Sources
+	}
+	return nil
+}
+
 var File_veil_v1_registry_proto protoreflect.FileDescriptor
 
 const file_veil_v1_registry_proto_rawDesc = "" +
@@ -569,12 +578,13 @@ const file_veil_v1_registry_proto_rawDesc = "" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x04name\x12$\n" +
 	"\acontent\x18\x02 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\acontent\x12+\n" +
-	"\x06access\x18\x03 \x01(\v2\x13.veil.v1.HookAccessR\x06access\"\xa3\x01\n" +
+	"\x06access\x18\x03 \x01(\v2\x13.veil.v1.HookAccessR\x06access\"\xce\x01\n" +
 	"\rDependentHook\x122\n" +
 	"\x04kind\x18\x01 \x01(\tB\x1e\xbaH\x1b\xc8\x01\x01r\x16\x10\x012\x12^[a-z][a-z0-9_-]*$R\x04kind\x12-\n" +
 	"\x05hooks\x18\x02 \x03(\v2\r.veil.v1.HookB\b\xbaH\x05\x92\x01\x02\b\x01R\x05hooks\x12/\n" +
 	"\rparams_schema\x18\x03 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\fparamsSchemaB\x87\x01\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\fparamsSchema\x12)\n" +
+	"\asources\x18\x04 \x03(\v2\x0f.veil.v1.SourceR\asourcesB\x87\x01\n" +
 	"\vcom.veil.v1B\rRegistryProtoP\x01Z,github.com/vercel/veil/api/go/veil/v1;veilv1\xa2\x02\x03VXX\xaa\x02\aVeil.V1\xca\x02\aVeil\\V1\xe2\x02\x13Veil\\V1\\GPBMetadata\xea\x02\bVeil::V1b\x06proto3"
 
 var (
@@ -614,13 +624,14 @@ var file_veil_v1_registry_proto_depIdxs = []int32{
 	8,  // 7: veil.v1.Registry.kinds:type_name -> veil.v1.Registry.KindsEntry
 	9,  // 8: veil.v1.Hook.access:type_name -> veil.v1.HookAccess
 	5,  // 9: veil.v1.DependentHook.hooks:type_name -> veil.v1.Hook
-	10, // 10: veil.v1.Kind.VariablesEntry.value:type_name -> veil.v1.Variable
-	4,  // 11: veil.v1.Registry.KindsEntry.value:type_name -> veil.v1.RegistryEntry
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	1,  // 10: veil.v1.DependentHook.sources:type_name -> veil.v1.Source
+	10, // 11: veil.v1.Kind.VariablesEntry.value:type_name -> veil.v1.Variable
+	4,  // 12: veil.v1.Registry.KindsEntry.value:type_name -> veil.v1.RegistryEntry
+	13, // [13:13] is the sub-list for method output_type
+	13, // [13:13] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_veil_v1_registry_proto_init() }
