@@ -462,3 +462,190 @@ func (s *RenderSuite) TestDiscoveryGlobSkipsNonResources() {
 	s.Equal("my-worker", handles[0].Name)
 	s.Equal("worker", handles[0].Kind)
 }
+
+// compiledFiles builds a `files` list, marking exactly the paths named
+// in render as output. Anything else is an asset.
+func compiledFiles(contents map[string]string, render map[string]bool) []map[string]any {
+	paths := make([]string, 0, len(contents))
+	for p := range contents {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	out := make([]map[string]any, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, map[string]any{"path": p, "contents": contents[p], "render": render[p]})
+	}
+	return out
+}
+
+// writeFilesKind rebuilds the worker kind around a `files` list and one
+// render hook.
+func (s *RenderSuite) writeFilesKind(hookJS string, contents map[string]string, render map[string]bool) string {
+	s.T().Helper()
+	s.writeJSON(filepath.Join(s.root, "r", "worker", "kind.json"), map[string]any{
+		"name":  "worker",
+		"files": compiledFiles(contents, render),
+		"hooks": map[string]any{
+			"render": []map[string]any{{"name": "hooks/h.ts", "content": hookJS}},
+		},
+	})
+	dir := filepath.Join(s.root, "svc")
+	s.Require().NoError(os.MkdirAll(dir, 0755))
+	s.writeJSON(filepath.Join(dir, "my-worker.json"), map[string]any{
+		"metadata": map[string]any{"kind": "worker", "name": "my-worker"},
+		"spec":     map[string]any{"replicas": 1},
+	})
+	return dir
+}
+
+// TestAssetIsReadableButNotWritten is the baseline the rest vary from: a
+// file the kind declares without render reaches the hook and stays out
+// of the output.
+func (s *RenderSuite) TestAssetIsReadableButNotWritten() {
+	hook := `var __veilMod=(()=>{var h={render(ctx,fs){
+	  var a=fs.get("assets/tmpl.txt");
+	  if(!a) throw new Error("asset missing from the FS");
+	  if(a.isRendered()) throw new Error("an asset should not report as rendered");
+	  fs.get("config.txt").setContent(a.getContent());
+	  return fs;}};return{default:h};})();`
+	dir := s.writeFilesKind(hook,
+		map[string]string{"config.txt": "base", "assets/tmpl.txt": "from-the-asset"},
+		map[string]bool{"config.txt": true})
+
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderWorker(dir, out, nil)
+	s.Require().NoError(err)
+
+	body, err := os.ReadFile(filepath.Join(out, "my-worker", "config.txt"))
+	s.Require().NoError(err)
+	s.Equal("from-the-asset", string(body), "the hook could read the asset")
+	s.NoFileExists(filepath.Join(out, "my-worker", "assets", "tmpl.txt"))
+}
+
+// TestSetRenderedPromotesAnAsset covers the hook asking for an asset to
+// be written after all.
+func (s *RenderSuite) TestSetRenderedPromotesAnAsset() {
+	hook := `var __veilMod=(()=>{var h={render(ctx,fs){
+	  var a=fs.get("assets/tmpl.txt");
+	  a.setRendered(true);
+	  if(!a.isRendered()) throw new Error("setRendered(true) should stick");
+	  return fs;}};return{default:h};})();`
+	dir := s.writeFilesKind(hook,
+		map[string]string{"config.txt": "base", "assets/tmpl.txt": "promoted"},
+		map[string]bool{"config.txt": true})
+
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderWorker(dir, out, nil)
+	s.Require().NoError(err)
+
+	body, err := os.ReadFile(filepath.Join(out, "my-worker", "assets", "tmpl.txt"))
+	s.Require().NoError(err)
+	s.Equal("promoted", string(body))
+}
+
+// TestSetOutputPathRendersAnAsset pins the implication: routing a file
+// somewhere is a statement that it should be written, so a layout hook
+// cannot quietly move an asset to a destination nothing writes.
+func (s *RenderSuite) TestSetOutputPathRendersAnAsset() {
+	hook := `var __veilMod=(()=>{var h={render(ctx,fs){
+	  var a=fs.get("assets/tmpl.txt");
+	  a.setOutputPath("published/tmpl.txt");
+	  if(!a.isRendered()) throw new Error("setOutputPath should mark it rendered");
+	  return fs;}};return{default:h};})();`
+	dir := s.writeFilesKind(hook,
+		map[string]string{"config.txt": "base", "assets/tmpl.txt": "routed"},
+		map[string]bool{"config.txt": true})
+
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderWorker(dir, out, nil)
+	s.Require().NoError(err)
+
+	body, err := os.ReadFile(filepath.Join(out, "my-worker", "published", "tmpl.txt"))
+	s.Require().NoError(err)
+	s.Equal("routed", string(body))
+	s.NoFileExists(filepath.Join(out, "my-worker", "assets", "tmpl.txt"))
+}
+
+// TestDeleteClearsRenderedAndSetsDeleted pins the two flags moving
+// together, and that both are observable from a later hook.
+func (s *RenderSuite) TestDeleteClearsRenderedAndSetsDeleted() {
+	hook := `var __veilMod=(()=>{var h={render(ctx,fs){
+	  var f=fs.get("config.txt");
+	  if(!f.isRendered()) throw new Error("a render file should start rendered");
+	  f.setDeleted(true);
+	  if(f.isRendered()) throw new Error("deleting should clear rendered");
+	  if(!f.isDeleted()) throw new Error("deleting should set the tombstone");
+	  // And back again: restoring output clears the tombstone.
+	  f.setRendered(true);
+	  if(f.isDeleted()) throw new Error("setRendered(true) should clear the tombstone");
+	  return fs;}};return{default:h};})();`
+	dir := s.writeFilesKind(hook,
+		map[string]string{"config.txt": "base"},
+		map[string]bool{"config.txt": true})
+
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderWorker(dir, out, nil)
+	s.Require().NoError(err)
+	s.FileExists(filepath.Join(out, "my-worker", "config.txt"))
+}
+
+// TestRenderedStateCarriesAcrossHooks covers the round trip: unlike Type
+// and MustValidate, which the runner re-stamps between hooks, a render
+// decision is the hook's to make and has to survive into the next one.
+func (s *RenderSuite) TestRenderedStateCarriesAcrossHooks() {
+	promote := `var __veilMod=(()=>{var h={render(ctx,fs){fs.get("assets/tmpl.txt").setRendered(true);return fs;}};return{default:h};})();`
+	observe := `var __veilMod=(()=>{var h={render(ctx,fs){
+	  if(!fs.get("assets/tmpl.txt").isRendered()) throw new Error("the promotion did not survive the hook boundary");
+	  return fs;}};return{default:h};})();`
+
+	s.writeJSON(filepath.Join(s.root, "r", "worker", "kind.json"), map[string]any{
+		"name": "worker",
+		"files": compiledFiles(
+			map[string]string{"config.txt": "base", "assets/tmpl.txt": "x"},
+			map[string]bool{"config.txt": true}),
+		"hooks": map[string]any{
+			"render": []map[string]any{
+				{"name": "hooks/promote.ts", "content": promote},
+				{"name": "hooks/observe.ts", "content": observe},
+			},
+		},
+	})
+	dir := filepath.Join(s.root, "svc")
+	s.Require().NoError(os.MkdirAll(dir, 0755))
+	s.writeJSON(filepath.Join(dir, "my-worker.json"), map[string]any{
+		"metadata": map[string]any{"kind": "worker", "name": "my-worker"},
+		"spec":     map[string]any{"replicas": 1},
+	})
+
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderWorker(dir, out, nil)
+	s.Require().NoError(err)
+	s.FileExists(filepath.Join(out, "my-worker", "assets", "tmpl.txt"))
+}
+
+// TestIsDeletedIsTheInverseOfRendered pins the consequence of the two
+// being one flag: an asset reports as deleted, because a deleted file
+// and an asset are the same outcome — an entry still in the FS that
+// nothing writes.
+func (s *RenderSuite) TestIsDeletedIsTheInverseOfRendered() {
+	hook := `var __veilMod=(()=>{var h={render(ctx,fs){
+	  var a=fs.get("assets/tmpl.txt"), c=fs.get("config.txt");
+	  if(!a.isDeleted()) throw new Error("an asset should report as deleted");
+	  if(c.isDeleted()) throw new Error("a render file should not");
+	  a.setRendered(true);
+	  if(a.isDeleted()) throw new Error("rendering it should clear deleted");
+	  c.setDeleted(true);
+	  if(c.isRendered()) throw new Error("deleting it should clear rendered");
+	  return fs;}};return{default:h};})();`
+	dir := s.writeFilesKind(hook,
+		map[string]string{"config.txt": "base", "assets/tmpl.txt": "x"},
+		map[string]bool{"config.txt": true})
+
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderWorker(dir, out, nil)
+	s.Require().NoError(err)
+
+	// The two swapped places, and the output follows.
+	s.FileExists(filepath.Join(out, "my-worker", "assets", "tmpl.txt"))
+	s.NoFileExists(filepath.Join(out, "my-worker", "config.txt"))
+}

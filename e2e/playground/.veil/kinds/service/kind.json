@@ -9,10 +9,21 @@
     },
     "./sources/env"
   ],
+  "files": [
+    {
+      "path": "./files/labels.json"
+    }
+  ],
   "hooks": {
     "render": [
       {
         "path": "./hooks/src/shape-deployment.ts"
+      },
+      {
+        "path": "./hooks/src/apply-labels.ts"
+      },
+      {
+        "path": "./hooks/src/publish-labels.ts"
       }
     ],
     "post_render": [
@@ -21,6 +32,9 @@
       },
       {
         "path": "./hooks/src/write-manifest.ts"
+      },
+      {
+        "path": "./hooks/src/drop-manifest.ts"
       }
     ],
     "validate": [

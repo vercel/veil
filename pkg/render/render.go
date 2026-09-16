@@ -147,16 +147,28 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		return nil, fmt.Errorf("schema validation: %w", err)
 	}
 
-	// Promote the compiled sources to the identity → File structure that
+	// Promote the compiled files to the identity → File structure that
 	// flows through the hook pipeline. Identity starts as the declared
-	// source path; hooks may remap the destination via File.setOutputPath
+	// file path; hooks may remap the destination via File.setOutputPath
 	// without changing identity.
-	bundle := make(hook.Bundle, len(kind.Sources))
-	for _, src := range kind.Sources {
-		// A source is typed — and validated on write — exactly when its
+	//
+	// Read from the loaded kind, not the wire message: a registry built
+	// before `files` existed carries only `sources`, and the loader is
+	// what folds those in.
+	bundle := make(hook.Bundle, len(loaded.Files))
+	for _, src := range loaded.Files {
+		// A file is typed — and validated on write — exactly when its
 		// kind declared a schema for it. Everything else stays a string
 		// the hook can do what it likes with.
-		entry := hook.File{Path: src.GetPath(), Content: src.GetContents(), Type: hook.ContentPlaintext}
+		entry := hook.File{
+			Path:    src.GetPath(),
+			Content: src.GetContents(),
+			Type:    hook.ContentPlaintext,
+			// Assets ride through the bundle so hooks can read them, and
+			// are dropped at write time. Only a render file becomes
+			// rendered output.
+			Render: src.GetRender(),
+		}
 		if loaded.HasSourceSchema(src.GetPath()) {
 			entry.Type = sourceContentType(src.GetPath())
 			entry.MustValidate = true
@@ -272,11 +284,13 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 			// Override was for a path that isn't in the bundle anymore
 			// (deleted by a hook). Re-introduce it under the same key
 			// so the user's content still lands in the output.
-			bundle[path] = hook.File{Path: path, Content: content}
+			bundle[path] = hook.File{Path: path, Content: content, Render: true}
 			continue
 		}
 		f.Content = content
-		f.Deleted = false
+		// An override is a demand that this content be written, so it
+		// outranks a hook having dropped the file.
+		f.Render = true
 		bundle[path] = f
 	}
 
@@ -1051,9 +1065,10 @@ func writeBundle(outDir string, bundle hook.Bundle) ([]string, error) {
 	pathsOut := make([]string, 0, len(bundle))
 	for _, id := range identities {
 		file := bundle[id]
-		// Tombstoned entries are skipped at write time — downstream hooks
-		// already had their chance to observe them via File.isDeleted().
-		if file.Deleted {
+		// Everything that is not output is skipped here: an asset the
+		// kind ships for its hooks to read, and a file a hook deleted.
+		// Both stayed in the bundle so later hooks could observe them.
+		if !file.Render {
 			continue
 		}
 		path := file.Path

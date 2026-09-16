@@ -109,15 +109,23 @@ export interface File<T = string> {
   /** Current destination path, relative to the render output directory. */
   getPath(): string;
   /** Override the destination path. Identity (the FS key) is unchanged, so
-   *  downstream hooks still find this file via the same typed accessor. */
+   *  downstream hooks still find this file via the same typed accessor.
+   *  Routing a file somewhere is a statement that it should be written, so
+   *  this also marks it rendered. */
   setOutputPath(path: string): void;
-  /** True when this file has been tombstoned via setDeleted(true) or
-   *  fs.delete(). Downstream hooks still observe the entry; the final
-   *  writer skips it. */
+  /** True when this file becomes rendered output. False for an asset the
+   *  kind ships purely for hooks to read, and for anything deleted. */
+  isRendered(): boolean;
+  /** Turn output on or off for this entry. The entry stays in the FS
+   *  either way, so downstream hooks still find it via the same typed
+   *  accessor. */
+  setRendered(render: boolean): void;
+  /** The inverse of isRendered, and the same underlying state: a deleted
+   *  file and an asset are both entries nothing writes. So this is also
+   *  true for an asset the kind never meant to render. */
   isDeleted(): boolean;
-  /** Tombstone (true) or restore (false) this entry. Identity is
-   *  preserved either way — downstream hooks still find it via the same
-   *  typed accessor. */
+  /** Tombstone (true) or restore (false) this entry — setRendered read
+   *  the other way round. Identity is preserved either way. */
   setDeleted(deleted: boolean): void;
 }
 
@@ -219,7 +227,9 @@ export interface RenderHook {
    * Modify a file with `setContent`, `setOutputPath`, or `setDeleted`. Create
    * new files with `fs.add(path, content)`. Soft-delete with `fs.delete(path)` —
    * tombstoned files persist so downstream hooks can observe them via
-   * `file.isDeleted()`, and are skipped at final write.
+   * `file.isDeleted()`, and are skipped at final write. A kind can also
+   * ship assets: files declared without `render`, readable here and never
+   * written, which `setRendered(true)` promotes to output.
    *
    * Returning nothing passes the FS through unchanged. `throw new Error(...)`
    * to abort the render for this resource. May be `async` — the host awaits
@@ -449,13 +459,19 @@ export interface RedisDependentHook {
 
 /** An Acme application service. */
 export interface ServiceSpec {
+  /** Drop the generated manifest from the rendered output. */
+  dropManifest?: boolean;
   image: string;
   port: number;
   public: boolean;
+  /** Emit the kind's standard labels as a file alongside the deployment. */
+  publishLabels?: boolean;
   replicas: number;
 }
 
 export interface ServiceFS {
+  /** Handle for the declared source "./files/labels.json". */
+  getFilesLabelsJson(): File;
   /** Handle for the declared source "./sources/deployment.yaml". */
   getSourcesDeploymentYaml(): File<ServiceDeployment>;
   /** Handle for the declared source "./sources/env". */
@@ -478,6 +494,8 @@ export interface ServiceFS {
 
 export interface ServiceDeployment {
   image: string;
+  /** Standard labels, seeded from the kind's labels.json asset. */
+  labels?: Record<string, string>;
   port: number;
   public?: boolean;
   region: string;

@@ -15,6 +15,45 @@
       "description": "URI of the JSON Schema this file is written against. Ignored by veil.",
       "type": "string"
     },
+    "files": {
+      "description": "Supersedes `sources`. A file with render=true seeds the rendered\n resource exactly as a source did; one with render=false is an asset\n the kind ships for its hooks to read — a template, a fragment, a\n lookup table — present in the hook FS but never written to the\n output. render defaults to false, so bundling an asset is the\n no-extra-keys case and seeding output is the deliberate one.\n\n google.protobuf.Value for the same reason as `sources`: an entry is\n either a bare string path or a FileDefinition object.",
+      "items": {
+        "oneOf": [
+          {
+            "description": "Resolved relative to the enclosing kind.json.",
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "additionalProperties": true,
+            "description": "Supersedes SourceDefinition, which it matches field for field apart\n from `render`. A `sources` entry loads as a FileDefinition with\n render=true.",
+            "properties": {
+              "path": {
+                "description": "Resolved relative to the enclosing kind.json.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "render": {
+                "default": false,
+                "description": "Whether this file seeds the rendered resource. Leave it false — the\n default — for an asset the kind ships purely for its hooks to read;\n the file is in the hook FS but never written to the output.",
+                "type": "boolean"
+              },
+              "schema": {
+                "default": "",
+                "description": "Local path (relative to kind.json) or HTTP(S) URL to this file's\n JSON Schema. Omit for no declared shape. Declaring one makes the\n file's content a contract the runner enforces at render time: reads\n and writes go through the parsed value, not the raw string.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Files that make up the kind. May be empty.",
+      "type": "array"
+    },
     "forward_dependencies": {
       "default": false,
       "description": "Union with the per-edge flag — an edge forwards when either says\n so — and forwarding chains either way.",
@@ -144,7 +183,7 @@
           }
         ]
       },
-      "title": "Source configuration files that make up the kind. May be empty.",
+      "title": "Deprecated: use `files`, which takes the same entries plus a\n `render` flag. Entries here load as files with render=true, so an\n existing kind.json keeps working unchanged and a kind may declare\n both — the two lists are concatenated, `sources` first.",
       "type": "array"
     },
     "variables": {

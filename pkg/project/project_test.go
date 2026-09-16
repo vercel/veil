@@ -70,7 +70,7 @@ func (s *ProjectSuite) TestFindsVeilJSONFromNestedDirectory() {
 	s.Require().Len(reg.Kinds, 1)
 	k := reg.Kinds[0]
 	s.Equal("service", k.Name)
-	s.Equal([]string{"./sources/deployment.yaml"}, k.SourcePaths())
+	s.Equal([]string{"./sources/deployment.yaml"}, k.FilePaths())
 	s.Equal(kindsDir, k.Dir)
 }
 
@@ -513,7 +513,7 @@ registries:
 
 	k := reg.Kinds[0]
 	s.Equal("service", k.Name)
-	s.Equal([]string{"./sources/deployment.yaml"}, k.SourcePaths())
+	s.Equal([]string{"./sources/deployment.yaml"}, k.FilePaths())
 	s.Equal(filepath.Join(kindsDir, "service.yaml"), k.Path)
 	s.Equal(kindsDir, k.Dir)
 	render := k.RenderHooks()
@@ -589,8 +589,8 @@ func (s *ProjectSuite) TestAcceptsSourceObjectWithSchema() {
 	s.Require().Len(reg.Kinds, 1)
 
 	k := reg.Kinds[0]
-	s.Equal([]string{"./sources/plain.yaml", "./sources/deployment.yaml"}, k.SourcePaths())
-	defs := k.SourceDefs()
+	s.Equal([]string{"./sources/plain.yaml", "./sources/deployment.yaml"}, k.FilePaths())
+	defs := k.FileDefs()
 	s.Require().Len(defs, 2)
 	s.Equal("", defs[0].GetSchema())
 	s.Equal("./schemas/deployment.schema.json", defs[1].GetSchema())
@@ -677,7 +677,7 @@ func (s *ProjectSuite) TestLoadsRemoteSchemasWithoutNetwork() {
 	s.Require().NoError(err)
 	s.Require().Len(reg.Kinds, 1)
 	s.Equal(ref, reg.Kinds[0].GetSchema())
-	s.Equal(ref, reg.Kinds[0].SourceDefs()[0].GetSchema())
+	s.Equal(ref, reg.Kinds[0].FileDefs()[0].GetSchema())
 	s.Equal(ref, reg.Kinds[0].GetHooks().GetDependents()[0].GetParamsPath())
 	s.Equal(int32(0), requests.Load())
 }

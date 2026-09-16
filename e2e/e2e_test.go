@@ -579,3 +579,239 @@ func (s *E2ESuite) TestDirectDependencyWinsOverForwardedParams() {
 	s.NotContains(env, "ORDERS_DATABASE_URL=", "the platform's forwarded params must not also apply")
 	s.NotContains(env, "pool=25")
 }
+
+// TestKindAssetReachesHooksButNotOutput covers the point of `files`: a
+// kind can ship something for its hooks to read that is not part of the
+// rendered resource. The service kind declares files/labels.json with
+// render unset, and apply-labels.ts reads it — so the labels land in the
+// deployment while the asset itself never does.
+func (s *E2ESuite) TestKindAssetReachesHooksButNotOutput() {
+	out := s.render("resources/services/checkout.json")
+
+	deployment := s.read(out, "checkout", "sources/deployment.yaml")
+	s.Contains(deployment, "app.acme.io/managed-by: veil",
+		"the hook should have read the asset and applied it")
+
+	s.NoFileExists(filepath.Join(out, "checkout", "files", "labels.json"),
+		"an asset is not rendered output")
+	// Nor anywhere else under the resource, whatever the layout.
+	var rendered []string
+	s.Require().NoError(filepath.Walk(filepath.Join(out, "checkout"), func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		rendered = append(rendered, filepath.Base(p))
+		return nil
+	}))
+	s.NotContains(rendered, "labels.json")
+}
+
+// TestKindDeclaresSourcesAndFilesTogether pins that the two lists
+// coexist: the service kind still declares its sources the old way while
+// adding an asset through `files`, and everything from both is present
+// to hooks.
+func (s *E2ESuite) TestKindDeclaresSourcesAndFilesTogether() {
+	compiled := s.readRegistryKind("service")
+
+	paths := map[string]bool{}
+	for _, f := range compiled.Files {
+		paths[f.Path] = f.Render
+	}
+	s.Equal(true, paths["sources/deployment.yaml"], "a source seeds the output")
+	s.Equal(true, paths["sources/env"], "a source seeds the output")
+	s.Equal(false, paths["files/labels.json"], "a file without render is an asset")
+
+	// And rendering still produces exactly the sources.
+	out := s.render("resources/services/checkout.json")
+	s.FileExists(filepath.Join(out, "checkout", "sources", "deployment.yaml"))
+	s.FileExists(filepath.Join(out, "checkout", "sources", "env"))
+}
+
+// TestBuildMirrorsRenderFilesIntoSources is the forward half of
+// compatibility: a registry this veil builds has to stay readable by one
+// that predates `files`. Such a reader only knows `sources`, so every
+// render file is mirrored there — and assets are not, since that reader
+// would write them out.
+func (s *E2ESuite) TestBuildMirrorsRenderFilesIntoSources() {
+	compiled := s.readRegistryKind("service")
+
+	var mirrored []string
+	for _, src := range compiled.Sources {
+		mirrored = append(mirrored, src.Path)
+	}
+	s.ElementsMatch([]string{"sources/deployment.yaml", "sources/env"}, mirrored,
+		"sources should mirror exactly the render files")
+	s.NotContains(mirrored, "files/labels.json",
+		"an older veil would render an asset it found in sources")
+
+	for _, src := range compiled.Sources {
+		for _, f := range compiled.Files {
+			if f.Path == src.Path {
+				s.Equal(f.Contents, src.Contents, "%s: mirrored contents must match", src.Path)
+				s.Equal(f.Schema, src.Schema, "%s: mirrored schema must match", src.Path)
+			}
+		}
+	}
+}
+
+// TestLegacySourcesOnlyRegistryRenders is the backward half: a registry
+// built before `files` existed carries only `sources`, with no `files`
+// key at all. Stripping `files` from every compiled kind reproduces that
+// exactly, and the render has to come out byte for byte the same.
+func (s *E2ESuite) TestLegacySourcesOnlyRegistryRenders() {
+	// Baseline from the current registry.
+	want := s.render("resources/data/orders-db.json")
+
+	dir := s.sandbox()
+	kinds, err := filepath.Glob(filepath.Join(dir, "public", "r", "*", "kind.json"))
+	s.Require().NoError(err)
+	s.Require().NotEmpty(kinds)
+	for _, path := range kinds {
+		raw, err := os.ReadFile(path)
+		s.Require().NoError(err)
+		var doc map[string]any
+		s.Require().NoError(json.Unmarshal(raw, &doc))
+		delete(doc, "files")
+		out, err := json.MarshalIndent(doc, "", "  ")
+		s.Require().NoError(err)
+		s.Require().NoError(os.WriteFile(path, out, 0644))
+	}
+
+	got := s.T().TempDir()
+	stdout, err := s.runIn(dir, "render", "resources/data/orders-db.json", "--out", got, "--quiet")
+	s.Require().NoError(err, "a sources-only registry must still render: %s", stdout)
+
+	s.Equal(s.read(want, "orders-db", "sources/database.json"),
+		s.read(got, "orders-db", "sources/database.json"),
+		"a registry with only `sources` must render exactly as one with `files`")
+}
+
+// intentionalRenderFailures are the playground resources that are
+// supposed to fail, each a fixture some other test asserts on. Anything
+// else under resources/ has to render — that is what makes
+// TestEveryResourceRenders able to catch a fixture that quietly stopped
+// working, which is how a kind ended up depending on one that listed no
+// dependent hooks for it.
+var intentionalRenderFailures = map[string]string{
+	"resources/edge-cases/bad-rotation-secret.json": "a hook writes past its source's schema",
+	"resources/edge-cases/orphan-service.json":      "a validate hook rejects a service with no database",
+}
+
+// TestEveryResourceRenders renders the whole playground. Overlays are
+// skipped — they are fragments of another resource, not resources — and
+// the fixtures above are asserted to fail rather than silently excluded.
+func (s *E2ESuite) TestEveryResourceRenders() {
+	var renderable, expectedFailures []string
+	err := filepath.Walk(filepath.Join(s.root, "resources"), func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".json") {
+			return err
+		}
+		rel, relErr := filepath.Rel(s.root, path)
+		if relErr != nil {
+			return relErr
+		}
+		rel = filepath.ToSlash(rel)
+
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		var doc struct {
+			Metadata struct {
+				Kind     string `json:"kind"`
+				FileType string `json:"file_type"`
+			} `json:"metadata"`
+		}
+		if jsonErr := json.Unmarshal(raw, &doc); jsonErr != nil {
+			return jsonErr
+		}
+		switch {
+		case doc.Metadata.FileType == "overlay":
+			// Applied to the resource it overlays, never rendered alone.
+		case intentionalRenderFailures[rel] != "":
+			expectedFailures = append(expectedFailures, rel)
+		default:
+			renderable = append(renderable, rel)
+		}
+		return nil
+	})
+	s.Require().NoError(err)
+	s.Require().NotEmpty(renderable)
+
+	// One pass over everything, which is also how a real project renders:
+	// many resources, one invocation.
+	out := s.T().TempDir()
+	args := append([]string{"render"}, renderable...)
+	stdout, err := s.run(append(args, "--out", out, "--quiet")...)
+	s.Require().NoError(err, "the whole playground should render: %s", stdout)
+
+	// Every one of them produced files.
+	for _, rel := range renderable {
+		raw, readErr := os.ReadFile(filepath.Join(s.root, rel))
+		s.Require().NoError(readErr)
+		var doc struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		}
+		s.Require().NoError(json.Unmarshal(raw, &doc))
+		entries, readErr := os.ReadDir(filepath.Join(out, doc.Metadata.Name))
+		s.Require().NoError(readErr, "%s rendered no directory", rel)
+		s.NotEmpty(entries, "%s rendered no files", rel)
+	}
+
+	// And the fixtures that are meant to fail still do, for their reason
+	// rather than by having rotted into some unrelated error.
+	for _, rel := range expectedFailures {
+		msg := s.renderFails(rel)
+		s.NotEmpty(msg, "%s: %s", rel, intentionalRenderFailures[rel])
+	}
+}
+
+// TestAssetPromotedToOutputPerResource covers setRendered end to end and,
+// with it, that the decision is per render rather than per kind: billing
+// asks for the kind's labels asset in its output, checkout does not, and
+// the same declaration serves both.
+func (s *E2ESuite) TestAssetPromotedToOutputPerResource() {
+	billing := s.render("resources/services/billing.json")
+	s.FileExists(filepath.Join(billing, "billing", "files", "labels.json"),
+		"billing sets publishLabels, so the hook promotes the asset")
+	s.Contains(s.read(billing, "billing", "files/labels.json"), "app.acme.io/tier")
+
+	checkout := s.render("resources/services/checkout.json")
+	s.NoFileExists(filepath.Join(checkout, "checkout", "files", "labels.json"),
+		"checkout does not, so the same asset stays unwritten")
+}
+
+// TestRenderedAndDeletedAreOneFlag drives the whole of it through the
+// real binary on one resource. `reports` promotes the kind's labels
+// asset into its output and drops the generated manifest, so the two
+// files trade places: the thing the kind never meant to write is
+// written, and the thing it did is not.
+//
+// Both directions come from the same flag — setRendered(true) on the
+// asset, setDeleted(true) on the manifest — and the hooks assert the
+// inverse reads back (isRendered false after deleting) as they go, so a
+// regression fails the render rather than just the file list.
+func (s *E2ESuite) TestRenderedAndDeletedAreOneFlag() {
+	out := s.render("resources/services/reports.json")
+
+	// The asset was promoted.
+	s.FileExists(filepath.Join(out, "reports", "files", "labels.json"))
+	s.Contains(s.read(out, "reports", "files/labels.json"), "app.acme.io/tier")
+
+	// The render file was dropped, after post_render had created it.
+	s.NoFileExists(filepath.Join(out, "reports", "sources", "manifest.json"))
+
+	// Everything else is untouched — deleting one file does not disturb
+	// the rest of the bundle.
+	s.FileExists(filepath.Join(out, "reports", "sources", "deployment.yaml"))
+	s.Contains(s.read(out, "reports", "sources/env"), "REPORTS_DATABASE_URL=postgres://")
+
+	// And the same kind renders the other way round for a resource that
+	// asks for neither, so this is the resource's decision and not the
+	// declaration's.
+	checkout := s.render("resources/services/checkout.json")
+	s.NoFileExists(filepath.Join(checkout, "checkout", "files", "labels.json"))
+	s.FileExists(filepath.Join(checkout, "checkout", "sources", "manifest.json"))
+}

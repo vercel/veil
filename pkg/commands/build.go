@@ -381,8 +381,8 @@ func cwdRel(abs string) string {
 // plus every kind's kind.json), copied verbatim so the compiled document
 // is self-contained at render time.
 func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, fsys vfs.FS) (*veilv1.Kind, error) {
-	sources := make([]*veilv1.Source, 0, len(k.SourceDefs()))
-	for _, def := range k.SourceDefs() {
+	files := make([]*veilv1.File, 0, len(k.FileDefs()))
+	for _, def := range k.FileDefs() {
 		src := def.GetPath()
 		abs := src
 		if !filepath.IsAbs(abs) {
@@ -390,27 +390,40 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, fsys vfs
 		}
 		data, err := os.ReadFile(abs)
 		if err != nil {
-			return nil, fmt.Errorf("reading source %s: %w", src, err)
+			return nil, fmt.Errorf("reading file %s: %w", src, err)
 		}
 		key, err := sourceKey(k, src)
 		if err != nil {
 			return nil, err
 		}
-		compiled := &veilv1.Source{Path: key, Contents: string(data)}
+		compiled := &veilv1.File{Path: key, Contents: string(data), Render: def.GetRender()}
 
 		if schema := def.GetSchema(); schema != "" {
 			schemaData, err := k.ReadSchema(schema)
 			if err != nil {
-				return nil, fmt.Errorf("reading schema for source %s: %w", src, err)
+				return nil, fmt.Errorf("reading schema for file %s: %w", src, err)
 			}
-			// Fail here rather than at every later render: the source's
+			// Fail here rather than at every later render: the file's
 			// own contents have to satisfy the schema it declares.
 			if err := build.ValidateSourceContents(key, data, schemaData); err != nil {
-				return nil, fmt.Errorf("source %s: schema %s: %w", src, schema, err)
+				return nil, fmt.Errorf("file %s: schema %s: %w", src, schema, err)
 			}
 			compiled.Schema = proto.String(string(schemaData))
 		}
-		sources = append(sources, compiled)
+		files = append(files, compiled)
+	}
+
+	// Mirror the renderable files into the deprecated `sources` field so
+	// a registry this veil builds still loads in one that predates
+	// `files`. Assets are left out — an older veil would render them.
+	sources := make([]*veilv1.Source, 0, len(files))
+	for _, f := range files {
+		if !f.GetRender() {
+			continue
+		}
+		sources = append(sources, &veilv1.Source{
+			Path: f.GetPath(), Contents: f.GetContents(), Schema: f.Schema,
+		})
 	}
 
 	render, err := compileRenderHookDefs(k, fsys, k.RenderHooks())
@@ -435,6 +448,7 @@ func compileKind(k *config.Kind, variables map[string]*veilv1.Variable, fsys vfs
 
 	return &veilv1.Kind{
 		Name:                k.Name,
+		Files:               files,
 		Sources:             sources,
 		ForwardDependencies: k.GetForwardDependencies(),
 		Hooks: &veilv1.Hooks{
@@ -744,10 +758,10 @@ func validateKind(k *config.Kind) error {
 			errs = append(errs, fmt.Errorf("%s %q: %w", label, ref, err))
 		}
 	}
-	check("source", k.SourcePaths())
-	for _, def := range k.SourceDefs() {
+	check("file", k.FilePaths())
+	for _, def := range k.FileDefs() {
 		if schema := def.GetSchema(); schema != "" {
-			checkSchema(fmt.Sprintf("source %q schema", def.GetPath()), schema)
+			checkSchema(fmt.Sprintf("file %q schema", def.GetPath()), schema)
 		}
 	}
 	for _, d := range k.RenderHooks() {

@@ -2,21 +2,21 @@
   "$schema": "../../public/r/service/kind.schema.json",
   "metadata": {
     "kind": "service",
-    "name": "billing"
+    "name": "reports"
   },
   "spec": {
-    "image": "acme/billing:0.9.0",
-    "replicas": 3,
-    "publishLabels": true
+    "image": "acme/reports:2.1.0",
+    "replicas": 1,
+    "publishLabels": true,
+    "dropManifest": true
   },
   "dependencies": [
     {
       "kind": "postgres",
       "name": "billing-db",
       "params": {
-        "envVar": "BILLING_DATABASE_URL"
-      },
-      "forward": true
+        "envVar": "REPORTS_DATABASE_URL"
+      }
     },
     {
       "kind": "vpc",

@@ -27,31 +27,45 @@ type LoadedKind struct {
 	// or URL — or "" for an in-memory registry. `veil new resource` uses
 	// it to write a relative `$schema` pointer.
 	SchemaPath string
-	// Sources are the kind's compiled sources in wire order, each paired
-	// with the validator built from its declared schema.
-	Sources []*LoadedSource
+	// Files are the kind's compiled files in wire order, each paired
+	// with the validator built from its declared schema. Includes both
+	// the files that seed the rendered output and the assets that only
+	// the kind's hooks read.
+	Files []*LoadedFile
 	// validator is the composite kind.schema.json compiled once at load.
 	validator *jsonschema.Schema
-	// sourceByPath indexes Sources for lookup by kind-dir-relative path.
-	sourceByPath map[string]*LoadedSource
+	// fileByPath indexes Files for lookup by kind-dir-relative path.
+	fileByPath map[string]*LoadedFile
 }
 
-// LoadedSource is one compiled source ready for render: the wire-shape
-// Source plus the validator compiled from its inlined schema. Pairing
-// them means a caller that has the source never has to go looking for
-// its schema, or re-compile one that was already built at load.
-type LoadedSource struct {
-	*veilv1.Source
-	// Validator checks this source's parsed content against the schema
-	// inlined in Source.schema. nil when the source declared none, in
-	// which case the source is never schema-checked.
+// RenderFiles returns the files that seed the rendered resource, in wire
+// order — what `sources` used to mean.
+func (k *LoadedKind) RenderFiles() []*LoadedFile {
+	out := make([]*LoadedFile, 0, len(k.Files))
+	for _, f := range k.Files {
+		if f.GetRender() {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// LoadedFile is one compiled file ready for render: the wire-shape File
+// plus the validator compiled from its inlined schema. Pairing them
+// means a caller that has the file never has to go looking for its
+// schema, or re-compile one that was already built at load.
+type LoadedFile struct {
+	*veilv1.File
+	// Validator checks this file's parsed content against the schema
+	// inlined in File.schema. nil when the file declared none, in which
+	// case the file is never schema-checked.
 	Validator *jsonschema.Schema
 }
 
-// Source returns the compiled source at path, or nil when the kind
-// declares none.
-func (k *LoadedKind) Source(path string) *LoadedSource {
-	return k.sourceByPath[path]
+// File returns the compiled file at path, or nil when the kind declares
+// none.
+func (k *LoadedKind) File(path string) *LoadedFile {
+	return k.fileByPath[path]
 }
 
 // AcceptsDependent reports whether this kind registers dependent hooks
@@ -87,7 +101,7 @@ func (k *LoadedKind) Validate(doc map[string]any) error {
 // content — against that source's compiled validator. A source with
 // no declared schema, or no such source at all, always passes.
 func (k *LoadedKind) ValidateSource(path string, doc any) error {
-	src := k.sourceByPath[path]
+	src := k.fileByPath[path]
 	if src == nil || src.Validator == nil {
 		return nil
 	}
@@ -101,7 +115,7 @@ func (k *LoadedKind) ValidateSource(path string, doc any) error {
 // `schema` — i.e. whether ValidateSource actually checks anything for
 // it.
 func (k *LoadedKind) HasSourceSchema(path string) bool {
-	src := k.sourceByPath[path]
+	src := k.fileByPath[path]
 	return src != nil && src.Validator != nil
 }
 
@@ -109,8 +123,8 @@ func (k *LoadedKind) HasSourceSchema(path string) bool {
 // deterministic order — the set the render pipeline's pre-render gate
 // iterates.
 func (k *LoadedKind) SchemaSources() []string {
-	paths := make([]string, 0, len(k.Sources))
-	for _, src := range k.Sources {
+	paths := make([]string, 0, len(k.Files))
+	for _, src := range k.Files {
 		if src.Validator != nil {
 			paths = append(paths, src.GetPath())
 		}
@@ -161,31 +175,32 @@ func stripSchemaURL(msg string) string {
 // from its inlined schema, and indexes the result by path. Every schema
 // is registered with one shared compiler (one URI per source) rather
 // than a jsonschema.Compiler each.
-func loadSources(sources []*veilv1.Source) ([]*LoadedSource, map[string]*LoadedSource, error) {
-	if len(sources) == 0 {
+func loadFiles(files []*veilv1.File, legacy []*veilv1.Source) ([]*LoadedFile, map[string]*LoadedFile, error) {
+	files = mergeLegacySources(files, legacy)
+	if len(files) == 0 {
 		return nil, nil, nil
 	}
 	compiler := jsonschema.NewCompiler()
-	out := make([]*LoadedSource, 0, len(sources))
-	byPath := make(map[string]*LoadedSource, len(sources))
-	for _, src := range sources {
+	out := make([]*LoadedFile, 0, len(files))
+	byPath := make(map[string]*LoadedFile, len(files))
+	for _, src := range files {
 		path := src.GetPath()
 		if _, dup := byPath[path]; dup {
-			return nil, nil, fmt.Errorf("source %q: declared more than once", path)
+			return nil, nil, fmt.Errorf("file %q: declared more than once", path)
 		}
-		loaded := &LoadedSource{Source: src}
+		loaded := &LoadedFile{File: src}
 		if raw := src.GetSchema(); raw != "" {
 			var doc any
 			if err := json.Unmarshal([]byte(raw), &doc); err != nil {
-				return nil, nil, fmt.Errorf("source %q: parsing schema: %w", path, err)
+				return nil, nil, fmt.Errorf("file %q: parsing schema: %w", path, err)
 			}
-			uri := "mem://source/" + path
+			uri := "mem://file/" + path
 			if err := compiler.AddResource(uri, doc); err != nil {
-				return nil, nil, fmt.Errorf("source %q: registering schema: %w", path, err)
+				return nil, nil, fmt.Errorf("file %q: registering schema: %w", path, err)
 			}
 			sch, err := compiler.Compile(uri)
 			if err != nil {
-				return nil, nil, fmt.Errorf("source %q: compiling schema: %w", path, err)
+				return nil, nil, fmt.Errorf("file %q: compiling schema: %w", path, err)
 			}
 			loaded.Validator = sch
 		}
@@ -200,4 +215,33 @@ func stripSourceSchemaURL(path, msg string) string {
 	label := fmt.Sprintf("source %q schema", path)
 	msg = re.ReplaceAllString(msg, label)
 	return strings.TrimPrefix(msg, fmt.Sprintf("jsonschema validation failed with %s\n", label))
+}
+
+// mergeLegacySources folds a registry's deprecated `sources` into its
+// `files`. A registry built before `files` existed carries only
+// `sources`, and every one of those seeded the rendered output, so they
+// become files with render=true. A registry built after carries both —
+// `sources` mirrors the renderable files for older readers — so anything
+// already present as a file is skipped rather than duplicated.
+func mergeLegacySources(files []*veilv1.File, legacy []*veilv1.Source) []*veilv1.File {
+	if len(legacy) == 0 {
+		return files
+	}
+	seen := make(map[string]bool, len(files))
+	for _, f := range files {
+		seen[f.GetPath()] = true
+	}
+	out := files
+	for _, src := range legacy {
+		if seen[src.GetPath()] {
+			continue
+		}
+		out = append(out, &veilv1.File{
+			Path:     src.GetPath(),
+			Contents: src.GetContents(),
+			Schema:   src.Schema,
+			Render:   true,
+		})
+	}
+	return out
 }

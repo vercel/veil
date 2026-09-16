@@ -19,9 +19,18 @@ message Kind {
     (buf.validate.field).required = true
   ];
 
-  // Source files that make up the kind, each carrying its own contents
-  // and (when declared) the schema it validates against.
-  repeated Source sources = 2;
+  // Deprecated: use `files`, whose entries carry the same contents and
+  // schema plus a `render` flag. Still written by `veil build` — every
+  // file with render=true is mirrored here — so a registry built by a
+  // newer veil stays readable by an older one. A reader that understands
+  // `files` should ignore this.
+  repeated Source sources = 2 [deprecated = true];
+
+  // Files that make up the kind, each carrying its own contents, the
+  // schema it validates against when declared, and whether it seeds the
+  // rendered output. Supersedes `sources`: a kind may declare either or
+  // both, and the loader folds `sources` in as files with render=true.
+  repeated File files = 7;
 
   // Compiled hooks grouped by lifecycle point — render hooks plus the
   // per-consumer dependent block. Mirrors KindDefinition.hooks.
@@ -60,6 +69,40 @@ message Source {
   // access to the kind directory. Unset when the source declared no
   // schema, in which case its contents are never schema-checked.
   optional string schema = 3;
+}
+
+// File is one compiled file belonging to a kind: where it lives, what it
+// contains, the schema it is checked against, and whether it seeds the
+// rendered output. Everything a consumer needs to read and validate the
+// file is inlined here, so render never reaches back to the kind
+// directory.
+//
+// Supersedes Source, which it matches field for field apart from
+// `render`. A kind's `sources` load as files with render=true.
+message File {
+  // Path relative to the kind directory (e.g. "files/app.json"). Also
+  // the file's identity through the render pipeline — hooks may remap
+  // where a file is written without changing this.
+  string path = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).required = true
+  ];
+
+  // Raw file contents. May be empty: an empty file is valid.
+  string contents = 2;
+
+  // Inlined JSON Schema for this file, as raw JSON text — like
+  // DependentHook.params_schema, so validation needs no filesystem
+  // access to the kind directory. Unset when the file declared no
+  // schema, in which case its contents are never schema-checked.
+  optional string schema = 3;
+
+  // Whether this file seeds the rendered resource. True and it starts
+  // the render bundle and is written to the output directory; false and
+  // it is an asset the kind ships for its hooks to read, present in the
+  // hook FS but never written. Files folded in from `sources` are
+  // always true.
+  bool render = 4;
 }
 
 // Hooks mirrors KindDefinition.hooks but holds compiled/bundled hook

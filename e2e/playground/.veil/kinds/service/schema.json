@@ -3,11 +3,33 @@
   "description": "An Acme application service.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["image", "replicas"],
+  "required": [
+    "image",
+    "replicas"
+  ],
   "properties": {
-    "image": { "type": "string" },
-    "replicas": { "type": "integer", "minimum": 1 },
-    "port": { "type": "integer", "default": 8080 },
-    "public": { "type": "boolean", "default": false }
+    "image": {
+      "type": "string"
+    },
+    "replicas": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "port": {
+      "type": "integer",
+      "default": 8080
+    },
+    "public": {
+      "type": "boolean",
+      "default": false
+    },
+    "publishLabels": {
+      "type": "boolean",
+      "description": "Emit the kind's standard labels as a file alongside the deployment."
+    },
+    "dropManifest": {
+      "type": "boolean",
+      "description": "Drop the generated manifest from the rendered output."
+    }
   }
 }
