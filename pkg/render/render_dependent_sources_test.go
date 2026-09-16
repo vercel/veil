@@ -48,6 +48,26 @@ func (s *RenderSuite) TestDependentSourcesFreshPerTargetAndRoot() {
 	}
 }
 
+func (s *RenderSuite) TestDependentSourceAccessorCollisionFails() {
+	s.writeSimpleKind("service")
+	rootSource := "dependencies-table-orders-grant.txt"
+	s.writeJSON(filepath.Join(s.root, "r", "service", "kind.json"), map[string]any{
+		"name":    "service",
+		"sources": compiledSources(map[string]string{rootSource: "consumer original"}, nil),
+		"hooks":   map[string]any{"render": []map[string]any{{"name": "mutate", "content": `var __veilMod={default:{render(ctx,fs){fs.getDependenciesTableOrdersGrantTxt().setContent("consumer updated");}}};`}}},
+	})
+	s.writeSourceTarget("table", "service", noopDependentHookIIFE, compiledSources(map[string]string{"grant.txt": "dependency original"}, nil))
+	s.reloadRegistryWithKinds("service", "table")
+	dir := s.sourceResources("one", "orders")
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderKind("service", "one", dir, out)
+	s.Require().Error(err)
+	s.Contains(err.Error(), rootSource)
+	s.Contains(err.Error(), registry.DependencySourceID("table", "orders", "grant.txt"))
+	s.Contains(err.Error(), "getDependenciesTableOrdersGrantTxt")
+	s.NoDirExists(out)
+}
+
 func (s *RenderSuite) TestDependentSourcesOverridesAndLaterHooks() {
 	s.writeSimpleKind("service")
 	code := `var __veilMod={default:{render(ctx,fs){const f=ctx.sources.getGrantTxt();f.setOutputPath(ctx.self.metadata.name+".txt");f.setContent(f.getContent()+":dep");f.setDeleted(true);}}};`

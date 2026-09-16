@@ -270,11 +270,19 @@ function __veilMakeFS(initial, identity) {
   // Generated per-source accessors (getSourcesAppJson()) hand back the
   // same SourceFile as fs.get, so the two views share one parse cache.
   var ks = Object.keys(entries);
+  var accessorOwners = Object.create(null);
   for (var i = 0; i < ks.length; i++) {
     var key = ks[i];
     var suffix = __veilMethodSuffix(key);
     if (!suffix) continue;
-    fs['get' + suffix] = (function(k) {
+    var method = 'get' + suffix;
+    if (Object.prototype.hasOwnProperty.call(fs, method)) {
+      var owner = accessorOwners[method];
+      throw new Error('source accessor collision: ' + JSON.stringify(key) + ' and ' +
+        (owner === undefined ? 'FS method' : JSON.stringify(owner)) + ' both use ' + method);
+    }
+    accessorOwners[method] = key;
+    fs[method] = (function(k) {
       return function() { return fileFor(k); };
     })(key);
   }

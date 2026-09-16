@@ -787,6 +787,11 @@ Schema-declared handles parse and validate exactly like kind source handles, inc
 through the consumer bundle view. Each dependent's source types are generated in the target
 module in both inline and types-package modes; consumer `FS` is never widened.
 
+Generated accessor names must also be unique across the consumer bundle: render fails with both
+source identities and the accessor name rather than shadowing a consumer's handle. Source schema
+type names must be unique within each generated module; build rejects collisions even with
+`--no-typecheck`. Rename a source path or schema filename, respectively, to disambiguate.
+
 `metadata.overrides[].source` and `veil override` accept this full stable identity. Overrides
 seed dependency entries before kind hooks run; `skip_hooks` restores the override's final bytes
 and live state after all hooks while preserving the final output destination.

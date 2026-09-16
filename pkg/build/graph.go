@@ -134,7 +134,62 @@ func BuildGraph(kinds []*config.Kind) (*KindGraph, error) {
 		})
 	}
 
+	for _, k := range kinds {
+		if err := validateSourceTypeNames(k, g.nodes[k.Name]); err != nil {
+			return nil, fmt.Errorf("%s: %w", k.Name, err)
+		}
+	}
 	return g, nil
+}
+
+func validateSourceTypeNames(k *config.Kind, node *KindNode) error {
+	owners := make(map[string]string)
+	register := func(names map[string]string, owner string) error {
+		paths := make([]string, 0, len(names))
+		for path := range names {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		seen := make(map[string]bool)
+		for _, path := range paths {
+			name := names[path]
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			current := fmt.Sprintf("%s source %q", owner, path)
+			if previous, exists := owners[name]; exists {
+				return fmt.Errorf("%s and %s both generate type name %q; rename a schema to disambiguate", previous, current, name)
+			}
+			owners[name] = current
+		}
+		return nil
+	}
+	own := make(map[string]string)
+	for _, source := range k.SourceDefs() {
+		if source.GetSchema() == "" {
+			continue
+		}
+		name, err := typeNameForSchemaPath("", source.GetSchema())
+		if err != nil {
+			return err
+		}
+		own[source.GetPath()] = name
+	}
+	if err := register(own, k.Name); err != nil {
+		return err
+	}
+	for _, edge := range node.Dependents() {
+		if k.Import == nil {
+			if err := register(edge.Consumer.SourceTypeNames, edge.Consumer.Name); err != nil {
+				return err
+			}
+		}
+		if err := register(edge.SourceTypeNames, k.Name+" dependent on "+edge.Consumer.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Node returns the node for the given kind name, or nil if absent.

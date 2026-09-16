@@ -72,6 +72,21 @@ func (s *BuildSuite) TestDependentSourceTypesInlineAndPackage() {
 	}
 }
 
+func (s *BuildSuite) TestDependentSourceTypeCollisionFailsWithoutTypechecker() {
+	s.dependentSourceFixture(false)
+	service := filepath.Join(s.root, "kinds", "service")
+	s.Require().NoError(os.WriteFile(filepath.Join(service, "source-grant.schema.json"), []byte(`{"type":"object","properties":{"replicas":{"type":"integer"}},"required":["replicas"]}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(service, "app.json"), []byte(`{"replicas":1}`), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(service, "kind.json"), []byte(`{"name":"service","sources":[{"path":"app.json","schema":"source-grant.schema.json"}],"schema":"schema.json"}`), 0644))
+	_, err := s.run("build", "--no-typecheck")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "ServiceSourceGrant")
+	s.Contains(err.Error(), "service")
+	s.Contains(err.Error(), "table")
+	s.Contains(err.Error(), "app.json")
+	s.Contains(err.Error(), "grant.json")
+}
+
 func (s *BuildSuite) TestDependentSourcesCompiledWithoutOriginalDirectory() {
 	s.dependentSourceFixture(false)
 	_, err := s.run("build", "--no-typecheck")
