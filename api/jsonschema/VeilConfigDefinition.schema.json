@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "VeilConfigDefinition is the contents of .veil/veil.json — the\n hand-authored source-side project configuration. The \"Definition\"\n suffix marks it as a local-file shape; types under registry.proto\n (Kind, Registry, …) are the corresponding published forms.",
   "patternProperties": {
     "^(cliVersion)$": {
@@ -9,7 +9,7 @@
       "type": "string"
     },
     "^(resourceDiscovery)$": {
-      "additionalProperties": false,
+      "additionalProperties": true,
       "description": "Where to find the resource JSON files that make up the project's\n catalog. Used at render time to resolve dependency targets.",
       "properties": {
         "paths": {
@@ -26,13 +26,17 @@
     }
   },
   "properties": {
+    "$schema": {
+      "description": "URI of the JSON Schema this file is written against. Ignored by veil.",
+      "type": "string"
+    },
     "cli_version": {
       "default": "",
       "description": "Minimum veil CLI version required to render this project, as a semver\n string (leading \"v\" optional, e.g. \"v1.4.0\"). When `veil render` runs\n on an older *released* build, it auto-updates to this version and\n re-execs so the render proceeds on a compatible CLI. Builds whose\n version isn't a comparable release (dev / edge) skip the check; unset\n means no minimum is enforced.",
       "type": "string"
     },
     "generators": {
-      "additionalProperties": false,
+      "additionalProperties": true,
       "description": "Optional defaults for the source-side scaffolding commands\n (`veil init`, `veil new kind`, `veil new hook`). When unset, every\n generator falls back to its built-in default.",
       "patternProperties": {
         "^(kindsDir)$": {
@@ -48,7 +52,7 @@
           "type": "string"
         },
         "types": {
-          "additionalProperties": false,
+          "additionalProperties": true,
           "description": "Configures the shared types package (see Types). When set, kinds whose\n `kinds` entry carries an `import` write their generated veil-types into\n the package's output_dir and their hooks import them by package\n specifier; kinds without an `import` keep inlining types per hook.",
           "patternProperties": {
             "^(outputDir)$": {
@@ -92,7 +96,7 @@
       "type": "object"
     },
     "resource_discovery": {
-      "additionalProperties": false,
+      "additionalProperties": true,
       "description": "Where to find the resource JSON files that make up the project's\n catalog. Used at render time to resolve dependency targets.",
       "properties": {
         "paths": {
@@ -109,7 +113,7 @@
     },
     "variables": {
       "additionalProperties": {
-        "additionalProperties": false,
+        "additionalProperties": true,
         "description": "Variable declares a named input available to overlay regex matches\n (and to hooks via the render context). Lives in both the local\n VeilConfigDefinition and the published Kind (carried verbatim\n through compilation), so it has no Definition suffix — the same\n shape applies in both contexts.",
         "properties": {
           "default": {

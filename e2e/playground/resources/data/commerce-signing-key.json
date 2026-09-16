@@ -1,4 +1,10 @@
 {
-  "metadata": { "kind": "secret", "name": "commerce-signing-key" },
-  "spec": { "rotationDays": 30 }
+  "$schema": "../../public/r/secret/kind.schema.json",
+  "metadata": {
+    "kind": "secret",
+    "name": "commerce-signing-key"
+  },
+  "spec": {
+    "rotationDays": 30
+  }
 }

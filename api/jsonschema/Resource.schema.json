@@ -1,12 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "Resource is a consumer's instantiation of a kind.",
   "properties": {
+    "$schema": {
+      "description": "URI of the JSON Schema this file is written against. Ignored by veil.",
+      "type": "string"
+    },
     "dependencies": {
       "description": "Other resources this one depends on. Each entry triggers the target\n kind's `dependent` hook(s) against this resource's bundle during\n render. See SPEC.md \"Dependencies\".",
       "items": {
-        "additionalProperties": false,
+        "additionalProperties": true,
         "description": "Dependency declares that this resource depends on another resource.\n The depended-on resource (target) authoritatively controls how this\n resource talks to it via the target's `dependent` hooks.",
         "properties": {
           "forward": {
@@ -41,7 +45,7 @@
       "type": "array"
     },
     "metadata": {
-      "additionalProperties": false,
+      "additionalProperties": true,
       "description": "Standard metadata common to all resources.",
       "patternProperties": {
         "^(fileType)$": {
@@ -65,7 +69,7 @@
           "type": "string"
         },
         "hooks": {
-          "additionalProperties": false,
+          "additionalProperties": true,
           "description": "Resource-local hooks declared inline on the resource yaml. Paths\n are resolved relative to the resource file's directory. Only\n `render` entries are honored on resources today; the runner\n rejects `dependents` and `validate` entries. Resource render\n hooks run after the kind's `render` + dependents, and before the\n kind's `validate` lifecycle. They let resource definers customize\n the rendered bundle without expanding the kind spec.",
           "patternProperties": {
             "^(postRender)$": {
@@ -80,7 +84,7 @@
             "dependents": {
               "description": "Per-consumer dependent hooks. Each entry binds a consumer kind to\n hook(s) that run when a resource of that kind declares a\n dependency on this one, plus the params schema the consumer must\n supply. See SPEC.md \"Dependencies\" for the full design.",
               "items": {
-                "additionalProperties": false,
+                "additionalProperties": true,
                 "description": "DependentDefinition declares a consumer kind that may depend on this\n kind, the hook file path(s) that run when such a dependency is\n rendered, and the JSON Schema describing the `params` the consumer\n must supply.",
                 "patternProperties": {
                   "^(paramsPath)$": {
@@ -158,7 +162,7 @@
         "overlays": {
           "description": "Conditional overlays applied based on per-variable regex matches.",
           "items": {
-            "additionalProperties": false,
+            "additionalProperties": true,
             "description": "Overlay is a conditional data merge applied before transforms. The\n overlay applies when every entry in `if` matches: the resolved\n value of each named variable (stringified) must match the\n corresponding Go regular expression.",
             "properties": {
               "file": {
@@ -190,7 +194,7 @@
         "overrides": {
           "description": "Source files that have been ejected for local override.",
           "items": {
-            "additionalProperties": false,
+            "additionalProperties": true,
             "description": "Override maps a kind source file to a local replacement.",
             "patternProperties": {
               "^(skipHooks)$": {

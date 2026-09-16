@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/vercel/veil/main/api/jsonschema/KindDefinition.schema.json",
   "name": "service",
   "schema": "./schema.json",
   "sources": [

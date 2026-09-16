@@ -182,8 +182,11 @@ func dependenciesProperty(n *KindNode) map[string]any {
 	branches := make([]any, 0, len(n.dependencies))
 	for _, edge := range n.dependencies {
 		branches = append(branches, map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
+			"type": "object",
+			// Unknown keys are ignored so a resource written against a
+			// newer veil still validates here — `forward` was itself a
+			// new key once.
+			"additionalProperties": true,
 			// params is optional: a target whose params schema requires
 			// nothing shouldn't force every consumer to write "params": {}.
 			"required": []string{"kind", "name"},

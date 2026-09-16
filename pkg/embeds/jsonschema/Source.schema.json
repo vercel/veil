@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "Source is one compiled source file: where it lives in the kind, what\n it contains, and the schema it is checked against. Everything a\n consumer needs to read and validate the file is inlined here, so\n render never reaches back to the kind directory.",
   "properties": {
     "contents": {

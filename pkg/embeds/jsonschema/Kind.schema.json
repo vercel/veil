@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "Kind is the compiled output of `veil build` for a single kind. It bundles\n every source file's contents and every hook's minified code into a\n single document, so rendering does not need access to the original\n filesystem. Compare with KindDefinition (config.proto), which is the\n hand-authored source-side shape that this is compiled from.",
   "patternProperties": {
     "^(forwardDependencies)$": {
@@ -10,29 +10,33 @@
     }
   },
   "properties": {
+    "$schema": {
+      "description": "URI of the JSON Schema this file is written against. Ignored by veil.",
+      "type": "string"
+    },
     "forward_dependencies": {
       "default": false,
       "description": "Whether every dependency of a resource of this kind forwards to\n that resource's consumers, copied from\n KindDefinition.forward_dependencies. Read at resolve time together\n with each edge's own `forward` flag — an edge forwards when either\n says so.",
       "type": "boolean"
     },
     "hooks": {
-      "additionalProperties": false,
+      "additionalProperties": true,
       "description": "Compiled hooks grouped by lifecycle point — render hooks plus the\n per-consumer dependent block. Mirrors KindDefinition.hooks.",
       "patternProperties": {
         "^(postRender)$": {
           "description": "Compiled post-render hooks. Run after resource-level render hooks\n and before validate; same RenderHook(ctx, fs) contract as\n Hooks.render but used for the kind's final normalization /\n formatting pass once resource customizations have applied.\n Mirrors HooksDefinition.post_render.",
           "items": {
-            "additionalProperties": false,
+            "additionalProperties": true,
             "description": "Hook is a single hook bundled and minified from its TS/JS source,\n with all of its imports resolved and inlined. Used for both render-\n lifecycle entries (Hooks.render) and dependent-lifecycle entries\n (DependentHook.hooks); the shape is the same in either context.",
             "properties": {
               "access": {
-                "additionalProperties": false,
+                "additionalProperties": true,
                 "description": "Host resources this hook is permitted to reach (carried forward\n from the kind.json hook entry). The render runner pre-flights each\n declared resource and exposes only what's listed to the hook.",
                 "properties": {
                   "env": {
                     "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
                     "items": {
-                      "additionalProperties": false,
+                      "additionalProperties": true,
                       "description": "EnvAccess names a single host environment variable a hook needs.",
                       "properties": {
                         "description": {
@@ -85,7 +89,7 @@
         "dependents": {
           "description": "Compiled per-consumer dependent entries (one per consumer kind that\n may depend on this resource). Carries bundled hook code plus the\n inlined params JSON Schema so render does not need access to the\n original kind directory.",
           "items": {
-            "additionalProperties": false,
+            "additionalProperties": true,
             "description": "DependentHook is the compiled form of a KindDefinition.dependents\n entry: each hook source is bundled, and the params JSON Schema is\n embedded inline so rendering does not need access to the original\n kind directory.",
             "patternProperties": {
               "^(paramsSchema)$": {
@@ -98,17 +102,17 @@
               "hooks": {
                 "description": "Compiled, bundled dependent hooks in declaration order.",
                 "items": {
-                  "additionalProperties": false,
+                  "additionalProperties": true,
                   "description": "Hook is a single hook bundled and minified from its TS/JS source,\n with all of its imports resolved and inlined. Used for both render-\n lifecycle entries (Hooks.render) and dependent-lifecycle entries\n (DependentHook.hooks); the shape is the same in either context.",
                   "properties": {
                     "access": {
-                      "additionalProperties": false,
+                      "additionalProperties": true,
                       "description": "Host resources this hook is permitted to reach (carried forward\n from the kind.json hook entry). The render runner pre-flights each\n declared resource and exposes only what's listed to the hook.",
                       "properties": {
                         "env": {
                           "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
                           "items": {
-                            "additionalProperties": false,
+                            "additionalProperties": true,
                             "description": "EnvAccess names a single host environment variable a hook needs.",
                             "properties": {
                               "description": {
@@ -181,17 +185,17 @@
         "post_render": {
           "description": "Compiled post-render hooks. Run after resource-level render hooks\n and before validate; same RenderHook(ctx, fs) contract as\n Hooks.render but used for the kind's final normalization /\n formatting pass once resource customizations have applied.\n Mirrors HooksDefinition.post_render.",
           "items": {
-            "additionalProperties": false,
+            "additionalProperties": true,
             "description": "Hook is a single hook bundled and minified from its TS/JS source,\n with all of its imports resolved and inlined. Used for both render-\n lifecycle entries (Hooks.render) and dependent-lifecycle entries\n (DependentHook.hooks); the shape is the same in either context.",
             "properties": {
               "access": {
-                "additionalProperties": false,
+                "additionalProperties": true,
                 "description": "Host resources this hook is permitted to reach (carried forward\n from the kind.json hook entry). The render runner pre-flights each\n declared resource and exposes only what's listed to the hook.",
                 "properties": {
                   "env": {
                     "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
                     "items": {
-                      "additionalProperties": false,
+                      "additionalProperties": true,
                       "description": "EnvAccess names a single host environment variable a hook needs.",
                       "properties": {
                         "description": {
@@ -242,17 +246,17 @@
         "render": {
           "description": "Compiled hooks that run during `veil render`, in declaration order.",
           "items": {
-            "additionalProperties": false,
+            "additionalProperties": true,
             "description": "Hook is a single hook bundled and minified from its TS/JS source,\n with all of its imports resolved and inlined. Used for both render-\n lifecycle entries (Hooks.render) and dependent-lifecycle entries\n (DependentHook.hooks); the shape is the same in either context.",
             "properties": {
               "access": {
-                "additionalProperties": false,
+                "additionalProperties": true,
                 "description": "Host resources this hook is permitted to reach (carried forward\n from the kind.json hook entry). The render runner pre-flights each\n declared resource and exposes only what's listed to the hook.",
                 "properties": {
                   "env": {
                     "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
                     "items": {
-                      "additionalProperties": false,
+                      "additionalProperties": true,
                       "description": "EnvAccess names a single host environment variable a hook needs.",
                       "properties": {
                         "description": {
@@ -303,17 +307,17 @@
         "validate": {
           "description": "Compiled validation hooks that run after every other lifecycle\n point has completed. Bundle / ctx mutations from these hooks are\n discarded; only the returned `ValidationIssue` entries (or thrown\n errors) are observable. Mirrors HooksDefinition.validate.",
           "items": {
-            "additionalProperties": false,
+            "additionalProperties": true,
             "description": "Hook is a single hook bundled and minified from its TS/JS source,\n with all of its imports resolved and inlined. Used for both render-\n lifecycle entries (Hooks.render) and dependent-lifecycle entries\n (DependentHook.hooks); the shape is the same in either context.",
             "properties": {
               "access": {
-                "additionalProperties": false,
+                "additionalProperties": true,
                 "description": "Host resources this hook is permitted to reach (carried forward\n from the kind.json hook entry). The render runner pre-flights each\n declared resource and exposes only what's listed to the hook.",
                 "properties": {
                   "env": {
                     "description": "Environment variables the hook intends to read. Each entry must\n describe both the name and why it's needed; the description is\n surfaced in pre-flight error messages when the var is missing.",
                     "items": {
-                      "additionalProperties": false,
+                      "additionalProperties": true,
                       "description": "EnvAccess names a single host environment variable a hook needs.",
                       "properties": {
                         "description": {
@@ -374,7 +378,7 @@
     "sources": {
       "description": "Source files that make up the kind, each carrying its own contents\n and (when declared) the schema it validates against.",
       "items": {
-        "additionalProperties": false,
+        "additionalProperties": true,
         "description": "Source is one compiled source file: where it lives in the kind, what\n it contains, and the schema it is checked against. Everything a\n consumer needs to read and validate the file is inlined here, so\n render never reaches back to the kind directory.",
         "properties": {
           "contents": {
@@ -402,7 +406,7 @@
     },
     "variables": {
       "additionalProperties": {
-        "additionalProperties": false,
+        "additionalProperties": true,
         "description": "Variable declares a named input available to overlay regex matches\n (and to hooks via the render context). Lives in both the local\n VeilConfigDefinition and the published Kind (carried verbatim\n through compilation), so it has no Definition suffix — the same\n shape applies in both contexts.",
         "properties": {
           "default": {

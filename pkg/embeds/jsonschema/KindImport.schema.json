@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "KindImport is the package.json dependency entry a consumer uses to import\n this kind's generated types from the shared types package.",
   "properties": {
     "name": {

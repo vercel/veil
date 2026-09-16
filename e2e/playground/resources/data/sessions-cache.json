@@ -1,5 +1,16 @@
 {
-  "metadata": { "kind": "redis", "name": "sessions-cache" },
-  "spec": { "size": "large" },
-  "dependencies": [{ "kind": "vpc", "name": "acme-global" }]
+  "$schema": "../../public/r/redis/kind.schema.json",
+  "metadata": {
+    "kind": "redis",
+    "name": "sessions-cache"
+  },
+  "spec": {
+    "size": "large"
+  },
+  "dependencies": [
+    {
+      "kind": "vpc",
+      "name": "acme-global"
+    }
+  ]
 }

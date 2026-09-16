@@ -1,5 +1,18 @@
 {
-  "metadata": { "kind": "postgres", "name": "billing-db" },
-  "spec": { "size": "large", "storageGb": 500, "multiAz": true },
-  "dependencies": [{ "kind": "vpc", "name": "acme-global" }]
+  "$schema": "../../public/r/postgres/kind.schema.json",
+  "metadata": {
+    "kind": "postgres",
+    "name": "billing-db"
+  },
+  "spec": {
+    "size": "large",
+    "storageGb": 500,
+    "multiAz": true
+  },
+  "dependencies": [
+    {
+      "kind": "vpc",
+      "name": "acme-global"
+    }
+  ]
 }

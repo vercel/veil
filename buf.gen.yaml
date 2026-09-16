@@ -14,3 +14,8 @@ plugins:
       - paths=source_relative
   - remote: buf.build/bufbuild/protoschema-jsonschema
     out: api/jsonschema
+    # Unknown keys are ignored rather than rejected, so a kind.json
+    # written against a newer veil still validates against an older
+    # veil's schemas. Adding a field stays a non-breaking change.
+    opt:
+      - additional_properties=true

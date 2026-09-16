@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "Dependency declares that this resource depends on another resource.\n The depended-on resource (target) authoritatively controls how this\n resource talks to it via the target's `dependent` hooks.",
   "properties": {
     "forward": {

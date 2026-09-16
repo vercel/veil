@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "KindDefinition is a hand-authored kind.json — the source-side shape\n that `veil build` compiles into a published Kind (registry.proto).",
   "patternProperties": {
     "^(forwardDependencies)$": {
@@ -11,6 +11,10 @@
     }
   },
   "properties": {
+    "$schema": {
+      "description": "URI of the JSON Schema this file is written against. Ignored by veil.",
+      "type": "string"
+    },
     "forward_dependencies": {
       "default": false,
       "description": "Union with the per-edge flag — an edge forwards when either says\n so — and forwarding chains either way.",
@@ -18,7 +22,7 @@
       "type": "boolean"
     },
     "hooks": {
-      "additionalProperties": false,
+      "additionalProperties": true,
       "description": "Hook code files grouped by lifecycle point. The dependents block —\n the per-consumer hooks that fire when another kind declares a\n dependency on this one — also lives under `hooks`, since it is\n ultimately just another hook lifecycle.",
       "patternProperties": {
         "^(postRender)$": {
@@ -33,7 +37,7 @@
         "dependents": {
           "description": "Per-consumer dependent hooks. Each entry binds a consumer kind to\n hook(s) that run when a resource of that kind declares a\n dependency on this one, plus the params schema the consumer must\n supply. See SPEC.md \"Dependencies\" for the full design.",
           "items": {
-            "additionalProperties": false,
+            "additionalProperties": true,
             "description": "DependentDefinition declares a consumer kind that may depend on this\n kind, the hook file path(s) that run when such a dependency is\n rendered, and the JSON Schema describing the `params` the consumer\n must supply.",
             "patternProperties": {
               "^(paramsPath)$": {
@@ -112,14 +116,40 @@
     "sources": {
       "description": "google.protobuf.Value so an entry can be a bare string path (no\n schema) or a SourceDefinition object (path + optional schema) —\n same polymorphism as `hooks`, same reason: protojson can't type\n \"string OR struct\". The build pipeline narrows each Value into a\n SourceDefinition at load time.",
       "items": {
-        "title": "Value"
+        "oneOf": [
+          {
+            "description": "Resolved relative to the enclosing kind.json.",
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "additionalProperties": true,
+            "description": "SourceDefinition is one kind.json source entry: a path plus optional\n `schema` — a JSON Schema file describing the source's shape. No\n `schema` means raw content, as before. Declaring one makes the\n source's content a contract the runner enforces at render time: reads\n and writes go through the parsed value, not the raw string.",
+            "properties": {
+              "path": {
+                "description": "Resolved relative to the enclosing kind.json.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "schema": {
+                "default": "",
+                "description": "Local path (relative to kind.json) or HTTP(S) URL to this source's\n JSON Schema. Omit for no declared shape.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "title": "Source configuration files that make up the kind. May be empty.",
       "type": "array"
     },
     "variables": {
       "additionalProperties": {
-        "additionalProperties": false,
+        "additionalProperties": true,
         "description": "Variable declares a named input available to overlay regex matches\n (and to hooks via the render context). Lives in both the local\n VeilConfigDefinition and the published Kind (carried verbatim\n through compilation), so it has no Definition suffix — the same\n shape applies in both contexts.",
         "properties": {
           "default": {

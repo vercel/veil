@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "description": "Generators configures the source-side scaffolding commands. Every\n field is optional; an unset (or empty) field falls back to the\n command's built-in default so older veil.json files keep working.",
   "patternProperties": {
     "^(kindsDir)$": {
@@ -16,7 +16,7 @@
       "type": "string"
     },
     "types": {
-      "additionalProperties": false,
+      "additionalProperties": true,
       "description": "Configures the shared types package (see Types). When set, kinds whose\n `kinds` entry carries an `import` write their generated veil-types into\n the package's output_dir and their hooks import them by package\n specifier; kinds without an `import` keep inlining types per hook.",
       "patternProperties": {
         "^(outputDir)$": {
