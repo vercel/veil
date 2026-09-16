@@ -34,11 +34,12 @@ type Kind struct {
 	// Import is the kind's types-package import wiring, set when its
 	// `kinds` entry used the {path, import} object form. nil for a bare
 	// path string — in which case the kind's types are inlined per hook.
-	Import          *veilv1.KindImport
-	sources         []*veilv1.SourceDefinition
-	renderHooks     []*veilv1.RenderHookDefinition
-	validateHooks   []*veilv1.RenderHookDefinition
-	postRenderHooks []*veilv1.RenderHookDefinition
+	Import           *veilv1.KindImport
+	sources          []*veilv1.SourceDefinition
+	dependentSources map[string][]*veilv1.SourceDefinition
+	renderHooks      []*veilv1.RenderHookDefinition
+	validateHooks    []*veilv1.RenderHookDefinition
+	postRenderHooks  []*veilv1.RenderHookDefinition
 }
 
 // SchemaURI resolves a schema reference to something ioutil can open:
@@ -71,6 +72,11 @@ func (k *Kind) DecodeSchema(ref string, v any) error {
 // SourceDefs returns the parsed `sources` entries — path plus optional
 // `schema`.
 func (k *Kind) SourceDefs() []*veilv1.SourceDefinition { return k.sources }
+
+// DependentSourceDefs returns templates declared for a consumer kind.
+func (k *Kind) DependentSourceDefs(consumer string) []*veilv1.SourceDefinition {
+	return k.dependentSources[consumer]
+}
 
 // SourcePaths returns just the declared paths, in order — for call
 // sites that don't need per-source schema info (FS accessor gen,
@@ -215,6 +221,17 @@ func LoadKind(path string) (*Kind, error) {
 		return nil, fmt.Errorf("kind at %s: sources: %w", path, err)
 	}
 	k.sources = sources
+	k.dependentSources = make(map[string][]*veilv1.SourceDefinition)
+	for _, d := range pk.GetHooks().GetDependents() {
+		defs, err := parseSourceEntries(d.GetSources())
+		if err != nil {
+			return nil, fmt.Errorf("kind at %s: dependents[%q] sources: %w", path, d.GetKind(), err)
+		}
+		k.dependentSources[d.GetKind()] = defs
+		if err := validateSourceDefinitions(k, defs); err != nil {
+			return nil, fmt.Errorf("kind at %s: dependents[%q]: %w", path, d.GetKind(), err)
+		}
+	}
 	if err := validateSourceSchemas(k); err != nil {
 		return nil, fmt.Errorf("kind at %s: %w", path, err)
 	}
@@ -240,7 +257,16 @@ func LoadKind(path string) (*Kind, error) {
 // validateSourceSchemas checks schema references without fetching URLs and
 // preserves the supported extensions for typed source accessors.
 func validateSourceSchemas(k *Kind) error {
-	for _, s := range k.sources {
+	return validateSourceDefinitions(k, k.sources)
+}
+
+func validateSourceDefinitions(k *Kind, sources []*veilv1.SourceDefinition) error {
+	seen := make(map[string]bool, len(sources))
+	for _, s := range sources {
+		if seen[s.GetPath()] {
+			return fmt.Errorf("source %q: declared more than once", s.GetPath())
+		}
+		seen[s.GetPath()] = true
 		schema := s.GetSchema()
 		if schema == "" {
 			continue

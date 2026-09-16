@@ -184,13 +184,25 @@ func loadKindFn(store Store, name, kindPath, schemaPath string) func() (*LoadedK
 		if err != nil {
 			return nil, fmt.Errorf("loading kind %s sources: %w", name, err)
 		}
+		dependentSources := make(map[string][]*LoadedSource)
+		for _, d := range ck.GetHooks().GetDependents() {
+			if _, exists := dependentSources[d.GetKind()]; exists {
+				return nil, fmt.Errorf("kind %s: duplicate dependent consumer %q", name, d.GetKind())
+			}
+			entries, _, err := loadSources(d.GetSources())
+			if err != nil {
+				return nil, fmt.Errorf("kind %s dependents[%q]: %w", name, d.GetKind(), err)
+			}
+			dependentSources[d.GetKind()] = entries
+		}
 		return &LoadedKind{
-			Kind:         &ck,
-			SpecSchema:   spec,
-			SchemaPath:   store.Location(schemaPath),
-			Sources:      sources,
-			validator:    validator,
-			sourceByPath: sourceByPath,
+			Kind:             &ck,
+			SpecSchema:       spec,
+			SchemaPath:       store.Location(schemaPath),
+			Sources:          sources,
+			DependentSources: dependentSources,
+			validator:        validator,
+			sourceByPath:     sourceByPath,
 		}, nil
 	}
 }

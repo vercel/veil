@@ -80,6 +80,10 @@ type File struct {
 	// storing it, so a hook that writes something invalid throws at the
 	// call site instead of failing a whole render later.
 	MustValidate bool `json:"mustValidate,omitempty"`
+
+	// ValidateContent checks serialized bytes against the declaring schema.
+	// Host-only state survives hooks and output-path changes.
+	ValidateContent func(string) error `json:"-"`
 }
 
 // ContentType names how a source's bytes encode a document. Anything
@@ -131,10 +135,11 @@ function __veilMethodSuffix(p) {
 // reads a source several times parses it once, and a write invalidates
 // what the next read sees.
 class SourceFile {
-  constructor(entry, kind, resource) {
+  constructor(entry, kind, resource, key) {
     this.entry = entry;
     this.kind = kind;
     this.resource = resource;
+    this.key = key;
     this.cachedObject = undefined;
   }
 
@@ -173,7 +178,7 @@ class SourceFile {
     }
     var serialized = globalThis.__veilHost.stringify(object, this.entry.type);
     if (this.entry.mustValidate) {
-      globalThis.__veilHost.validateSourceFile(this.kind, this.resource, this.entry.path, serialized);
+      globalThis.__veilHost.validateSourceFile(this.kind, this.resource, this.key, serialized);
     }
     this.entry.content = serialized;
     this.cachedObject = object;
@@ -212,7 +217,7 @@ function __veilMakeFS(initial, identity) {
   // of reaching the same entry.
   function fileFor(key) {
     if (!Object.prototype.hasOwnProperty.call(files, key)) {
-      files[key] = new SourceFile(entries[key], identity.kind, identity.resource);
+      files[key] = new SourceFile(entries[key], identity.kind, identity.resource, key);
     }
     return files[key];
   }
@@ -265,15 +270,37 @@ function __veilMakeFS(initial, identity) {
   // Generated per-source accessors (getSourcesAppJson()) hand back the
   // same SourceFile as fs.get, so the two views share one parse cache.
   var ks = Object.keys(entries);
+  var accessorOwners = Object.create(null);
   for (var i = 0; i < ks.length; i++) {
     var key = ks[i];
     var suffix = __veilMethodSuffix(key);
     if (!suffix) continue;
-    fs['get' + suffix] = (function(k) {
+    var method = 'get' + suffix;
+    if (Object.prototype.hasOwnProperty.call(fs, method)) {
+      var owner = accessorOwners[method];
+      throw new Error('source accessor collision: ' + JSON.stringify(key) + ' and ' +
+        (owner === undefined ? 'FS method' : JSON.stringify(owner)) + ' both use ' + method);
+    }
+    accessorOwners[method] = key;
+    fs[method] = (function(k) {
       return function() { return fileFor(k); };
     })(key);
   }
   return fs;
+}
+
+function __veilSourceView(fs, paths) {
+  var view = {
+    get: function(path) { return Object.prototype.hasOwnProperty.call(paths, path) ? fs.get(paths[path]) : undefined; },
+    keys: function() { return Object.keys(paths); },
+    getAll: function() { return Object.keys(paths).map(function(p) { return fs.get(paths[p]); }); },
+    delete: function(path) { var f = this.get(path); if (f) f.setDeleted(true); }
+  };
+  Object.keys(paths).forEach(function(path) {
+    var suffix = __veilMethodSuffix(path);
+    if (suffix) view['get' + suffix] = function() { return fs.get(paths[path]); };
+  });
+  return view;
 }
 
 // ---- console polyfill ---------------------------------------------------
@@ -331,6 +358,10 @@ const (
 	// doc comment above.
 	renderHookScriptMiddle2 = `, `
 	renderHookScriptSuffix  = `);
+  if (__ctx.__veilSources) {
+    __ctx.sources = __veilSourceView(__fs, __ctx.__veilSources);
+    delete __ctx.__veilSources;
+  }
   let __res = __veilMod.default.render(__ctx, __fs);
   if (__res && typeof __res.then === 'function') __res = await __res;
   const __final = __res == null ? __fs : __res;
@@ -1083,6 +1114,7 @@ func restoreEncoding(in, out Bundle) Bundle {
 			file.Type, file.MustValidate = "", false
 		} else {
 			file.Type, file.MustValidate = original.Type, original.MustValidate
+			file.ValidateContent = original.ValidateContent
 		}
 		out[key] = file
 	}

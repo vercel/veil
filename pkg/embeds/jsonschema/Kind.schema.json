@@ -167,6 +167,35 @@
                 "description": "Inlined contents of the params JSON Schema (raw JSON text).",
                 "minLength": 1,
                 "type": "string"
+              },
+              "sources": {
+                "description": "Embedded templates instantiated once per resolved target per root.",
+                "items": {
+                  "additionalProperties": false,
+                  "description": "Source is one compiled source file: where it lives in the kind, what\n it contains, and the schema it is checked against. Everything a\n consumer needs to read and validate the file is inlined here, so\n render never reaches back to the kind directory.",
+                  "properties": {
+                    "contents": {
+                      "default": "",
+                      "description": "Raw file contents. May be empty: an empty source file is valid.",
+                      "type": "string"
+                    },
+                    "path": {
+                      "description": "Path relative to the kind directory (e.g. \"sources/app.json\"). Also\n the source's identity through the render pipeline — hooks may remap\n where a file is written without changing this.",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "schema": {
+                      "description": "Inlined JSON Schema for this source, as raw JSON text — like\n DependentHook.params_schema, so validation needs no filesystem\n access to the kind directory. Unset when the source declared no\n schema, in which case its contents are never schema-checked.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ],
+                  "title": "Source",
+                  "type": "object"
+                },
+                "type": "array"
               }
             },
             "required": [

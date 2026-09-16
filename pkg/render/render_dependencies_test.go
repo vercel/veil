@@ -15,16 +15,8 @@ func dependentHookIIFE(markerFile string) string {
 	return `var __veilMod=(()=>{var h={render:function(ctx,fs){fs.add("` + markerFile + `","target="+ctx.self.metadata.name+" consumer="+ctx.consumer.metadata.name);return fs;}};return{default:h};})();`
 }
 
-// dependentHookIIFEKeyedByParam returns a pre-bundled dependent hook
-// that stamps a marker file per invocation, named after one of the
-// edge's own params rather than a fixed path. ctx.consumer is always
-// the render root (see applyDependencies in render.go) — identical
-// for every edge into a shared target — so params are the only
-// signal that still varies per edge; a target reached through more
-// than one incoming edge (a diamond dependency) writes one such file
-// per edge instead of one shared file the second firing would
-// silently overwrite — proof that each edge's hook ran independently
-// rather than the target's node-level dedup suppressing repeat edges.
+// dependentHookIIFEKeyedByParam records the params selected for a grouped target.
+// fs.add rejects a duplicate invocation, so diamond tests detect repeated hooks.
 func dependentHookIIFEKeyedByParam(prefix, paramKey string) string {
 	return `var __veilMod=(()=>{var h={render:function(ctx,fs){fs.add("` + prefix + `-via-"+ctx.params.` + paramKey + `+".txt","target="+ctx.self.metadata.name+" consumer="+ctx.consumer.metadata.name+" param="+ctx.params.` + paramKey + `);return fs;}};return{default:h};})();`
 }

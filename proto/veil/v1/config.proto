@@ -365,4 +365,8 @@ message DependentDefinition {
     (buf.validate.field).string.min_len = 1,
     (buf.validate.field).required = true
   ];
+
+  // Optional dependency-owned templates, string paths or {path, schema}.
+  // Paths resolve relative to this kind.json; spelling is preserved.
+  repeated google.protobuf.Value sources = 4;
 }

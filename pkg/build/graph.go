@@ -49,9 +49,12 @@ type KindNode struct {
 // relationship in the graph, plus the JSON Schema of the params the
 // consumer must supply.
 type DependencyEdge struct {
-	Consumer     *KindNode
-	Target       *KindNode
-	ParamsSchema map[string]any
+	Consumer        *KindNode
+	Target          *KindNode
+	ParamsSchema    map[string]any
+	Sources         []string
+	SourceTypes     string
+	SourceTypeNames map[string]string
 }
 
 // BuildGraph constructs a KindGraph from the source-side registry. Errors
@@ -98,10 +101,22 @@ func BuildGraph(kinds []*config.Kind) (*KindGraph, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s: dependents[%q] params: %w", k.Name, d.Kind, err)
 			}
+			defs := k.DependentSourceDefs(d.Kind)
+			sourceTypes, sourceTypeNames, err := sourceSchemaTypes(k, defs, PascalCase(d.Kind)+"Source")
+			if err != nil {
+				return nil, fmt.Errorf("%s: dependents[%q] sources: %w", k.Name, d.Kind, err)
+			}
+			sources := make([]string, len(defs))
+			for i, def := range defs {
+				sources[i] = def.GetPath()
+			}
 			edge := &DependencyEdge{
-				Consumer:     consumer,
-				Target:       target,
-				ParamsSchema: schema,
+				Consumer:        consumer,
+				Target:          target,
+				ParamsSchema:    schema,
+				Sources:         sources,
+				SourceTypes:     sourceTypes,
+				SourceTypeNames: sourceTypeNames,
 			}
 			target.dependents = append(target.dependents, edge)
 			consumer.dependencies = append(consumer.dependencies, edge)
@@ -119,7 +134,62 @@ func BuildGraph(kinds []*config.Kind) (*KindGraph, error) {
 		})
 	}
 
+	for _, k := range kinds {
+		if err := validateSourceTypeNames(k, g.nodes[k.Name]); err != nil {
+			return nil, fmt.Errorf("%s: %w", k.Name, err)
+		}
+	}
 	return g, nil
+}
+
+func validateSourceTypeNames(k *config.Kind, node *KindNode) error {
+	owners := make(map[string]string)
+	register := func(names map[string]string, owner string) error {
+		paths := make([]string, 0, len(names))
+		for path := range names {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		seen := make(map[string]bool)
+		for _, path := range paths {
+			name := names[path]
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			current := fmt.Sprintf("%s source %q", owner, path)
+			if previous, exists := owners[name]; exists {
+				return fmt.Errorf("%s and %s both generate type name %q; rename a schema to disambiguate", previous, current, name)
+			}
+			owners[name] = current
+		}
+		return nil
+	}
+	own := make(map[string]string)
+	for _, source := range k.SourceDefs() {
+		if source.GetSchema() == "" {
+			continue
+		}
+		name, err := typeNameForSchemaPath("", source.GetSchema())
+		if err != nil {
+			return err
+		}
+		own[source.GetPath()] = name
+	}
+	if err := register(own, k.Name); err != nil {
+		return err
+	}
+	for _, edge := range node.Dependents() {
+		if k.Import == nil {
+			if err := register(edge.Consumer.SourceTypeNames, edge.Consumer.Name); err != nil {
+				return err
+			}
+		}
+		if err := register(edge.SourceTypeNames, k.Name+" dependent on "+edge.Consumer.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Node returns the node for the given kind name, or nil if absent.
@@ -296,6 +366,14 @@ func dependentInterfaces(n *KindNode, packageMode bool) (string, error) {
 			b.WriteString(consumer.SourceTypes)
 		}
 
+		sourcesName := consumerPascal + "Sources"
+		sourcesIface, err := sourceInterfaceNamed(sourcesName, edge.Sources, edge.SourceTypeNames, false)
+		if err != nil {
+			return "", fmt.Errorf("consumer %q sources: %w", consumer.Name, err)
+		}
+		b.WriteString(edge.SourceTypes)
+		b.WriteString(sourcesIface)
+		b.WriteString("\n")
 		paramsIface, err := interfaceFromSchemaMap(paramsName, edge.ParamsSchema)
 		if err != nil {
 			return "", fmt.Errorf("consumer %q params: %w", consumer.Name, err)
@@ -313,6 +391,7 @@ func dependentInterfaces(n *KindNode, packageMode bool) (string, error) {
 		b.WriteString("  path: string;\n")
 		fmt.Fprintf(&b, "  /** Params the consumer supplied for this dependency. */\n")
 		fmt.Fprintf(&b, "  params: %s;\n", paramsName)
+		fmt.Fprintf(&b, "  /** This target's templates in the consumer bundle. */\n  sources: %s;\n", sourcesName)
 		b.WriteString("  vars: RegistryVariables;\n")
 		b.WriteString("  root: string;\n")
 		b.WriteString("  std: Std;\n")

@@ -3,6 +3,7 @@ package registry
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -30,6 +31,8 @@ type LoadedKind struct {
 	// Sources are the kind's compiled sources in wire order, each paired
 	// with the validator built from its declared schema.
 	Sources []*LoadedSource
+	// DependentSources indexes embedded templates by consumer kind.
+	DependentSources map[string][]*LoadedSource
 	// validator is the composite kind.schema.json compiled once at load.
 	validator *jsonschema.Schema
 	// sourceByPath indexes Sources for lookup by kind-dir-relative path.
@@ -46,6 +49,17 @@ type LoadedSource struct {
 	// inlined in Source.schema. nil when the source declared none, in
 	// which case the source is never schema-checked.
 	Validator *jsonschema.Schema
+}
+
+// Validate checks a parsed source against its embedded schema.
+func (s *LoadedSource) Validate(doc any) error {
+	if s.Validator == nil {
+		return nil
+	}
+	if err := s.Validator.Validate(doc); err != nil {
+		return errors.New(stripSourceSchemaURL(s.GetPath(), err.Error()))
+	}
+	return nil
 }
 
 // Source returns the compiled source at path, or nil when the kind
@@ -179,7 +193,7 @@ func loadSources(sources []*veilv1.Source) ([]*LoadedSource, map[string]*LoadedS
 			if err := json.Unmarshal([]byte(raw), &doc); err != nil {
 				return nil, nil, fmt.Errorf("source %q: parsing schema: %w", path, err)
 			}
-			uri := "mem://source/" + path
+			uri := "mem://source/" + url.PathEscape(path)
 			if err := compiler.AddResource(uri, doc); err != nil {
 				return nil, nil, fmt.Errorf("source %q: registering schema: %w", path, err)
 			}
@@ -196,7 +210,7 @@ func loadSources(sources []*veilv1.Source) ([]*LoadedSource, map[string]*LoadedS
 }
 
 func stripSourceSchemaURL(path, msg string) string {
-	re := regexp.MustCompile(`'mem://source/` + regexp.QuoteMeta(path) + `#?[^']*'`)
+	re := regexp.MustCompile(`'mem://source/` + regexp.QuoteMeta(url.PathEscape(path)) + `#?[^']*'`)
 	label := fmt.Sprintf("source %q schema", path)
 	msg = re.ReplaceAllString(msg, label)
 	return strings.TrimPrefix(msg, fmt.Sprintf("jsonschema validation failed with %s\n", label))

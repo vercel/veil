@@ -299,6 +299,20 @@ export interface PostgresDatabase {
   storageGb: number;
 }
 
+export interface PostgresSources {
+  /** Look up a file handle by its path. Returns undefined if absent.
+   *  Always File<string> — still schema-enforced, just doesn't parse
+   *  for you. */
+  get(path: string): File | undefined;
+  /** Every file handle currently present (including tombstoned ones —
+   *  filter via `file.isDeleted()` if you only want live files). */
+  getAll(): File[];
+  /** Tombstone the file at the given path (soft delete — downstream hooks still see it). */
+  delete(path: string): void;
+  /** All paths currently present. */
+  keys(): string[];
+}
+
 export interface PostgresParams {
   role?: string;
 }
@@ -313,6 +327,8 @@ export interface PostgresDependentHookContext {
   path: string;
   /** Params the consumer supplied for this dependency. */
   params: PostgresParams;
+  /** This target's templates in the consumer bundle. */
+  sources: PostgresSources;
   vars: RegistryVariables;
   root: string;
   std: Std;
