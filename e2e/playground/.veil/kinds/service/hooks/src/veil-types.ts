@@ -119,16 +119,16 @@ export interface File<T = string> {
   /** True when this file becomes rendered output. False for an asset the
    *  kind ships purely for hooks to read, and for anything deleted. */
   isRendered(): boolean;
-  /** Turn output on or off for this entry. Turning it on clears the
-   *  tombstone — a file cannot be both deleted and written. */
+  /** Turn output on or off for this entry. The entry stays in the FS
+   *  either way, so downstream hooks still find it via the same typed
+   *  accessor. */
   setRendered(render: boolean): void;
-  /** True when this file has been tombstoned via setDeleted(true) or
-   *  fs.delete(). Downstream hooks still observe the entry; the final
-   *  writer skips it. */
+  /** The inverse of isRendered, and the same underlying state: a deleted
+   *  file and an asset are both entries nothing writes. So this is also
+   *  true for an asset the kind never meant to render. */
   isDeleted(): boolean;
-  /** Tombstone (true) or restore (false) this entry. Identity is
-   *  preserved either way — downstream hooks still find it via the same
-   *  typed accessor. Tombstoning also stops the file rendering. */
+  /** Tombstone (true) or restore (false) this entry — setRendered read
+   *  the other way round. Identity is preserved either way. */
   setDeleted(deleted: boolean): void;
 }
 

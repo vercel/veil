@@ -622,3 +622,30 @@ func (s *RenderSuite) TestRenderedStateCarriesAcrossHooks() {
 	s.Require().NoError(err)
 	s.FileExists(filepath.Join(out, "my-worker", "assets", "tmpl.txt"))
 }
+
+// TestIsDeletedIsTheInverseOfRendered pins the consequence of the two
+// being one flag: an asset reports as deleted, because a deleted file
+// and an asset are the same outcome — an entry still in the FS that
+// nothing writes.
+func (s *RenderSuite) TestIsDeletedIsTheInverseOfRendered() {
+	hook := `var __veilMod=(()=>{var h={render(ctx,fs){
+	  var a=fs.get("assets/tmpl.txt"), c=fs.get("config.txt");
+	  if(!a.isDeleted()) throw new Error("an asset should report as deleted");
+	  if(c.isDeleted()) throw new Error("a render file should not");
+	  a.setRendered(true);
+	  if(a.isDeleted()) throw new Error("rendering it should clear deleted");
+	  c.setDeleted(true);
+	  if(c.isRendered()) throw new Error("deleting it should clear rendered");
+	  return fs;}};return{default:h};})();`
+	dir := s.writeFilesKind(hook,
+		map[string]string{"config.txt": "base", "assets/tmpl.txt": "x"},
+		map[string]bool{"config.txt": true})
+
+	out := filepath.Join(s.root, "out")
+	_, err := s.renderWorker(dir, out, nil)
+	s.Require().NoError(err)
+
+	// The two swapped places, and the output follows.
+	s.FileExists(filepath.Join(out, "my-worker", "assets", "tmpl.txt"))
+	s.NoFileExists(filepath.Join(out, "my-worker", "config.txt"))
+}

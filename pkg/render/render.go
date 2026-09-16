@@ -284,11 +284,13 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 			// Override was for a path that isn't in the bundle anymore
 			// (deleted by a hook). Re-introduce it under the same key
 			// so the user's content still lands in the output.
-			bundle[path] = hook.File{Path: path, Content: content}
+			bundle[path] = hook.File{Path: path, Content: content, Render: true}
 			continue
 		}
 		f.Content = content
-		f.Deleted = false
+		// An override is a demand that this content be written, so it
+		// outranks a hook having dropped the file.
+		f.Render = true
 		bundle[path] = f
 	}
 
@@ -1063,12 +1065,9 @@ func writeBundle(outDir string, bundle hook.Bundle) ([]string, error) {
 	pathsOut := make([]string, 0, len(bundle))
 	for _, id := range identities {
 		file := bundle[id]
-		// Tombstoned entries are skipped at write time — downstream hooks
-		// already had their chance to observe them via File.isDeleted().
-		if file.Deleted {
-			continue
-		}
-		// An asset the kind ships for its hooks to read is not output.
+		// Everything that is not output is skipped here: an asset the
+		// kind ships for its hooks to read, and a file a hook deleted.
+		// Both stayed in the bundle so later hooks could observe them.
 		if !file.Render {
 			continue
 		}

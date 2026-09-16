@@ -60,14 +60,13 @@ type HTTPConfig struct {
 
 // File is one entry in the per-instance FS threaded through the hook
 // pipeline. The identity key under which it sits in the bundle map is
-// stable across hooks; Path is the destination (defaults to the identity),
-// Content is the file contents, and Deleted is a tombstone flag that
-// survives across hooks — when true the final writer skips this entry but
-// downstream hooks can still observe it via File.isDeleted().
+// stable across hooks; Path is the destination (defaults to the
+// identity), and Content is the file contents. An entry stays in the
+// bundle for every later hook to see however Render moves — dropping a
+// file is a matter of not writing it, not of removing it.
 type File struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
-	Deleted bool   `json:"deleted,omitempty"`
 
 	// Type is how Content encodes a document. A JSON or YAML entry hands
 	// hooks a parsed object from getContent and takes one in setContent;
@@ -81,10 +80,14 @@ type File struct {
 	// call site instead of failing a whole render later.
 	MustValidate bool `json:"mustValidate,omitempty"`
 
-	// Render marks an entry that becomes rendered output. False for an
-	// asset the kind ships purely for its hooks to read: it is in the FS
-	// like any other entry, and dropped at write time. A file a hook
+	// Render is the one thing that decides whether this entry is
+	// written. False for an asset the kind ships purely for its hooks to
+	// read, and equally for anything a hook deleted: both are in the FS
+	// like any other entry and neither reaches the output. A file a hook
 	// creates is output, so it is true.
+	//
+	// The tombstone is not a second flag. isDeleted and setDeleted read
+	// and write this one inverted, so the two can never disagree.
 	//
 	// Unlike Type and MustValidate this is the hook's to change —
 	// setRendered, setOutputPath and delete all move it — so it survives
@@ -200,20 +203,14 @@ class SourceFile {
   }
 
   isRendered() { return !!this.entry.render; }
+  setRendered(v) { this.entry.render = !!v; }
 
-  // Rendering and the tombstone are two sides of one question, so each
-  // setter settles the other: a file cannot be both deleted and written.
-  setRendered(v) {
-    this.entry.render = !!v;
-    if (this.entry.render) this.entry.deleted = false;
-  }
-
-  isDeleted() { return !!this.entry.deleted; }
-
-  setDeleted(v) {
-    this.entry.deleted = !!v;
-    if (this.entry.deleted) this.entry.render = false;
-  }
+  // The tombstone is this same flag read the other way round. Deleting a
+  // file and declining to render one are the same outcome — the entry
+  // stays in the FS, and nothing writes it — so they are one piece of
+  // state rather than two that could contradict each other.
+  isDeleted() { return !this.entry.render; }
+  setDeleted(v) { this.entry.render = !v; }
 }
 
 // __veilMakeFS wraps a raw bundle in the FS a hook receives. identity is
@@ -227,12 +224,11 @@ function __veilMakeFS(initial, identity) {
     if (!Object.prototype.hasOwnProperty.call(initial, k)) continue;
     var v = initial[k];
     if (typeof v === 'string') {
-      entries[k] = { path: k, content: v, deleted: false, type: 'plaintext', mustValidate: false, render: true };
+      entries[k] = { path: k, content: v, type: 'plaintext', mustValidate: false, render: true };
     } else {
       entries[k] = {
         path: typeof v.path === 'string' ? v.path : k,
         content: typeof v.content === 'string' ? v.content : '',
-        deleted: !!v.deleted,
         type: typeof v.type === 'string' ? v.type : 'plaintext',
         mustValidate: !!v.mustValidate,
         render: !!v.render
@@ -260,7 +256,7 @@ function __veilMakeFS(initial, identity) {
         throw new Error('fs.add: path ' + JSON.stringify(path) + ' already exists');
       }
       // Producing output is the only reason to add a file.
-      entries[path] = { path: path, content: '', deleted: false, type: 'plaintext', mustValidate: false, render: true };
+      entries[path] = { path: path, content: '', type: 'plaintext', mustValidate: false, render: true };
       // Through setContent, not by assigning content here, so every write
       // in the runtime goes down one path.
       var file = fileFor(path);
@@ -278,20 +274,19 @@ function __veilMakeFS(initial, identity) {
       }
       return out;
     },
-    // Only what a hook is allowed to change crosses back: path, content,
-    // the tombstone, and whether the file renders. type and mustValidate
-    // are host state — the runner re-stamps them from the bundle it sent
-    // in, so emitting them here would just be something to tamper with.
-    // render is always emitted, never omitted when false: turning a file
-    // off is exactly the change that has to survive the trip.
+    // Only what a hook is allowed to change crosses back: path, content
+    // and whether the file renders — which carries the tombstone too,
+    // being the same flag. type and mustValidate are host state: the
+    // runner re-stamps them from the bundle it sent in, so emitting them
+    // here would just be something to tamper with. render is always
+    // emitted, never omitted when false, since turning a file off is
+    // exactly the change that has to survive the trip.
     toJSON: function() {
       var out = {};
       for (var k in entries) {
         if (!Object.prototype.hasOwnProperty.call(entries, k)) continue;
         var e = entries[k];
-        var obj = { path: e.path, content: e.content, render: !!e.render };
-        if (e.deleted) obj.deleted = true;
-        out[k] = obj;
+        out[k] = { path: e.path, content: e.content, render: !!e.render };
       }
       return out;
     }

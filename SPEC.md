@@ -230,11 +230,15 @@ an asset that only some resources publish. Two other calls move it as a conseque
 - **`file.setOutputPath(...)`** marks the file rendered. Routing a file somewhere is a statement that it should
   be written, so a layout hook cannot quietly move an asset to a destination nothing writes.
 - **`file.setDeleted(true)`** and **`fs.delete(...)`** clear it. The entry stays in the FS for downstream hooks
-  to observe via `file.isDeleted()`, and is not written.
+  to observe, and is not written.
 
-The two cannot disagree: turning rendering on clears the tombstone, and tombstoning turns rendering off. Unlike
-a file's type and schema — which the runner re-stamps between hooks, so they are fixed for the whole render —
-a render decision carries into every hook after the one that made it.
+Deleting is not a second piece of state: `isDeleted()` is `isRendered()` read the other way round, and
+`setDeleted(v)` is `setRendered(!v)`. A deleted file and an asset are the same outcome — an entry still in the
+FS that nothing writes — so they are one flag that cannot contradict itself. One consequence worth knowing:
+`isDeleted()` is true for an asset the kind never meant to render, not only for something a hook removed.
+
+Unlike a file's type and schema — which the runner re-stamps between hooks, so they are fixed for the whole
+render — a render decision carries into every hook after the one that made it.
 
 A file with no `schema` is passed through the hook pipeline as an opaque string: veil does not parse or
 understand its contents. Declaring `schema` changes that: from then on, that file's content is a contract the

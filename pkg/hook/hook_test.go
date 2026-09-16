@@ -51,7 +51,7 @@ export default h;
 	defer hk.Close()
 
 	ctx := map[string]any{"name": "world", "spec": map[string]any{}, "vars": map[string]any{}}
-	bundle := Bundle{"existing.txt": File{Path: "existing.txt", Content: "kept"}}
+	bundle := Bundle{"existing.txt": File{Path: "existing.txt", Content: "kept", Render: true}}
 
 	result, err := hk.RenderHook(ctx, bundle)
 	s.Require().NoError(err)
@@ -114,7 +114,7 @@ export default h;
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"x": File{Path: "x", Content: "y"}}
+	bundle := Bundle{"x": File{Path: "x", Content: "y", Render: true}}
 	result, err := hk.RenderHook(map[string]any{"name": "n"}, bundle)
 	s.Require().NoError(err)
 	s.Equal(bundle, result)
@@ -215,9 +215,9 @@ export default h;
 	defer hk.Close()
 
 	bundle := Bundle{
-		"a.txt":      File{Path: "a.txt", Content: "A"},
-		"b.txt":      File{Path: "b.txt", Content: "B"},
-		"doomed.txt": File{Path: "doomed.txt", Content: "X"},
+		"a.txt":      File{Path: "a.txt", Content: "A", Render: true},
+		"b.txt":      File{Path: "b.txt", Content: "B", Render: true},
+		"doomed.txt": File{Path: "doomed.txt", Content: "X", Render: true},
 	}
 	result, err := hk.RenderHook(map[string]any{}, bundle)
 	s.Require().NoError(err)
@@ -261,7 +261,7 @@ export default h;
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"./sources/source.txt": File{Path: "./sources/source.txt", Content: "hello"}}
+	bundle := Bundle{"./sources/source.txt": File{Path: "./sources/source.txt", Content: "hello", Render: true}}
 	result, err := hk.RenderHook(map[string]any{}, bundle)
 	s.Require().NoError(err)
 	s.Equal("HELLO", result["echo.txt"].Content)
@@ -282,7 +282,7 @@ export default h;
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"./sources/deployment.yaml": File{Path: "./sources/deployment.yaml", Content: "kind: Deployment"}}
+	bundle := Bundle{"./sources/deployment.yaml": File{Path: "./sources/deployment.yaml", Content: "kind: Deployment", Render: true}}
 	result, err := hk.RenderHook(map[string]any{}, bundle)
 	s.Require().NoError(err)
 
@@ -307,7 +307,7 @@ export default h;
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"./sources/source.txt": File{Path: "./sources/source.txt", Content: "original"}}
+	bundle := Bundle{"./sources/source.txt": File{Path: "./sources/source.txt", Content: "original", Render: true}}
 	result, err := hk.RenderHook(map[string]any{}, bundle)
 	s.Require().NoError(err)
 	s.Equal("updated", result["./sources/source.txt"].Content)
@@ -362,10 +362,10 @@ export default h;
 	s.Require().NoError(err)
 	defer hk2.Close()
 
-	bundle := Bundle{"./sources/source.txt": File{Path: "./sources/source.txt", Content: "hi"}}
+	bundle := Bundle{"./sources/source.txt": File{Path: "./sources/source.txt", Content: "hi", Render: true}}
 	mid, err := hk1.RenderHook(map[string]any{}, bundle)
 	s.Require().NoError(err)
-	s.True(mid["./sources/source.txt"].Deleted)
+	s.False(mid["./sources/source.txt"].Render, "deleting stops it rendering")
 
 	final, err := hk2.RenderHook(map[string]any{}, mid)
 	s.Require().NoError(err)
@@ -391,12 +391,12 @@ export default h;
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"./sources/source.txt": File{Path: "./sources/source.txt", Content: "hi"}}
+	bundle := Bundle{"./sources/source.txt": File{Path: "./sources/source.txt", Content: "hi", Render: true}}
 	result, err := hk.RenderHook(map[string]any{}, bundle)
 	s.Require().NoError(err)
 	s.Equal("dead", result["mid.txt"].Content)
 	s.Equal("alive", result["end.txt"].Content)
-	s.False(result["./sources/source.txt"].Deleted, "setDeleted(false) restores the entry")
+	s.True(result["./sources/source.txt"].Render, "setDeleted(false) restores the entry")
 }
 
 func (s *HookSuite) TestIsDeletedDefaultsFalse() {
@@ -414,7 +414,7 @@ export default h;
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"./sources/source.txt": File{Path: "./sources/source.txt", Content: "hi"}}
+	bundle := Bundle{"./sources/source.txt": File{Path: "./sources/source.txt", Content: "hi", Render: true}}
 	result, err := hk.RenderHook(map[string]any{}, bundle)
 	s.Require().NoError(err)
 	s.Equal("no", result["status.txt"].Content)
@@ -768,7 +768,7 @@ export default h;
 // encoding drives whether hooks see an object, mustValidate drives
 // whether writes are checked.
 func typedBundle(path, content string, ct ContentType) Bundle {
-	return Bundle{path: File{Path: path, Content: content, Type: ct, MustValidate: true}}
+	return Bundle{path: File{Path: path, Content: content, Type: ct, MustValidate: true, Render: true}}
 }
 
 // numericReplicas is the stand-in for a real JSON Schema. Contents
@@ -946,7 +946,7 @@ export default h;
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"notes.txt": File{Path: "notes.txt", Content: "hello", Type: ContentPlaintext}}
+	bundle := Bundle{"notes.txt": File{Path: "notes.txt", Content: "hello", Type: ContentPlaintext, Render: true}}
 	out, err := hk.RenderHook(map[string]any{}, bundle)
 	s.Require().NoError(err)
 	s.Equal("HELLO", out["notes.txt"].Content)
@@ -976,7 +976,7 @@ export default h;
 	s.Require().NoError(err)
 	defer hk.Close()
 
-	bundle := Bundle{"app.json": File{Path: "app.json", Content: `{"replicas":3}`, Type: ContentJSON}}
+	bundle := Bundle{"app.json": File{Path: "app.json", Content: `{"replicas":3}`, Type: ContentJSON, Render: true}}
 	out, err := hk.RenderHook(map[string]any{}, bundle)
 	s.Require().NoError(err)
 	s.False(called, "mustValidate is unset, so the host must not be consulted")
