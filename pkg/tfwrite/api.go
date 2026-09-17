@@ -125,16 +125,40 @@ func (b *Body) AppendComment(text string) *Comment {
 	return c
 }
 
-// RemoveBlock drops a block, reporting whether it was there.
-func (b *Body) RemoveBlock(target Block) bool {
+// Remove drops any item — a block, an attribute or a comment —
+// reporting whether it was there. The typed accessors return the thing
+// to pass in, so removing a resource is Remove(f.Resource(...)) and
+// removing a comment is Remove(c) for one out of Comments().
+func (b *Body) Remove(target Item) bool {
+	if target == nil {
+		return false
+	}
 	for i, item := range b.items {
-		if blk, ok := item.(Block); ok && blk == target {
-			b.items = append(b.items[:i], b.items[i+1:]...)
-			b.dirty = true
-			return true
+		if item != target {
+			continue
 		}
+		b.items = append(b.items[:i], b.items[i+1:]...)
+		b.dirty = true
+		return true
 	}
 	return false
+}
+
+// RemoveBlock drops a block. Remove does the same for any item; this
+// reads better at a call site that has a block in hand.
+func (b *Body) RemoveBlock(target Block) bool {
+	if target == nil {
+		return false
+	}
+	return b.Remove(target)
+}
+
+// RemoveComment drops a comment, the counterpart to AppendComment.
+func (b *Body) RemoveComment(target *Comment) bool {
+	if target == nil {
+		return false
+	}
+	return b.Remove(target)
 }
 
 // appendBlock adds a block of the given shape and returns it.
@@ -425,3 +449,8 @@ func (f *File) AddImport() *Import { return f.body.appendBlock("import").(*Impor
 
 // Blocks returns every top-level block, whatever its type.
 func (f *File) Blocks() []Block { return f.body.Blocks() }
+
+// Remove drops a top-level item. Passing the result of an accessor that
+// found nothing is a no-op rather than a panic, so
+// f.Remove(f.Resource("x", "y")) is safe whether or not it is there.
+func (f *File) Remove(target Item) bool { return f.body.Remove(target) }

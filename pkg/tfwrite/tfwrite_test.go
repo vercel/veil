@@ -1,6 +1,7 @@
 package tfwrite
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/goccy/go-json"
@@ -252,4 +253,79 @@ func (s *TFWriteSuite) TestRejectsSpanOutsideSource() {
 		[]byte(`{"filename":"main.tf","items":[{"kind":"comment","text":"x","start":0,"end":9999,"spanned":true}]}`))
 	s.Require().Error(err)
 	s.Contains(err.Error(), "outside the source")
+}
+
+// TestRemoveActuallyRemoves is not as obvious as it sounds. The printer
+// copies the original text between two surviving items to keep blank
+// lines, and that gap spans anything dropped from between them — so a
+// removal that updates the item list and nothing else prints the removed
+// text straight back out.
+func (s *TFWriteSuite) TestRemoveActuallyRemoves() {
+	src := `# Keep this comment.
+resource "aws_s3_bucket" "a" {
+  bucket = "a"
+}
+
+# Drop this comment.
+resource "aws_s3_bucket" "b" {
+  bucket = "b"
+}
+
+resource "aws_s3_bucket" "c" {
+  bucket = "c"
+}
+`
+	f, err := Parse([]byte(src), "main.tf")
+	s.Require().NoError(err)
+
+	s.True(f.Remove(f.Resource("aws_s3_bucket", "b")), "a resource in the middle")
+
+	comments := f.Body().Comments()
+	s.Require().Len(comments, 2)
+	s.True(f.Body().RemoveComment(comments[1]), "the comment that described it")
+
+	out := f.String()
+	s.NotContains(out, `"b"`, "the resource is gone")
+	s.NotContains(out, "Drop this comment", "and so is the comment")
+	s.Contains(out, "# Keep this comment.")
+	s.Contains(out, `resource "aws_s3_bucket" "a"`)
+	s.Contains(out, `resource "aws_s3_bucket" "c"`)
+
+	// What is left still parses, and is stable on a second pass.
+	again, err := Parse([]byte(out), "main.tf")
+	s.Require().NoError(err)
+	s.Equal(out, again.String())
+}
+
+// TestRemoveFromTheEnd covers the tail separately: the printer copies
+// whatever followed the last item, which is the file's final newline —
+// or, once the last item is dropped, the item itself.
+func (s *TFWriteSuite) TestRemoveFromTheEnd() {
+	src := `resource "aws_s3_bucket" "a" {
+  bucket = "a"
+}
+
+resource "aws_s3_bucket" "last" {
+  bucket = "last"
+}
+`
+	f, err := Parse([]byte(src), "main.tf")
+	s.Require().NoError(err)
+	s.True(f.Remove(f.Resource("aws_s3_bucket", "last")))
+
+	out := f.String()
+	s.NotContains(out, "last")
+	s.Contains(out, `resource "aws_s3_bucket" "a"`)
+	s.True(strings.HasSuffix(out, "}\n"), "the file still ends with a newline, got %q", out)
+}
+
+// TestRemoveMissingIsANoOp keeps f.Remove(f.Resource(...)) safe to write
+// without checking for nil first.
+func (s *TFWriteSuite) TestRemoveMissingIsANoOp() {
+	f, err := Parse([]byte(messyFile), "main.tf")
+	s.Require().NoError(err)
+
+	s.False(f.Remove(f.Resource("aws_s3_bucket", "nope")), "no such resource")
+	s.False(f.Body().RemoveComment(nil))
+	s.Equal(messyFile, f.String(), "a failed removal changes nothing")
 }

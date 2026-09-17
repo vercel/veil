@@ -26,8 +26,32 @@ func (b *Body) printRoot(src []byte, out *strings.Builder) {
 	}
 	b.printItems(src, 0, out)
 	if last, ok := b.lastParsedSpan(); ok && last.end < len(src) {
-		out.WriteString(string(src[last.end:]))
+		// Only the trailing whitespace — the file's final newline. Any
+		// non-blank tail is an item that was removed from the end.
+		full := src[last.end:]
+		tail := full[:blankPrefix(full)]
+		if b.dirty && len(tail) > 0 {
+			// Something was added or removed here, so this whitespace is
+			// the gap that used to lead to it rather than the file's own
+			// ending. One newline, not the blank line left behind.
+			out.WriteString("\n")
+		} else {
+			out.WriteString(string(tail))
+		}
 	}
+}
+
+// isBlank reports whether a stretch of source is only whitespace.
+func isBlank(b []byte) bool { return blankPrefix(b) == len(b) }
+
+// blankPrefix is how many leading bytes of b are whitespace.
+func blankPrefix(b []byte) int {
+	for i, c := range b {
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			return i
+		}
+	}
+	return len(b)
 }
 
 func (b *Body) firstParsedSpan() (srcSpan, bool) {
@@ -57,9 +81,14 @@ func (b *Body) printItems(src []byte, indent int, out *strings.Builder) {
 	for i, item := range b.items {
 		sp := item.span()
 		switch {
-		case prevEnd >= 0 && sp.valid && sp.start >= prevEnd:
+		case prevEnd >= 0 && sp.valid && sp.start >= prevEnd && isBlank(src[prevEnd:sp.start]):
 			// Copy whatever separated these two in the source: newlines,
 			// blank lines, the indentation of the next item.
+			//
+			// Only when that gap is blank. Every comment is an item in
+			// its own right, so anything else between two surviving
+			// items is an item that was removed — and copying the gap
+			// would put it back.
 			out.WriteString(string(src[prevEnd:sp.start]))
 		case i > 0:
 			out.WriteString("\n")
