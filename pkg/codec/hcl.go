@@ -37,20 +37,26 @@ func HCLToJSON(src []byte, filename string) ([]byte, error) {
 // from a block header: `resource.aws_s3_bucket.logs` is two labels and
 // then a body, while `locals` is a body straight away. Anything not
 // listed is written as an attribute.
+//
+// Mirrors configFileSchema in terraform/internal/configs — the file
+// Terraform decodes top-level blocks with. Keep it in step with that
+// rather than with intuition: `provisioner` looks like it belongs and
+// does not, being nested inside a resource rather than top-level.
 var terraformBlockLabels = map[string]int{
-	"resource":    2,
-	"data":        2,
-	"module":      1,
-	"output":      1,
-	"provider":    1,
-	"variable":    1,
-	"provisioner": 1,
-	"check":       1,
-	"import":      0,
-	"locals":      0,
-	"moved":       0,
-	"removed":     0,
-	"terraform":   0,
+	"terraform": 0,
+	"locals":    0,
+	"moved":     0,
+	"removed":   0,
+	"import":    0,
+	"provider":  1,
+	"variable":  1,
+	"output":    1,
+	"module":    1,
+	"check":     1,
+	"resource":  2,
+	"data":      2,
+	"ephemeral": 2,
+	"action":    2,
 }
 
 // wholeInterpolation matches a string that is nothing but one

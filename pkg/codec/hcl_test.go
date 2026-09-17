@@ -112,3 +112,43 @@ func (s *HCLSuite) TestRejectsMalformedInput() {
 	s.Require().Error(err)
 	s.Contains(err.Error(), "top level must be an object")
 }
+
+// TestBlockLabelsMatchTerraform pins the label counts against the ones
+// Terraform's own configFileSchema declares. Getting one wrong is silent
+// and ugly: too few labels and a block header is emitted as an
+// attribute, too many and a body is read as a label.
+func (s *HCLSuite) TestBlockLabelsMatchTerraform() {
+	// From terraform/internal/configs/parser_config.go.
+	want := map[string]int{
+		"terraform": 0, "locals": 0, "moved": 0, "removed": 0, "import": 0,
+		"provider": 1, "variable": 1, "output": 1, "module": 1, "check": 1,
+		"resource": 2, "data": 2, "ephemeral": 2, "action": 2,
+	}
+	s.Equal(want, terraformBlockLabels)
+
+	// provisioner is the tempting mistake: it is a block, but nested
+	// inside a resource rather than top-level.
+	s.NotContains(terraformBlockLabels, "provisioner")
+}
+
+// TestEveryBlockTypeRoundTrips walks the whole table, so a block type
+// added to it is exercised rather than merely declared.
+func (s *HCLSuite) TestEveryBlockTypeRoundTrips() {
+	for blockType, labels := range terraformBlockLabels {
+		s.Run(blockType, func() {
+			header := blockType
+			for i := 0; i < labels; i++ {
+				header += ` "l` + string(rune('0'+i)) + `"`
+			}
+			src := header + " {\n  field = \"v\"\n}\n"
+
+			j, err := HCLToJSON([]byte(src), "main.tf")
+			s.Require().NoError(err)
+			out, err := JSONToHCL(j)
+			s.Require().NoError(err)
+			again, err := HCLToJSON(out, "main.tf")
+			s.Require().NoError(err)
+			s.JSONEq(string(j), string(again), "%s should survive a round trip", blockType)
+		})
+	}
+}
