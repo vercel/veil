@@ -106,6 +106,11 @@ const (
 	ContentPlaintext ContentType = "plaintext"
 	ContentJSON      ContentType = "json"
 	ContentYAML      ContentType = "yaml"
+	// ContentTerraform hands a hook a TFFile rather than a string or a
+	// plain object: a tree that prints back byte-identical where it was
+	// not edited. Applies to any .tf a kind declares, schema or no —
+	// there is no useful plaintext reading of Terraform.
+	ContentTerraform ContentType = "terraform"
 )
 
 // Bundle is the shape of the state passed to and returned from a hook. Keys

@@ -91,27 +91,52 @@ func (a *Attribute) SetExpr(expr string) {
 	a.changed = true
 }
 
-// Block is a Terraform block: a type, its labels, and a nested body.
-type Block struct {
-	Type   string
-	Labels []string
+// Block is what every Terraform block implements. The concrete types in
+// blocks.go add the labels each one actually has: a Resource has a type
+// and a name, a Provider has only a name, Locals has neither. Terraform
+// does not give blocks a uniform label shape — `backend "s3"` labels a
+// type, `provider_meta "aws"` labels a provider — so a single Name()
+// across all of them would be inventing a convention that is not there.
+type Block interface {
+	Item
+	// BlockType is the keyword: "resource", "provider", "locals".
+	BlockType() string
+	// Labels are the block's labels in source order.
+	Labels() []string
+	// Body is the block's contents.
+	Body() *Body
+}
 
-	body *Body
+// block is the shared state every concrete block embeds.
+type block struct {
+	blockType string
+	labels    []string
+	body      *Body
 
 	sp            srcSpan
 	labelsChanged bool
 }
 
-func (b *Block) span() srcSpan { return b.sp }
+func (b *block) span() srcSpan     { return b.sp }
+func (b *block) BlockType() string { return b.blockType }
+func (b *block) Labels() []string  { return append([]string(nil), b.labels...) }
+func (b *block) Body() *Body       { return b.body }
 
-// Body returns the block's contents.
-func (b *Block) Body() *Body { return b.body }
-
-// SetLabels replaces the block's labels, so a resource can be renamed
-// without rebuilding it.
-func (b *Block) SetLabels(labels []string) {
-	b.Labels = append([]string(nil), labels...)
+// setLabel writes one label by position. Only the concrete types call
+// it, each knowing which position means what for its own block type.
+func (b *block) setLabel(i int, v string) {
+	for len(b.labels) <= i {
+		b.labels = append(b.labels, "")
+	}
+	b.labels[i] = v
 	b.labelsChanged = true
+}
+
+func (b *block) label(i int) string {
+	if i >= len(b.labels) {
+		return ""
+	}
+	return b.labels[i]
 }
 
 // Filename is the name the file was parsed under, for diagnostics.

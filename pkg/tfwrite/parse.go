@@ -79,12 +79,12 @@ func buildBody(src []byte, syntax *hclsyntax.Body, comments []*Comment, bodyEnd 
 		r := blk.Range()
 		childBlocks = append(childBlocks, childRange{r.Start.Byte, r.End.Byte})
 		inner := buildBody(src, blk.Body, comments, blk.Body.EndRange.End.Byte)
-		placedItems = append(placedItems, placed{r.Start.Byte, &Block{
-			Type:   blk.Type,
-			Labels: append([]string(nil), blk.Labels...),
-			body:   inner,
-			sp:     srcSpan{start: r.Start.Byte, end: r.End.Byte, valid: true},
-		}})
+		placedItems = append(placedItems, placed{r.Start.Byte, newBlock(
+			blk.Type,
+			append([]string(nil), blk.Labels...),
+			inner,
+			srcSpan{start: r.Start.Byte, end: r.End.Byte, valid: true},
+		)})
 	}
 
 	for _, attr := range syntax.Attributes {

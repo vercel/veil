@@ -62,12 +62,13 @@ func marshalItems(items []Item) []*jsonItem {
 				Kind: "attribute", Name: v.Name, Expr: v.Expr,
 				Start: v.sp.start, End: v.sp.end, Spanned: v.sp.valid, Changed: v.changed,
 			})
-		case *Block:
+		case Block:
+			b := blockBase(v)
 			out = append(out, &jsonItem{
-				Kind: "block", Type: v.Type, Labels: v.Labels,
-				Items: marshalItems(v.body.items),
-				Start: v.sp.start, End: v.sp.end, Spanned: v.sp.valid,
-				Changed: v.labelsChanged || v.body.dirty,
+				Kind: "block", Type: b.blockType, Labels: b.labels,
+				Items: marshalItems(b.body.items),
+				Start: b.sp.start, End: b.sp.end, Spanned: b.sp.valid,
+				Changed: b.labelsChanged || b.body.dirty,
 			})
 		}
 	}
@@ -109,10 +110,9 @@ func unmarshalBody(src []byte, items []*jsonItem, dirty bool) (*Body, error) {
 			if err != nil {
 				return nil, err
 			}
-			b.items = append(b.items, &Block{
-				Type: it.Type, Labels: it.Labels, body: inner,
-				sp: sp, labelsChanged: it.Changed,
-			})
+			blk := newBlock(it.Type, it.Labels, inner, sp)
+			blockBase(blk).labelsChanged = it.Changed
+			b.items = append(b.items, blk)
 		default:
 			return nil, fmt.Errorf("tfwrite: unknown item kind %q", it.Kind)
 		}

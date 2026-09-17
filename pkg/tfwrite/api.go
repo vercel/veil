@@ -1,69 +1,55 @@
 package tfwrite
 
-import "fmt"
-
-// BlockLabels is how many labels each top-level Terraform block type
-// takes. Mirrors configFileSchema in terraform/internal/configs, which
-// cannot be imported — it lives under internal/ — so it is copied and
-// pinned by a test instead.
-//
-// `provisioner` is deliberately absent: it looks like it belongs and
-// does not, being nested inside a resource rather than top-level.
-var BlockLabels = map[string]int{
-	"terraform": 0,
-	"locals":    0,
-	"moved":     0,
-	"removed":   0,
-	"import":    0,
-	"provider":  1,
-	"variable":  1,
-	"output":    1,
-	"module":    1,
-	"check":     1,
-	"resource":  2,
-	"data":      2,
-	"ephemeral": 2,
-	"action":    2,
-}
-
-// ---- reading -----------------------------------------------------------
+// ---- reading a body ----------------------------------------------------
 
 // Items returns the body's contents in source order.
 func (b *Body) Items() []Item { return b.items }
 
-// Blocks returns the body's blocks, optionally filtered to one type.
-func (b *Body) Blocks(blockType string) []*Block {
-	var out []*Block
+// Blocks returns every block in the body, in source order. Filter with
+// the typed accessors on File rather than by string where you can.
+func (b *Body) Blocks() []Block {
+	var out []Block
 	for _, item := range b.items {
-		blk, ok := item.(*Block)
-		if !ok || (blockType != "" && blk.Type != blockType) {
-			continue
+		if blk, ok := item.(Block); ok {
+			out = append(out, blk)
 		}
-		out = append(out, blk)
 	}
 	return out
 }
 
-// Block returns the first block matching a type and labels, or nil.
-// Passing fewer labels than the block has matches on the prefix, so
-// Block("resource", "aws_s3_bucket") finds the first bucket.
-func (b *Body) Block(blockType string, labels ...string) *Block {
-	for _, blk := range b.Blocks(blockType) {
-		if len(labels) > len(blk.Labels) {
+// blocksOfType is the shared lookup behind the typed accessors: every
+// block whose keyword matches and whose leading labels match those
+// given. A label given as "" matches anything in that position.
+func (b *Body) blocksOfType(blockType string, labels ...string) []Block {
+	var out []Block
+	for _, blk := range b.Blocks() {
+		if blk.BlockType() != blockType {
+			continue
+		}
+		have := blk.Labels()
+		if len(labels) > len(have) {
 			continue
 		}
 		match := true
-		for i, l := range labels {
-			if blk.Labels[i] != l {
+		for i, want := range labels {
+			if want != "" && have[i] != want {
 				match = false
 				break
 			}
 		}
 		if match {
-			return blk
+			out = append(out, blk)
 		}
 	}
-	return nil
+	return out
+}
+
+func (b *Body) firstOfType(blockType string, labels ...string) Block {
+	found := b.blocksOfType(blockType, labels...)
+	if len(found) == 0 {
+		return nil
+	}
+	return found[0]
 }
 
 // Attributes returns the body's attributes in source order.
@@ -98,72 +84,11 @@ func (b *Body) Comments() []*Comment {
 	return out
 }
 
-// ---- Terraform shorthands ---------------------------------------------
+// ---- editing a body ----------------------------------------------------
 
-// Resources returns every `resource` block, optionally filtered to one
-// resource type.
-func (f *File) Resources(resourceType string) []*Block {
-	return f.byTypeAndFirstLabel("resource", resourceType)
-}
-
-// Resource returns `resource "type" "name"`, or nil.
-func (f *File) Resource(resourceType, name string) *Block {
-	return f.body.Block("resource", resourceType, name)
-}
-
-// DataSources returns every `data` block, optionally filtered by type.
-func (f *File) DataSources(dataType string) []*Block {
-	return f.byTypeAndFirstLabel("data", dataType)
-}
-
-// DataSource returns `data "type" "name"`, or nil.
-func (f *File) DataSource(dataType, name string) *Block { return f.body.Block("data", dataType, name) }
-
-// Modules returns every `module` block.
-func (f *File) Modules() []*Block { return f.body.Blocks("module") }
-
-// Module returns `module "name"`, or nil.
-func (f *File) Module(name string) *Block { return f.body.Block("module", name) }
-
-// Variables returns every `variable` block.
-func (f *File) Variables() []*Block { return f.body.Blocks("variable") }
-
-// Variable returns `variable "name"`, or nil.
-func (f *File) Variable(name string) *Block { return f.body.Block("variable", name) }
-
-// Outputs returns every `output` block.
-func (f *File) Outputs() []*Block { return f.body.Blocks("output") }
-
-// Output returns `output "name"`, or nil.
-func (f *File) Output(name string) *Block { return f.body.Block("output", name) }
-
-// Providers returns every `provider` block.
-func (f *File) Providers() []*Block { return f.body.Blocks("provider") }
-
-// Locals returns every `locals` block. Terraform allows more than one.
-func (f *File) Locals() []*Block { return f.body.Blocks("locals") }
-
-// Terraform returns the `terraform` settings block, or nil.
-func (f *File) Terraform() *Block { return f.body.Block("terraform") }
-
-func (f *File) byTypeAndFirstLabel(blockType, first string) []*Block {
-	all := f.body.Blocks(blockType)
-	if first == "" {
-		return all
-	}
-	var out []*Block
-	for _, blk := range all {
-		if len(blk.Labels) > 0 && blk.Labels[0] == first {
-			out = append(out, blk)
-		}
-	}
-	return out
-}
-
-// ---- editing -----------------------------------------------------------
-
-// SetAttribute sets an attribute's expression, adding it at the end of
-// the body when it is not already there. expr is raw source text.
+// SetAttribute sets an attribute's expression, appending it when it is
+// not already present. expr is raw source text, so the caller decides
+// between a literal and an expression.
 func (b *Body) SetAttribute(name, expr string) *Attribute {
 	if attr := b.Attribute(name); attr != nil {
 		attr.SetExpr(expr)
@@ -176,9 +101,9 @@ func (b *Body) SetAttribute(name, expr string) *Attribute {
 }
 
 // RemoveAttribute drops the named attribute, reporting whether it was
-// there. A comment sitting above it is left alone: it may have been
-// describing the block rather than the attribute, and dropping someone's
-// note is worse than leaving one that reads oddly.
+// there. A comment above it is left alone: it may describe the block
+// rather than the attribute, and dropping someone's note is worse than
+// leaving one that reads oddly.
 func (b *Body) RemoveAttribute(name string) bool {
 	for i, item := range b.items {
 		attr, ok := item.(*Attribute)
@@ -192,35 +117,6 @@ func (b *Body) RemoveAttribute(name string) bool {
 	return false
 }
 
-// AppendBlock adds a block at the end of the body and returns it.
-func (b *Body) AppendBlock(blockType string, labels ...string) *Block {
-	blk := &Block{
-		Type:   blockType,
-		Labels: append([]string(nil), labels...),
-		body:   &Body{src: b.src, dirty: true},
-	}
-	b.items = append(b.items, blk)
-	b.dirty = true
-	return blk
-}
-
-// RemoveBlock drops the first block matching a type and labels,
-// reporting whether it was there.
-func (b *Body) RemoveBlock(blockType string, labels ...string) bool {
-	target := b.Block(blockType, labels...)
-	if target == nil {
-		return false
-	}
-	for i, item := range b.items {
-		if item == Item(target) {
-			b.items = append(b.items[:i], b.items[i+1:]...)
-			b.dirty = true
-			return true
-		}
-	}
-	return false
-}
-
 // AppendComment adds a comment at the end of the body.
 func (b *Body) AppendComment(text string) *Comment {
 	c := &Comment{Text: text}
@@ -229,17 +125,303 @@ func (b *Body) AppendComment(text string) *Comment {
 	return c
 }
 
-// AppendBlock on a File is shorthand for the top-level body, and
-// rejects a block type Terraform does not have or a label count it would
-// not accept — the mistakes that otherwise surface as a file Terraform
-// refuses to load.
-func (f *File) AppendBlock(blockType string, labels ...string) (*Block, error) {
-	want, known := BlockLabels[blockType]
-	if !known {
-		return nil, fmt.Errorf("tfwrite: %q is not a Terraform block type", blockType)
+// RemoveBlock drops a block, reporting whether it was there.
+func (b *Body) RemoveBlock(target Block) bool {
+	for i, item := range b.items {
+		if blk, ok := item.(Block); ok && blk == target {
+			b.items = append(b.items[:i], b.items[i+1:]...)
+			b.dirty = true
+			return true
+		}
 	}
-	if len(labels) != want {
-		return nil, fmt.Errorf("tfwrite: %s takes %d label(s), got %d", blockType, want, len(labels))
-	}
-	return f.body.AppendBlock(blockType, labels...), nil
+	return false
 }
+
+// appendBlock adds a block of the given shape and returns it.
+func (b *Body) appendBlock(blockType string, labels ...string) Block {
+	blk := newBlock(blockType, append([]string(nil), labels...), &Body{src: b.src, dirty: true}, srcSpan{})
+	b.items = append(b.items, blk)
+	b.dirty = true
+	return blk
+}
+
+// NestedBlock adds a block inside this body — lifecycle, connection,
+// validation, provisioner and the rest, whose shapes belong to their
+// parent rather than to the file.
+func (b *Body) NestedBlock(blockType string, labels ...string) *Generic {
+	blk := newBlock(blockType, append([]string(nil), labels...), &Body{src: b.src, dirty: true}, srcSpan{})
+	b.items = append(b.items, blk)
+	b.dirty = true
+	if g, ok := blk.(*Generic); ok {
+		return g
+	}
+	// A modelled keyword used as a nested block still reads generically.
+	return &Generic{*blockBase(blk)}
+}
+
+// ---- the typed accessors -----------------------------------------------
+//
+// One pair per block type, each taking exactly the labels that block
+// has. The lookup returns nil when there is no such block; the Add form
+// always returns one. There is no way to ask for a resource with one
+// label or a provider with two, which is the point of modelling them
+// separately rather than passing a slice.
+
+// Resource returns `resource "type" "name"`, or nil.
+func (f *File) Resource(resourceType, name string) *Resource {
+	blk := f.body.firstOfType("resource", resourceType, name)
+	if blk == nil {
+		return nil
+	}
+	return blk.(*Resource)
+}
+
+// Resources returns every resource, or every one of a type when
+// resourceType is given.
+func (f *File) Resources(resourceType string) []*Resource {
+	var out []*Resource
+	for _, blk := range f.body.blocksOfType("resource", resourceType) {
+		out = append(out, blk.(*Resource))
+	}
+	return out
+}
+
+// AddResource appends `resource "type" "name"`.
+func (f *File) AddResource(resourceType, name string) *Resource {
+	return f.body.appendBlock("resource", resourceType, name).(*Resource)
+}
+
+// DataSource returns `data "type" "name"`, or nil.
+func (f *File) DataSource(dataType, name string) *DataSource {
+	blk := f.body.firstOfType("data", dataType, name)
+	if blk == nil {
+		return nil
+	}
+	return blk.(*DataSource)
+}
+
+// DataSources returns every data block, optionally filtered by type.
+func (f *File) DataSources(dataType string) []*DataSource {
+	var out []*DataSource
+	for _, blk := range f.body.blocksOfType("data", dataType) {
+		out = append(out, blk.(*DataSource))
+	}
+	return out
+}
+
+// AddDataSource appends `data "type" "name"`.
+func (f *File) AddDataSource(dataType, name string) *DataSource {
+	return f.body.appendBlock("data", dataType, name).(*DataSource)
+}
+
+// Provider returns `provider "name"`, or nil. One label, not two: the
+// provider's local name.
+func (f *File) Provider(name string) *Provider {
+	blk := f.body.firstOfType("provider", name)
+	if blk == nil {
+		return nil
+	}
+	return blk.(*Provider)
+}
+
+// Providers returns every provider block. More than one may share a
+// name, distinguished by `alias`.
+func (f *File) Providers() []*Provider {
+	var out []*Provider
+	for _, blk := range f.body.blocksOfType("provider") {
+		out = append(out, blk.(*Provider))
+	}
+	return out
+}
+
+// AddProvider appends `provider "name"`.
+func (f *File) AddProvider(name string) *Provider {
+	return f.body.appendBlock("provider", name).(*Provider)
+}
+
+// Variable returns `variable "name"`, or nil.
+func (f *File) Variable(name string) *Variable {
+	blk := f.body.firstOfType("variable", name)
+	if blk == nil {
+		return nil
+	}
+	return blk.(*Variable)
+}
+
+// Variables returns every variable block.
+func (f *File) Variables() []*Variable {
+	var out []*Variable
+	for _, blk := range f.body.blocksOfType("variable") {
+		out = append(out, blk.(*Variable))
+	}
+	return out
+}
+
+// AddVariable appends `variable "name"`.
+func (f *File) AddVariable(name string) *Variable {
+	return f.body.appendBlock("variable", name).(*Variable)
+}
+
+// Output returns `output "name"`, or nil.
+func (f *File) Output(name string) *Output {
+	blk := f.body.firstOfType("output", name)
+	if blk == nil {
+		return nil
+	}
+	return blk.(*Output)
+}
+
+// Outputs returns every output block.
+func (f *File) Outputs() []*Output {
+	var out []*Output
+	for _, blk := range f.body.blocksOfType("output") {
+		out = append(out, blk.(*Output))
+	}
+	return out
+}
+
+// AddOutput appends `output "name"`.
+func (f *File) AddOutput(name string) *Output {
+	return f.body.appendBlock("output", name).(*Output)
+}
+
+// Module returns `module "name"`, or nil.
+func (f *File) Module(name string) *Module {
+	blk := f.body.firstOfType("module", name)
+	if blk == nil {
+		return nil
+	}
+	return blk.(*Module)
+}
+
+// Modules returns every module block.
+func (f *File) Modules() []*Module {
+	var out []*Module
+	for _, blk := range f.body.blocksOfType("module") {
+		out = append(out, blk.(*Module))
+	}
+	return out
+}
+
+// AddModule appends `module "name"`.
+func (f *File) AddModule(name string) *Module {
+	return f.body.appendBlock("module", name).(*Module)
+}
+
+// Check returns `check "name"`, or nil.
+func (f *File) Check(name string) *Check {
+	blk := f.body.firstOfType("check", name)
+	if blk == nil {
+		return nil
+	}
+	return blk.(*Check)
+}
+
+// Checks returns every check block.
+func (f *File) Checks() []*Check {
+	var out []*Check
+	for _, blk := range f.body.blocksOfType("check") {
+		out = append(out, blk.(*Check))
+	}
+	return out
+}
+
+// AddCheck appends `check "name"`.
+func (f *File) AddCheck(name string) *Check {
+	return f.body.appendBlock("check", name).(*Check)
+}
+
+// Ephemeral returns `ephemeral "type" "name"`, or nil.
+func (f *File) Ephemeral(ephemeralType, name string) *Ephemeral {
+	blk := f.body.firstOfType("ephemeral", ephemeralType, name)
+	if blk == nil {
+		return nil
+	}
+	return blk.(*Ephemeral)
+}
+
+// AddEphemeral appends `ephemeral "type" "name"`.
+func (f *File) AddEphemeral(ephemeralType, name string) *Ephemeral {
+	return f.body.appendBlock("ephemeral", ephemeralType, name).(*Ephemeral)
+}
+
+// Action returns `action "type" "name"`, or nil.
+func (f *File) Action(actionType, name string) *Action {
+	blk := f.body.firstOfType("action", actionType, name)
+	if blk == nil {
+		return nil
+	}
+	return blk.(*Action)
+}
+
+// AddAction appends `action "type" "name"`.
+func (f *File) AddAction(actionType, name string) *Action {
+	return f.body.appendBlock("action", actionType, name).(*Action)
+}
+
+// Terraform returns the `terraform` settings block, or nil. No labels.
+func (f *File) Terraform() *Terraform {
+	blk := f.body.firstOfType("terraform")
+	if blk == nil {
+		return nil
+	}
+	return blk.(*Terraform)
+}
+
+// AddTerraform appends a `terraform` block.
+func (f *File) AddTerraform() *Terraform {
+	return f.body.appendBlock("terraform").(*Terraform)
+}
+
+// Locals returns every `locals` block; Terraform allows more than one.
+func (f *File) Locals() []*Locals {
+	var out []*Locals
+	for _, blk := range f.body.blocksOfType("locals") {
+		out = append(out, blk.(*Locals))
+	}
+	return out
+}
+
+// AddLocals appends a `locals` block.
+func (f *File) AddLocals() *Locals {
+	return f.body.appendBlock("locals").(*Locals)
+}
+
+// Moved returns every `moved` block.
+func (f *File) Moved() []*Moved {
+	var out []*Moved
+	for _, blk := range f.body.blocksOfType("moved") {
+		out = append(out, blk.(*Moved))
+	}
+	return out
+}
+
+// AddMoved appends a `moved` block.
+func (f *File) AddMoved() *Moved { return f.body.appendBlock("moved").(*Moved) }
+
+// Removed returns every `removed` block.
+func (f *File) Removed() []*Removed {
+	var out []*Removed
+	for _, blk := range f.body.blocksOfType("removed") {
+		out = append(out, blk.(*Removed))
+	}
+	return out
+}
+
+// AddRemoved appends a `removed` block.
+func (f *File) AddRemoved() *Removed { return f.body.appendBlock("removed").(*Removed) }
+
+// Imports returns every `import` block.
+func (f *File) Imports() []*Import {
+	var out []*Import
+	for _, blk := range f.body.blocksOfType("import") {
+		out = append(out, blk.(*Import))
+	}
+	return out
+}
+
+// AddImport appends an `import` block.
+func (f *File) AddImport() *Import { return f.body.appendBlock("import").(*Import) }
+
+// Blocks returns every top-level block, whatever its type.
+func (f *File) Blocks() []Block { return f.body.Blocks() }

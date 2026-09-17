@@ -91,7 +91,7 @@ func (s *TFWriteSuite) TestRenameResourceKeepsItsBody() {
 	f, err := Parse([]byte(messyFile), "main.tf")
 	s.Require().NoError(err)
 
-	f.Resource("aws_s3_bucket", "logs").SetLabels([]string{"aws_s3_bucket", "build_logs"})
+	f.Resource("aws_s3_bucket", "logs").SetName("build_logs")
 	out := f.String()
 
 	s.Contains(out, `resource "aws_s3_bucket" "build_logs" {`)
@@ -118,9 +118,7 @@ func (s *TFWriteSuite) TestAddAndRemove() {
 	f, err := Parse([]byte(messyFile), "main.tf")
 	s.Require().NoError(err)
 
-	blk, err := f.AppendBlock("output", "bucket_name")
-	s.Require().NoError(err)
-	blk.Body().SetAttribute("value", "aws_s3_bucket.logs.id")
+	f.AddOutput("bucket_name").Body().SetAttribute("value", "aws_s3_bucket.logs.id")
 
 	s.True(f.Module("network").Body().RemoveAttribute("source"))
 
@@ -135,32 +133,67 @@ func (s *TFWriteSuite) TestAddAndRemove() {
 	s.Equal(out, again.String())
 }
 
-// TestAppendBlockRejectsBadShape is the Terraform coupling earning its
-// keep: hclwrite would accept either of these and produce a file
-// Terraform refuses to load.
-func (s *TFWriteSuite) TestAppendBlockRejectsBadShape() {
-	f, err := Parse([]byte(messyFile), "main.tf")
+// TestEachBlockTypeHasItsOwnLabels is the reason the block types are
+// separate structs. Terraform does not give blocks a uniform label
+// shape, so neither does this: a resource has a type and a name, a
+// provider only a name, locals neither, and a backend's single label is
+// a type rather than a name.
+//
+// The shapes a generic API lets you build wrong — a resource with one
+// label, a provider with two — are not expressible here at all. There is
+// no test for rejecting them because there is no call that produces one.
+func (s *TFWriteSuite) TestEachBlockTypeHasItsOwnLabels() {
+	f, err := Parse([]byte("locals {}\n"), "main.tf")
 	s.Require().NoError(err)
 
-	_, err = f.AppendBlock("provisioner", "local-exec")
-	s.Require().Error(err, "provisioner is not a top-level block")
-	s.Contains(err.Error(), "not a Terraform block type")
+	r := f.AddResource("aws_s3_bucket", "logs")
+	s.Equal("aws_s3_bucket", r.ResourceType())
+	s.Equal("logs", r.Name())
 
-	_, err = f.AppendBlock("resource", "aws_s3_bucket")
-	s.Require().Error(err, "resource takes two labels")
-	s.Contains(err.Error(), "takes 2 label(s), got 1")
+	p := f.AddProvider("aws")
+	s.Equal("aws", p.Name())
+
+	v := f.AddVariable("region")
+	s.Equal("region", v.Name())
+
+	s.Require().Len(f.Locals(), 1, "the parsed locals block came through as its own type")
+
+	m := f.AddModule("network")
+	m.Body().SetAttribute("source", `"./modules/network"`)
+	s.Equal("./modules/network", m.Source(), "a modelled block can read its own key attribute")
+
+	out := f.String()
+	s.Contains(out, `resource "aws_s3_bucket" "logs" {`)
+	s.Contains(out, `provider "aws" {`)
+	s.Contains(out, `variable "region" {`)
+	s.Contains(out, `module "network" {`)
+
+	again, err := Parse([]byte(out), "main.tf")
+	s.Require().NoError(err)
+	s.Equal(out, again.String())
 }
 
-// TestBlockLabelsMatchTerraform pins the table against the counts
-// Terraform's own configFileSchema declares, since it cannot be
-// imported and so can only be copied.
-func (s *TFWriteSuite) TestBlockLabelsMatchTerraform() {
-	s.Equal(map[string]int{
-		"terraform": 0, "locals": 0, "moved": 0, "removed": 0, "import": 0,
-		"provider": 1, "variable": 1, "output": 1, "module": 1, "check": 1,
-		"resource": 2, "data": 2, "ephemeral": 2, "action": 2,
-	}, BlockLabels)
-	s.NotContains(BlockLabels, "provisioner")
+// TestUnmodelledBlocksStayEditable covers the escape hatch: a nested
+// block, or one Terraform adds after this was written, still parses and
+// round-trips rather than failing.
+func (s *TFWriteSuite) TestUnmodelledBlocksStayEditable() {
+	src := `resource "aws_instance" "web" {
+  provisioner "local-exec" {
+    command = "echo hi"
+  }
+}
+`
+	f, err := Parse([]byte(src), "main.tf")
+	s.Require().NoError(err)
+	s.Equal(src, f.String())
+
+	web := f.Resource("aws_instance", "web")
+	s.Require().NotNil(web)
+	nested := web.Body().Blocks()
+	s.Require().Len(nested, 1)
+	s.Equal("provisioner", nested[0].BlockType())
+	s.Equal([]string{"local-exec"}, nested[0].Labels())
+	s.IsType(&Generic{}, nested[0], "an unmodelled block is Generic, not an error")
 }
 
 // TestTreeSurvivesJSON is what the JS layer depends on: the tree can go

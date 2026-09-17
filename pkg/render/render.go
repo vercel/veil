@@ -157,9 +157,10 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 	// what folds those in.
 	bundle := make(hook.Bundle, len(loaded.Files))
 	for _, src := range loaded.Files {
-		// A file is typed — and validated on write — exactly when its
-		// kind declared a schema for it. Everything else stays a string
-		// the hook can do what it likes with.
+		// A file is typed — and validated on write — when its kind
+		// declared a schema for it, and .tf is typed on extension alone.
+		// Everything else stays a string the hook can do what it likes
+		// with.
 		entry := hook.File{
 			Path:    src.GetPath(),
 			Content: src.GetContents(),
@@ -172,6 +173,12 @@ func renderResource(r *resource.Resource, root string, opts *Options) (*Rendered
 		if loaded.HasSourceSchema(src.GetPath()) {
 			entry.Type = sourceContentType(src.GetPath())
 			entry.MustValidate = true
+		} else if isTerraformSourcePath(src.GetPath()) {
+			// Terraform is typed on extension alone. A .tf read as a
+			// string is a hook doing regexes over HCL, which is the
+			// thing the tree exists to replace; and there is no JSON
+			// Schema to validate HCL against, so no MustValidate.
+			entry.Type = hook.ContentTerraform
 		}
 		bundle[src.GetPath()] = entry
 	}
@@ -626,6 +633,8 @@ func kindFiles(k *registry.LoadedKind) hook.Bundle {
 		if k.HasSourceSchema(f.GetPath()) {
 			entry.Type = sourceContentType(f.GetPath())
 			entry.MustValidate = true
+		} else if isTerraformSourcePath(f.GetPath()) {
+			entry.Type = hook.ContentTerraform
 		}
 		out[f.GetPath()] = entry
 	}
@@ -798,10 +807,22 @@ func cwdFromCtx(ctx any) string {
 // sourceContentType maps a source path to the encoding its bytes use,
 // the same extension rule build and the pre-render gate follow.
 func sourceContentType(p string) hook.ContentType {
-	if isYAMLSourcePath(p) {
+	switch {
+	case isTerraformSourcePath(p):
+		return hook.ContentTerraform
+	case isYAMLSourcePath(p):
 		return hook.ContentYAML
+	default:
+		return hook.ContentJSON
 	}
-	return hook.ContentJSON
+}
+
+// isTerraformSourcePath reports whether a file is Terraform the hook
+// runtime should hand over as a tree. .tf.json is deliberately not
+// included: it is already JSON, and a hook reading it as an object is
+// reading it the way Terraform does.
+func isTerraformSourcePath(p string) bool {
+	return strings.HasSuffix(strings.ToLower(p), ".tf")
 }
 
 // sourceValidator is the check a SourceFile runs before it stores a

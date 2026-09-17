@@ -101,15 +101,15 @@ func (a *Attribute) print(src []byte, _ int, out *strings.Builder) {
 	out.WriteString(a.Expr)
 }
 
-func (b *Block) print(src []byte, indent int, out *strings.Builder) {
+func (b *block) print(src []byte, indent int, out *strings.Builder) {
 	// An untouched block prints as it was, nested contents included.
 	if b.sp.valid && !b.labelsChanged && !b.body.modified() {
 		out.WriteString(string(src[b.sp.start:b.sp.end]))
 		return
 	}
 
-	out.WriteString(b.Type)
-	for _, l := range b.Labels {
+	out.WriteString(b.blockType)
+	for _, l := range b.labels {
 		out.WriteString(" ")
 		out.WriteString(quoteLabel(l))
 	}
@@ -137,8 +137,9 @@ func (b *Body) modified() bool {
 			if !v.sp.valid {
 				return true
 			}
-		case *Block:
-			if v.labelsChanged || !v.sp.valid || v.body.modified() {
+		case Block:
+			base := blockBase(v)
+			if base.labelsChanged || !base.sp.valid || base.body.modified() {
 				return true
 			}
 		}
