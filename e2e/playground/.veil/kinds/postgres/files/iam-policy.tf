@@ -13,3 +13,5 @@ resource "aws_iam_policy" "db_access" {
     }]
   })
 }
+
+
