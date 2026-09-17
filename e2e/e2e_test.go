@@ -829,8 +829,9 @@ func (s *E2ESuite) TestDependentHookShipsItsOwnFileToTheConsumer() {
 	s.Contains(policy, `name = "orders-db-access"`, "templated with the database's name")
 	s.Contains(policy, "arn:aws:rds-db:us-east-1:acme:dbuser:orders-db/*",
 		"and with the render's region")
-	s.NotContains(policy, "DB_NAME", "no placeholder should survive")
-	s.NotContains(policy, "REGION")
+	s.NotContains(policy, "PLACEHOLDER", "no placeholder should survive")
+	s.Contains(policy, "policy = jsonencode(",
+		"the expression round-tripped through the terraform codec unquoted")
 
 	// It arrives through a forwarded edge too — checkout reaches
 	// orders-db via the platform, not by declaring it.

@@ -1150,3 +1150,67 @@ export default h;
 	s.Require().Error(err)
 	s.Contains(err.Error(), "replicas must be a number")
 }
+
+// TestStdTerraformRoundTrip drives the HCL codec through the real
+// runtime: a hook reads a .tf file as data, changes a field, and writes
+// it back as HCL.
+func (s *HookSuite) TestStdTerraformRoundTrip() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    const tf = ctx.std.terraform.parse(fs.get("main.tf").getContent());
+    const body = tf.resource.aws_iam_policy.db[0];
+    fs.add("name.txt", body.name);
+    // An expression survives as an interpolation string.
+    fs.add("expr.txt", body.tags.env);
+    body.name = "renamed";
+    fs.get("main.tf").setContent(ctx.std.terraform.stringify(tf));
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code)
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	src := "resource \"aws_iam_policy\" \"db\" {\n  name = \"orders-db-access\"\n  tags = { env = var.environment }\n}\n"
+	bundle := Bundle{"main.tf": File{Path: "main.tf", Content: src, Render: true}}
+	out, err := hk.RenderHook(map[string]any{}, bundle)
+	s.Require().NoError(err)
+
+	s.Equal("orders-db-access", out["name.txt"].Content)
+	s.Equal("${var.environment}", out["expr.txt"].Content,
+		"an unevaluated expression reads back as an interpolation string")
+
+	rendered := out["main.tf"].Content
+	s.Contains(rendered, `name = "renamed"`)
+	s.Contains(rendered, "env = var.environment",
+		"and is written back as an expression, not a quoted string")
+}
+
+// TestStdTerraformRejectsMalformed keeps the failure surfacing as a
+// throw the hook author can see, rather than silently producing nothing.
+func (s *HookSuite) TestStdTerraformRejectsMalformed() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    try {
+      ctx.std.terraform.parse('resource "x" {');
+      fs.add("result.txt", "no error");
+    } catch (e) {
+      fs.add("result.txt", "threw");
+    }
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code)
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	out, err := hk.RenderHook(map[string]any{}, Bundle{})
+	s.Require().NoError(err)
+	s.Equal("threw", out["result.txt"].Content)
+}

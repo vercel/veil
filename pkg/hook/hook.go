@@ -22,6 +22,7 @@ import (
 	"github.com/fastschema/qjs"
 	"github.com/go-sourcemap/sourcemap"
 	"github.com/goccy/go-json"
+	"github.com/vercel/veil/pkg/codec"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -715,6 +716,26 @@ func installHostFuncs(rt *qjs.Runtime, cfg options) error {
 	if err != nil {
 		return fmt.Errorf("wrapping yaml.stringify: %w", err)
 	}
+	tfParseFn, err := qjs.FuncToJS(rt.Context(), func(s string) (string, error) {
+		out, err := codec.HCLToJSON([]byte(s), "hook.tf")
+		if err != nil {
+			return "", fmt.Errorf("terraform.parse: %w", err)
+		}
+		return string(out), nil
+	})
+	if err != nil {
+		return fmt.Errorf("wrapping terraform.parse: %w", err)
+	}
+	tfStringifyFn, err := qjs.FuncToJS(rt.Context(), func(jsonStr string) (string, error) {
+		out, err := codec.JSONToHCL([]byte(jsonStr))
+		if err != nil {
+			return "", fmt.Errorf("terraform.stringify: %w", err)
+		}
+		return string(out), nil
+	})
+	if err != nil {
+		return fmt.Errorf("wrapping terraform.stringify: %w", err)
+	}
 	validateFn, err := qjs.FuncToJS(rt.Context(), func(kind, resource, path, contents string) (string, error) {
 		if cfg.validateSource == nil {
 			return "", nil
@@ -733,6 +754,8 @@ func installHostFuncs(rt *qjs.Runtime, cfg options) error {
 	global.SetPropertyStr("__veilFetch", fetchFn)
 	global.SetPropertyStr("__veilYamlParse", parseFn)
 	global.SetPropertyStr("__veilYamlStringify", stringifyFn)
+	global.SetPropertyStr("__veilTerraformParse", tfParseFn)
+	global.SetPropertyStr("__veilTerraformStringify", tfStringifyFn)
 	global.SetPropertyStr("__veilValidateSource", validateFn)
 	return nil
 }
@@ -913,6 +936,8 @@ const hostNamespaceJS = `
 
   var nativeYamlParse = globalThis.__veilYamlParse;
   var nativeYamlStringify = globalThis.__veilYamlStringify;
+  var nativeTerraformParse = globalThis.__veilTerraformParse;
+  var nativeTerraformStringify = globalThis.__veilTerraformStringify;
   var nativeValidateSource = globalThis.__veilValidateSource;
 
   var yamlCodec = {
@@ -925,10 +950,26 @@ const hostNamespaceJS = `
     }
   };
 
+  // Terraform is a configuration language rather than a data format, so
+  // the object here is the one Terraform itself defines for .tf.json:
+  // the same configuration, spelled as data. Expressions survive as
+  // "${...}" strings and are written back unquoted; comments do not
+  // survive, having nowhere to live in between.
+  var terraformCodec = {
+    parse: function(s) {
+      if (s == null) throw new Error('std.terraform.parse: input is required');
+      return JSON.parse(nativeTerraformParse(String(s)));
+    },
+    stringify: function(value) {
+      return nativeTerraformStringify(JSON.stringify(value == null ? null : value));
+    }
+  };
+
   var stdProxy = {
-    loadFile: function(path) { return nativeStd.loadFile(path); },
-    getenv:   function(name) { return nativeStd.getenv(name); },
-    yaml:     yamlCodec
+    loadFile:  function(path) { return nativeStd.loadFile(path); },
+    getenv:    function(name) { return nativeStd.getenv(name); },
+    yaml:      yamlCodec,
+    terraform: terraformCodec
   };
   var osProxy = {
     readdir:  function(p) { return nativeOs.readdir(p); },

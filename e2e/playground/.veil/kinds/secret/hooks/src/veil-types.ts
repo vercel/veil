@@ -22,6 +22,22 @@ export interface YamlCodec {
   stringify(value: unknown): string;
 }
 
+export interface TerraformCodec {
+  /** Parse HCL into the object Terraform itself defines for .tf.json —
+   *  the same configuration, spelled as data. Blocks nest by type and
+   *  label, so resource.aws_s3_bucket.logs is an array of bodies, and
+   *  expressions are not evaluated: var.region arrives as the string
+   *  "${var.region}". Comments are not represented. Throws on malformed
+   *  HCL. */
+  parse(s: string): unknown;
+  /** Serialize that object back to native HCL. A string that is one
+   *  whole interpolation is written unquoted, so "${var.region}" goes
+   *  back out as an expression. Output is canonically formatted, and
+   *  comments from the original source are not restored, parse having
+   *  dropped them. */
+  stringify(value: unknown): string;
+}
+
 export interface Std {
   /** Read the entire file as a string, or null on failure. The path is
    *  resolved relative to the veil project root — the first ancestor
@@ -34,6 +50,9 @@ export interface Std {
    *  by gopkg.in/yaml.v3 on the host side. JSON is available via the
    *  native JSON global. */
   yaml: YamlCodec;
+  /** Terraform/HCL codec, for reading and writing .tf as data rather
+   *  than as text. Backed by hashicorp/hcl on the host side. */
+  terraform: TerraformCodec;
 }
 
 /** File metadata returned by os.stat / os.lstat. All values are numbers. */

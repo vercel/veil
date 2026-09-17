@@ -1009,6 +1009,35 @@ should use. The full surface is declared as `Std` and `Os` in the generated `vei
 If a hook needs to *produce* a file, it should do so via `fs.add(path, content)` so the file flows
 through the rest of the pipeline and lands in the render output — not via direct host I/O.
 
+#### `ctx.std.yaml` and `ctx.std.terraform` — codecs
+
+Both are `parse` / `stringify` pairs backed by the host, so a hook can work with a config format as
+data without an npm dependency. JSON needs neither: QuickJS's own `JSON` global is faster than a trip
+across the Wasm boundary.
+
+```ts
+const doc = ctx.std.yaml.parse(file.getContent());
+const tf  = ctx.std.terraform.parse(file.getContent());
+```
+
+YAML is a data format, so its round trip is unremarkable. Terraform is not — it is a language, with
+expressions, references and comments. `std.terraform` therefore maps to the object **Terraform itself
+defines for `.tf.json`**: the same configuration, spelled as data. Blocks nest by type and label, so
+`resource.aws_s3_bucket.logs` is an array of bodies, and a zero-label block like `locals` nests as a
+body list too.
+
+Two consequences follow from that, and they are worth knowing before reaching for it:
+
+- **Expressions are not evaluated.** `var.region` parses to the string `"${var.region}"`, and a string
+  that is one whole interpolation is written back out unquoted, as the expression it was. So reading a
+  field, changing it and writing it back preserves references rather than freezing them into literals.
+- **Comments do not survive.** JSON has nowhere to put them, so a parse/stringify cycle drops them and
+  reformats canonically. For editing config a kind ships, that is usually fine; for rewriting a file a
+  human maintains, prefer text edits.
+
+A parse/stringify/parse cycle is stable, so a file a hook reads and writes back without changing
+anything does not drift between renders.
+
 #### `ctx.fetch` — Web Fetch HTTP client
 
 ```ts
