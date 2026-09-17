@@ -117,6 +117,7 @@ func buildBody(src []byte, syntax *hclsyntax.Body, comments []*Comment, bodyEnd 
 
 	sort.SliceStable(placedItems, func(i, j int) bool { return placedItems[i].start < placedItems[j].start })
 	for _, p := range placedItems {
+		adopt(b, p.item)
 		b.items = append(b.items, p.item)
 	}
 	return b
@@ -127,4 +128,17 @@ func trimTrailingNewline(s string) string {
 		s = s[:len(s)-1]
 	}
 	return s
+}
+
+// adopt records which body an item belongs to, so the item can remove
+// itself later.
+func adopt(b *Body, item Item) {
+	switch v := item.(type) {
+	case *Comment:
+		v.parent = b
+	case *Attribute:
+		v.parent = b
+	case Block:
+		blockBase(v).parent = b
+	}
 }

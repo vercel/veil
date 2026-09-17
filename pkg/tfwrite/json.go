@@ -102,16 +102,20 @@ func unmarshalBody(src []byte, items []*jsonItem, dirty bool) (*Body, error) {
 		}
 		switch it.Kind {
 		case "comment":
-			b.items = append(b.items, &Comment{Text: it.Text, sp: sp})
+			c := &Comment{Text: it.Text, sp: sp, parent: b}
+			b.items = append(b.items, c)
 		case "attribute":
-			b.items = append(b.items, &Attribute{Name: it.Name, Expr: it.Expr, sp: sp, changed: it.Changed})
+			b.items = append(b.items, &Attribute{
+				Name: it.Name, Expr: it.Expr, sp: sp, changed: it.Changed, parent: b,
+			})
 		case "block":
 			inner, err := unmarshalBody(src, it.Items, it.Changed)
 			if err != nil {
 				return nil, err
 			}
 			blk := newBlock(it.Type, it.Labels, inner, sp)
-			blockBase(blk).labelsChanged = it.Changed
+			base := blockBase(blk)
+			base.labelsChanged, base.parent = it.Changed, b
 			b.items = append(b.items, blk)
 		default:
 			return nil, fmt.Errorf("tfwrite: unknown item kind %q", it.Kind)

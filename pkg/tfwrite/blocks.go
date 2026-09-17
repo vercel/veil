@@ -135,39 +135,64 @@ func (g *Generic) SetLabels(labels []string) {
 // than an error, so an unfamiliar file still parses and round-trips.
 func newBlock(blockType string, labels []string, body *Body, sp srcSpan) Block {
 	b := block{blockType: blockType, labels: labels, body: body, sp: sp}
+	var made Block
 	switch blockType {
 	case "resource":
-		return &Resource{b}
+		made = &Resource{b}
 	case "data":
-		return &DataSource{b}
+		made = &DataSource{b}
 	case "ephemeral":
-		return &Ephemeral{b}
+		made = &Ephemeral{b}
 	case "action":
-		return &Action{b}
+		made = &Action{b}
 	case "provider":
-		return &Provider{b}
+		made = &Provider{b}
 	case "variable":
-		return &Variable{b}
+		made = &Variable{b}
 	case "output":
-		return &Output{b}
+		made = &Output{b}
 	case "module":
-		return &Module{b}
+		made = &Module{b}
 	case "check":
-		return &Check{b}
+		made = &Check{b}
 	case "terraform":
-		return &Terraform{b}
+		made = &Terraform{b}
 	case "locals":
-		return &Locals{b}
+		made = &Locals{b}
 	case "moved":
-		return &Moved{b}
+		made = &Moved{b}
 	case "removed":
-		return &Removed{b}
+		made = &Removed{b}
 	case "import":
-		return &Import{b}
+		made = &Import{b}
 	default:
-		return &Generic{b}
+		made = &Generic{b}
 	}
+	blockBase(made).self = made
+	return made
 }
+
+// Delete removes the block from the body holding it, reporting whether
+// it was still there. Every block type has one, each with its own nil
+// check: a method promoted from the embedded block would dereference a
+// nil receiver before it could test for one, and a lookup that found
+// nothing returns exactly that. So f.Resource("x", "y").Delete() is
+// safe whether or not the resource exists.
+func (r *Resource) Delete() bool   { return r != nil && r.remove() }
+func (d *DataSource) Delete() bool { return d != nil && d.remove() }
+func (e *Ephemeral) Delete() bool  { return e != nil && e.remove() }
+func (a *Action) Delete() bool     { return a != nil && a.remove() }
+func (p *Provider) Delete() bool   { return p != nil && p.remove() }
+func (v *Variable) Delete() bool   { return v != nil && v.remove() }
+func (o *Output) Delete() bool     { return o != nil && o.remove() }
+func (m *Module) Delete() bool     { return m != nil && m.remove() }
+func (c *Check) Delete() bool      { return c != nil && c.remove() }
+func (t *Terraform) Delete() bool  { return t != nil && t.remove() }
+func (l *Locals) Delete() bool     { return l != nil && l.remove() }
+func (m *Moved) Delete() bool      { return m != nil && m.remove() }
+func (r *Removed) Delete() bool    { return r != nil && r.remove() }
+func (i *Import) Delete() bool     { return i != nil && i.remove() }
+func (g *Generic) Delete() bool    { return g != nil && g.remove() }
 
 // unquote strips surrounding double quotes from an expression that is a
 // plain string literal, leaving anything else alone — a reference has no

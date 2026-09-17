@@ -66,6 +66,18 @@ type srcSpan struct {
 type Comment struct {
 	Text string
 	sp   srcSpan
+	// parent is the body holding this item, so it can remove itself.
+	parent *Body
+}
+
+// Delete removes this comment from the body holding it, reporting
+// whether it was still there. Safe on nil, so the result of a lookup
+// that found nothing can be deleted without a guard.
+func (c *Comment) Delete() bool {
+	if c == nil || c.parent == nil {
+		return false
+	}
+	return c.parent.Remove(c)
 }
 
 func (c *Comment) span() srcSpan { return c.sp }
@@ -78,6 +90,16 @@ type Attribute struct {
 
 	sp      srcSpan
 	changed bool
+	parent  *Body
+}
+
+// Delete removes this attribute from the body holding it, reporting
+// whether it was still there. Safe on nil.
+func (a *Attribute) Delete() bool {
+	if a == nil || a.parent == nil {
+		return false
+	}
+	return a.parent.Remove(a)
 }
 
 func (a *Attribute) span() srcSpan { return a.sp }
@@ -115,6 +137,21 @@ type block struct {
 
 	sp            srcSpan
 	labelsChanged bool
+	parent        *Body
+	// self is the concrete wrapper — *Resource, *Provider — which is
+	// what sits in the parent's item list. The embedded block is not
+	// itself an Item, so removal has to compare against this.
+	self Block
+}
+
+// remove is the shared half of Delete. Each concrete type wraps it with
+// its own nil check, since a method promoted from this embedded struct
+// would dereference a nil block before it could test for one.
+func (b *block) remove() bool {
+	if b.parent == nil {
+		return false
+	}
+	return b.parent.Remove(b.self)
 }
 
 func (b *block) span() srcSpan     { return b.sp }

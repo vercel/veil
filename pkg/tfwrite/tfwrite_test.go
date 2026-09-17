@@ -329,3 +329,75 @@ func (s *TFWriteSuite) TestRemoveMissingIsANoOp() {
 	s.False(f.Body().RemoveComment(nil))
 	s.Equal(messyFile, f.String(), "a failed removal changes nothing")
 }
+
+// TestDeleteOnTheItemItself is the call the API is meant to read as:
+// find a thing and delete it, without naming the body in between.
+func (s *TFWriteSuite) TestDeleteOnTheItemItself() {
+	src := `# Keep.
+resource "aws_s3_bucket" "a" {
+  bucket   = "a"
+  acl      = "private"
+}
+
+# Drop.
+resource "aws_s3_bucket" "b" {
+  bucket = "b"
+}
+
+variable "region" {
+  default = "us-east-1"
+}
+`
+	f, err := Parse([]byte(src), "main.tf")
+	s.Require().NoError(err)
+
+	s.True(f.Resource("aws_s3_bucket", "b").Delete())
+	s.True(f.Variable("region").Delete())
+	s.True(f.Body().Comments()[1].Delete(), "a comment deletes itself the same way")
+	s.True(f.Resource("aws_s3_bucket", "a").Body().Attribute("acl").Delete(),
+		"and so does an attribute, from the body that holds it")
+
+	out := f.String()
+	s.NotContains(out, `"b"`)
+	s.NotContains(out, "Drop.")
+	s.NotContains(out, "region")
+	s.NotContains(out, "acl")
+	s.Contains(out, "# Keep.")
+	s.Contains(out, `bucket   = "a"`, "the attribute left behind keeps its original alignment")
+
+	again, err := Parse([]byte(out), "main.tf")
+	s.Require().NoError(err)
+	s.Equal(out, again.String())
+}
+
+// TestDeleteOnAMissingThingIsSafe is why Delete has a nil check on every
+// type rather than being promoted from the embedded block: a lookup that
+// finds nothing returns a nil pointer, and calling a promoted method on
+// it would dereference before it could test.
+func (s *TFWriteSuite) TestDeleteOnAMissingThingIsSafe() {
+	f, err := Parse([]byte(messyFile), "main.tf")
+	s.Require().NoError(err)
+
+	s.False(f.Resource("aws_s3_bucket", "nope").Delete())
+	s.False(f.Provider("nope").Delete())
+	s.False(f.Variable("nope").Delete())
+	s.False(f.Terraform().Body().Attribute("nope").Delete())
+	s.Equal(messyFile, f.String(), "nothing changed")
+}
+
+// TestDeleteSurvivesTheJSONRoundTrip keeps the parent wiring honest on
+// the far side, where the tree is rebuilt rather than parsed.
+func (s *TFWriteSuite) TestDeleteSurvivesTheJSONRoundTrip() {
+	f, err := Parse([]byte(messyFile), "main.tf")
+	s.Require().NoError(err)
+	data, err := f.MarshalTree()
+	s.Require().NoError(err)
+
+	back, err := UnmarshalTree([]byte(messyFile), data)
+	s.Require().NoError(err)
+	s.True(back.Module("network").Delete(), "a rebuilt block knows its parent")
+
+	out := back.String()
+	s.NotContains(out, "./modules/network")
+	s.Contains(out, "# Top of file.")
+}

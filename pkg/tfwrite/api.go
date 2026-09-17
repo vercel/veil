@@ -94,7 +94,7 @@ func (b *Body) SetAttribute(name, expr string) *Attribute {
 		attr.SetExpr(expr)
 		return attr
 	}
-	attr := &Attribute{Name: name, Expr: expr, changed: true}
+	attr := &Attribute{Name: name, Expr: expr, changed: true, parent: b}
 	b.items = append(b.items, attr)
 	b.dirty = true
 	return attr
@@ -119,7 +119,7 @@ func (b *Body) RemoveAttribute(name string) bool {
 
 // AppendComment adds a comment at the end of the body.
 func (b *Body) AppendComment(text string) *Comment {
-	c := &Comment{Text: text}
+	c := &Comment{Text: text, parent: b}
 	b.items = append(b.items, c)
 	b.dirty = true
 	return c
@@ -164,6 +164,7 @@ func (b *Body) RemoveComment(target *Comment) bool {
 // appendBlock adds a block of the given shape and returns it.
 func (b *Body) appendBlock(blockType string, labels ...string) Block {
 	blk := newBlock(blockType, append([]string(nil), labels...), &Body{src: b.src, dirty: true}, srcSpan{})
+	blockBase(blk).parent = b
 	b.items = append(b.items, blk)
 	b.dirty = true
 	return blk
@@ -174,6 +175,7 @@ func (b *Body) appendBlock(blockType string, labels ...string) Block {
 // parent rather than to the file.
 func (b *Body) NestedBlock(blockType string, labels ...string) *Generic {
 	blk := newBlock(blockType, append([]string(nil), labels...), &Body{src: b.src, dirty: true}, srcSpan{})
+	blockBase(blk).parent = b
 	b.items = append(b.items, blk)
 	b.dirty = true
 	if g, ok := blk.(*Generic); ok {
