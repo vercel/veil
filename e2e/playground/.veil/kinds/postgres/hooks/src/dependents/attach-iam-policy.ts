@@ -9,9 +9,9 @@ import type {
 // lives with the postgres kind — the kind that knows what access its
 // consumers need — and is reachable through ctx.selfFS.
 //
-// The policy is edited as data, not as text: std.terraform.parse gives
-// the same object Terraform's own JSON syntax would, so renaming the
-// resource is a field assignment rather than a regex over HCL.
+// The policy is edited as a tree, not as text: the resource is renamed
+// through setName and the ARN through setExpr, so the file's comments
+// and formatting come back untouched rather than being regenerated.
 const attachIamPolicy: ServiceDependentHook = {
   render(ctx: ServiceDependentHookContext, fs: ServiceFS): ServiceFS {
     const template = ctx.selfFS.get('files/iam-policy.tf');
@@ -21,15 +21,25 @@ const attachIamPolicy: ServiceDependentHook = {
 
     const db = ctx.self.metadata.name;
     const region = String(ctx.vars.region);
-    const tf = ctx.std.terraform.parse(String(template.getContent())) as any;
+    const tf = ctx.std.terraform.parse(String(template.getContent()));
 
-    const body = tf.resource.aws_iam_policy.db_access[0];
-    body.name = `${db}-access`;
-    body.policy = body.policy
-      .replace(/PLACEHOLDER-region/g, region)
-      .replace(/PLACEHOLDER/g, db);
-    // Each consumer gets the policy under the database's own label.
-    tf.resource.aws_iam_policy = { [db.replace(/-/g, '_')]: [body] };
+    const policy = tf.resource('aws_iam_policy', 'db_access');
+    if (!policy) {
+      throw new Error('iam-policy.tf should declare aws_iam_policy.db_access');
+    }
+    // Each consumer gets the policy under its own database's name.
+    policy.setName(db.replace(/-/g, '_'));
+    policy.body().setAttribute('name', JSON.stringify(`${db}-access`));
+
+    const arn = policy.body().attribute('policy');
+    if (arn) {
+      arn.setExpr(
+        arn
+          .expr()
+          .replace(/PLACEHOLDER-region/g, region)
+          .replace(/PLACEHOLDER/g, db),
+      );
+    }
 
     fs.add(`terraform/${db}-access.tf`, ctx.std.terraform.stringify(tf));
     return fs;

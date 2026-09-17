@@ -1020,9 +1020,29 @@ const doc = ctx.std.yaml.parse(file.getContent());
 const tf  = ctx.std.terraform.parse(file.getContent());
 ```
 
+`std.terraform.parse` returns a **tree**, not a plain object: the same shape `pkg/tfwrite` works with in
+Go, method for method, where every node remembers the bytes it came from.
+
+```ts
+const tf = ctx.std.terraform.parse(file.getContent());
+tf.resource('aws_s3_bucket', 'logs')?.setName('build_logs');
+tf.module('network')?.body().setAttribute('source', '"./modules/vpc"');
+tf.variable('unused')?.delete();
+file.setContent(ctx.std.terraform.stringify(tf));
+```
+
+Printing copies the original bytes for every node that was not edited, so **comments and formatting
+survive** and only what changed is regenerated. Each accessor takes exactly the labels its block has —
+`resource(type, name)`, `provider(name)`, `locals()` — and returns `null` when there is no such block,
+so a chain through a miss is `?.`.
+
+`stringify` takes either a tree or a plain object in the `.tf.json` shape; the first prints from the
+original bytes, the second has none and is generated. `toObject` is the other direction: read a file as
+plain data when a tree is more than the job needs.
+
 YAML is a data format, so its round trip is unremarkable. Terraform is not — it is a language, with
-expressions, references and comments. `std.terraform` therefore maps to the object **Terraform itself
-defines for `.tf.json`**: the same configuration, spelled as data. Blocks nest by type and label, so
+expressions, references and comments. `std.terraform.toObject` therefore maps to the object **Terraform
+itself defines for `.tf.json`**: the same configuration, spelled as data. Blocks nest by type and label, so
 `resource.aws_s3_bucket.logs` is an array of bodies, and a zero-label block like `locals` nests as a
 body list too.
 
@@ -1031,9 +1051,8 @@ Two consequences follow from that, and they are worth knowing before reaching fo
 - **Expressions are not evaluated.** `var.region` parses to the string `"${var.region}"`, and a string
   that is one whole interpolation is written back out unquoted, as the expression it was. So reading a
   field, changing it and writing it back preserves references rather than freezing them into literals.
-- **Comments do not survive.** JSON has nowhere to put them, so a parse/stringify cycle drops them and
-  reformats canonically. For editing config a kind ships, that is usually fine; for rewriting a file a
-  human maintains, prefer text edits.
+- **Comments do not survive `toObject`.** JSON has nowhere to put them, so that path drops them and
+  reformats canonically. Use `parse` and the tree for anything that has to keep them.
 
 A parse/stringify/parse cycle is stable, so a file a hook reads and writes back without changing
 anything does not drift between renders.
