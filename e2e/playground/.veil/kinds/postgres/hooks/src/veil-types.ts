@@ -130,6 +130,8 @@ export interface File<T = string> {
 }
 
 export interface FS {
+  /** Handle for the declared source "./files/iam-policy.tf". */
+  getFilesIamPolicyTf(): File;
   /** Handle for the declared source "./sources/database.json". */
   getSourcesDatabaseJson(): File<Database>;
 
@@ -332,6 +334,12 @@ export interface PlatformParams {
 export interface PlatformDependentHookContext {
   /** This kind's resolved resource. */
   self: Resource<PostgresSpec, Dependency>;
+  /** This kind's own files — the same FS its own hooks see,
+   *  typed accessors included. Read from it to hand the consumer
+   *  something this kind ships: `fs.add(path, ctx.selfFS.get(...)
+   *  .getContent())`. Nothing is read back, so changes here do not
+   *  affect this resource's own render. */
+  selfFS: FS;
   /** The consumer resource that declared a dependency on us. */
   consumer: Resource<PlatformSpec>;
   /** Path of the consumer resource file being rendered, relative
@@ -407,6 +415,12 @@ export interface ServiceParams {
 export interface ServiceDependentHookContext {
   /** This kind's resolved resource. */
   self: Resource<PostgresSpec, Dependency>;
+  /** This kind's own files — the same FS its own hooks see,
+   *  typed accessors included. Read from it to hand the consumer
+   *  something this kind ships: `fs.add(path, ctx.selfFS.get(...)
+   *  .getContent())`. Nothing is read back, so changes here do not
+   *  affect this resource's own render. */
+  selfFS: FS;
   /** The consumer resource that declared a dependency on us. */
   consumer: Resource<ServiceSpec>;
   /** Path of the consumer resource file being rendered, relative

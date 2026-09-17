@@ -815,3 +815,35 @@ func (s *E2ESuite) TestRenderedAndDeletedAreOneFlag() {
 	s.NoFileExists(filepath.Join(checkout, "checkout", "files", "labels.json"))
 	s.FileExists(filepath.Join(checkout, "checkout", "sources", "manifest.json"))
 }
+
+// TestDependentHookShipsItsOwnFileToTheConsumer is the case ctx.selfFS
+// exists for. The postgres kind ships an IAM policy template — an asset,
+// so no database renders it — and its dependent hook fills in the
+// database's name and region and adds the result to each service that
+// depends on it. The file belongs to the kind that knows what access its
+// consumers need, rather than being copy-pasted into every service.
+func (s *E2ESuite) TestDependentHookShipsItsOwnFileToTheConsumer() {
+	checkout := s.render("resources/services/checkout.json")
+
+	policy := s.read(checkout, "checkout", "terraform/orders-db-access.tf")
+	s.Contains(policy, `name = "orders-db-access"`, "templated with the database's name")
+	s.Contains(policy, "arn:aws:rds-db:us-east-1:acme:dbuser:orders-db/*",
+		"and with the render's region")
+	s.NotContains(policy, "DB_NAME", "no placeholder should survive")
+	s.NotContains(policy, "REGION")
+
+	// It arrives through a forwarded edge too — checkout reaches
+	// orders-db via the platform, not by declaring it.
+	s.NotContains(s.read(s.root, "resources/services", "checkout.json"), "orders-db")
+
+	// A service with a different database gets that one's policy.
+	billing := s.render("resources/services/billing.json")
+	s.Contains(s.read(billing, "billing", "terraform/billing-db-access.tf"), `name = "billing-db-access"`)
+	s.NoFileExists(filepath.Join(billing, "billing", "terraform", "orders-db-access.tf"))
+
+	// And the template itself stays out of the database's own output —
+	// it is an asset, reachable through selfFS and never rendered.
+	db := s.render("resources/data/orders-db.json")
+	s.NoFileExists(filepath.Join(db, "orders-db", "files", "iam-policy.tf"))
+	s.NoDirExists(filepath.Join(db, "orders-db", "terraform"))
+}

@@ -1,6 +1,7 @@
 package render
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 
@@ -368,4 +369,106 @@ func (s *RenderSuite) TestRootDirectDependencyWinsOverForwardedParams() {
 	s.Contains(string(direct), "param=direct")
 	s.NoFileExists(filepath.Join(out, "r1", "from-leaf-via-forwarded.txt"),
 		"the forwarded params must not also be applied — one target, one firing")
+}
+
+// selfFSDependentHookIIFE copies a file out of the target kind's own FS
+// into the consumer's bundle — the shape of a database handing a service
+// the IAM policy that grants it access.
+const selfFSDependentHookIIFE = `var __veilMod=(()=>{var h={render:function(ctx,fs){
+  var t=ctx.selfFS.get("assets/policy.tf");
+  if(!t) throw new Error("selfFS should carry the target kind's own files");
+  fs.add("terraform/"+ctx.self.metadata.name+".tf", String(t.getContent()).replace("NAME",ctx.self.metadata.name));
+  return fs;}};return{default:h};})();`
+
+// TestDependentHookReadsItsOwnFilesThroughSelfFS covers ctx.selfFS: a
+// dependent hook runs against the consumer's bundle, but the file it
+// wants belongs to its own kind.
+func (s *RenderSuite) TestDependentHookReadsItsOwnFilesThroughSelfFS() {
+	s.writeSimpleKind("selffs-root")
+	s.writeDependentKind("selffs-leaf", "selffs-root", selfFSDependentHookIIFE)
+
+	// Give the target kind an asset to hand over.
+	kindPath := filepath.Join(s.root, "r", "selffs-leaf", "kind.json")
+	raw, err := os.ReadFile(kindPath)
+	s.Require().NoError(err)
+	var kind map[string]any
+	s.Require().NoError(json.Unmarshal(raw, &kind))
+	kind["files"] = []map[string]any{
+		{"path": "assets/policy.tf", "contents": "policy for NAME", "render": false},
+	}
+	s.writeJSON(kindPath, kind)
+	s.reloadRegistryWithKinds("selffs-root", "selffs-leaf")
+
+	dir := filepath.Join(s.root, "sf")
+	s.Require().NoError(os.MkdirAll(dir, 0755))
+	s.writeJSON(filepath.Join(dir, "r1.json"), map[string]any{
+		"metadata":     map[string]any{"kind": "selffs-root", "name": "r1"},
+		"spec":         map[string]any{},
+		"dependencies": []map[string]any{{"kind": "selffs-leaf", "name": "d1"}},
+	})
+	s.writeJSON(filepath.Join(dir, "d1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "selffs-leaf", "name": "d1"},
+		"spec":     map[string]any{},
+	})
+
+	out := filepath.Join(s.root, "out")
+	_, err = s.renderKind("selffs-root", "r1", dir, out)
+	s.Require().NoError(err)
+
+	body, err := os.ReadFile(filepath.Join(out, "r1", "terraform", "d1.tf"))
+	s.Require().NoError(err, "the hook should have copied its own file into the consumer")
+	s.Equal("policy for d1", string(body))
+
+	// The target's asset is not itself part of the consumer's output —
+	// only what the hook explicitly added.
+	s.NoFileExists(filepath.Join(out, "r1", "assets", "policy.tf"))
+}
+
+// TestSelfFSWritesDoNotEscape pins that selfFS is a reading surface: the
+// runner takes back only the consumer's FS, so a hook scribbling on its
+// own kind's files changes nothing anywhere.
+func (s *RenderSuite) TestSelfFSWritesDoNotEscape() {
+	hook := `var __veilMod=(()=>{var h={render:function(ctx,fs){
+	  var t=ctx.selfFS.get("assets/policy.tf");
+	  t.setContent("scribbled");
+	  ctx.selfFS.add("assets/extra.tf", "should go nowhere");
+	  fs.add("terraform/"+ctx.self.metadata.name+".tf", String(t.getContent()));
+	  return fs;}};return{default:h};})();`
+	s.writeSimpleKind("escape-root")
+	s.writeDependentKind("escape-leaf", "escape-root", hook)
+
+	kindPath := filepath.Join(s.root, "r", "escape-leaf", "kind.json")
+	raw, err := os.ReadFile(kindPath)
+	s.Require().NoError(err)
+	var kind map[string]any
+	s.Require().NoError(json.Unmarshal(raw, &kind))
+	kind["files"] = []map[string]any{
+		{"path": "assets/policy.tf", "contents": "original", "render": false},
+	}
+	s.writeJSON(kindPath, kind)
+	s.reloadRegistryWithKinds("escape-root", "escape-leaf")
+
+	dir := filepath.Join(s.root, "esc")
+	s.Require().NoError(os.MkdirAll(dir, 0755))
+	s.writeJSON(filepath.Join(dir, "r1.json"), map[string]any{
+		"metadata":     map[string]any{"kind": "escape-root", "name": "r1"},
+		"spec":         map[string]any{},
+		"dependencies": []map[string]any{{"kind": "escape-leaf", "name": "d1"}},
+	})
+	s.writeJSON(filepath.Join(dir, "d1.json"), map[string]any{
+		"metadata": map[string]any{"kind": "escape-leaf", "name": "d1"},
+		"spec":     map[string]any{},
+	})
+
+	out := filepath.Join(s.root, "out")
+	_, err = s.renderKind("escape-root", "r1", dir, out)
+	s.Require().NoError(err)
+
+	// The hook saw its own write within the hook...
+	body, err := os.ReadFile(filepath.Join(out, "r1", "terraform", "d1.tf"))
+	s.Require().NoError(err)
+	s.Equal("scribbled", string(body))
+	// ...and nothing it did to selfFS reached the output.
+	s.NoFileExists(filepath.Join(out, "r1", "assets", "extra.tf"))
+	s.NoDirExists(filepath.Join(out, "r1", "assets"))
 }
