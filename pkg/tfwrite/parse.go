@@ -48,9 +48,19 @@ func lexComments(src []byte, filename string) ([]*Comment, error) {
 		if t.Type != hclsyntax.TokenComment {
 			continue
 		}
+		// A line comment's token runs to the end of the line, newline
+		// included. The span has to stop short of it, or printing the
+		// comment emits a newline that whoever prints the next thing
+		// will emit again.
+		text := string(t.Bytes)
+		trimmed := trimTrailingNewline(text)
 		out = append(out, &Comment{
-			Text: trimTrailingNewline(string(t.Bytes)),
-			sp:   srcSpan{start: t.Range.Start.Byte, end: t.Range.End.Byte, valid: true},
+			Text: trimmed,
+			sp: srcSpan{
+				start: t.Range.Start.Byte,
+				end:   t.Range.End.Byte - (len(text) - len(trimmed)),
+				valid: true,
+			},
 		})
 	}
 	return out, nil
@@ -70,14 +80,20 @@ func buildBody(src []byte, syntax *hclsyntax.Body, comments []*Comment, bodyEnd 
 	}
 	var placedItems []placed
 
-	// Child block ranges, so a comment nested inside one is left for that
-	// body to claim rather than being hoisted up here.
+	// Ranges already accounted for by a child item, so a comment inside
+	// one is not also collected here. Two kinds:
+	//
+	//   - a nested block, whose own body claims it;
+	//   - an attribute's expression, which can contain comments of its
+	//     own inside a `{ ... }` or a list. Those bytes are part of the
+	//     attribute's text, so collecting them again would print the
+	//     comment twice as soon as anything made the body reprint.
 	type childRange struct{ start, end int }
-	var childBlocks []childRange
+	var claimed []childRange
 
 	for _, blk := range syntax.Blocks {
 		r := blk.Range()
-		childBlocks = append(childBlocks, childRange{r.Start.Byte, r.End.Byte})
+		claimed = append(claimed, childRange{r.Start.Byte, r.End.Byte})
 		inner := buildBody(src, blk.Body, comments, blk.Body.EndRange.End.Byte)
 		placedItems = append(placedItems, placed{r.Start.Byte, newBlock(
 			blk.Type,
@@ -90,6 +106,7 @@ func buildBody(src []byte, syntax *hclsyntax.Body, comments []*Comment, bodyEnd 
 	for _, attr := range syntax.Attributes {
 		r := attr.SrcRange
 		exprRange := attr.Expr.Range()
+		claimed = append(claimed, childRange{exprRange.Start.Byte, exprRange.End.Byte})
 		placedItems = append(placedItems, placed{r.Start.Byte, &Attribute{
 			Name: attr.Name,
 			Expr: string(src[exprRange.Start.Byte:exprRange.End.Byte]),
@@ -102,14 +119,14 @@ func buildBody(src []byte, syntax *hclsyntax.Body, comments []*Comment, bodyEnd 
 		if c.sp.start < bodyStart || c.sp.end > bodyEnd {
 			continue
 		}
-		nested := false
-		for _, cb := range childBlocks {
+		inChild := false
+		for _, cb := range claimed {
 			if c.sp.start >= cb.start && c.sp.end <= cb.end {
-				nested = true
+				inChild = true
 				break
 			}
 		}
-		if nested {
+		if inChild {
 			continue
 		}
 		placedItems = append(placedItems, placed{c.sp.start, &Comment{Text: c.Text, sp: c.sp}})

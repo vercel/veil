@@ -401,3 +401,52 @@ func (s *TFWriteSuite) TestDeleteSurvivesTheJSONRoundTrip() {
 	s.NotContains(out, "./modules/network")
 	s.Contains(out, "# Top of file.")
 }
+
+// TestCommentsInsideExpressionsAreNotItems covers a comment that lives
+// inside an attribute's value rather than between items:
+//
+//	tags = {
+//	  env = var.environment   # inside the expression
+//	}
+//
+// Those bytes are part of the attribute's own text. Collecting the
+// comment as an item too means it is held twice, which is invisible
+// while the block prints from its original span and doubles the moment
+// anything makes it reprint.
+func (s *TFWriteSuite) TestCommentsInsideExpressionsAreNotItems() {
+	src := `resource "aws_s3_bucket" "logs" {
+  bucket =    "acme-logs"   # trailing comment
+
+  # Standalone comment.
+  tags = {
+    env = var.environment   # inside the expression
+  }
+  # Last comment
+}
+`
+	f, err := Parse([]byte(src), "main.tf")
+	s.Require().NoError(err)
+	s.Equal(src, f.String())
+
+	bucket := f.Resource("aws_s3_bucket", "logs")
+	var texts []string
+	for _, c := range bucket.Body().Comments() {
+		texts = append(texts, c.Text)
+	}
+	s.Equal([]string{
+		"# trailing comment",
+		"# Standalone comment.",
+		"# Last comment",
+	}, texts, "the one inside the expression belongs to the attribute, not the body")
+
+	// Force a reprint and check nothing doubled.
+	bucket.Body().SetAttribute("bucket", `"changed"`)
+	out := f.String()
+	s.Equal(1, strings.Count(out, "# inside the expression"))
+	s.Equal(1, strings.Count(out, "# Last comment"))
+	s.Contains(out, "# Last comment\n}", "and no blank line crept in before the brace")
+
+	again, err := Parse([]byte(out), "main.tf")
+	s.Require().NoError(err)
+	s.Equal(out, again.String())
+}
