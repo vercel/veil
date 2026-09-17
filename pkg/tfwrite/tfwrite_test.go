@@ -57,14 +57,14 @@ func (s *TFWriteSuite) TestCommentsArePlacedWithTheirItem() {
 
 	top := f.Body().Comments()
 	s.Require().Len(top, 2, "file-level comments stay at the top level")
-	s.Equal("# Top of file.", top[0].Text)
-	s.Equal("# The bucket holds build logs.", top[1].Text)
+	s.Equal("# Top of file.", top[0].Text())
+	s.Equal("# The bucket holds build logs.", top[1].Text())
 
 	bucket := f.Resource("aws_s3_bucket", "logs")
 	s.Require().NotNil(bucket)
 	inner := bucket.Body().Comments()
 	s.Require().Len(inner, 2, "a comment inside a block belongs to that block")
-	s.Contains(inner[1].Text, "Nested comment")
+	s.Contains(inner[1].Text(), "Nested comment")
 }
 
 // TestEditIsLocal is the other half of the property: changing one
@@ -108,11 +108,11 @@ func (s *TFWriteSuite) TestExpressionsStaySourceText() {
 	s.Require().NoError(err)
 
 	bucket := f.Resource("aws_s3_bucket", "logs")
-	s.Equal(`"acme-logs-${var.environment}"`, bucket.Body().Attribute("bucket").Expr)
+	s.Equal(`"acme-logs-${var.environment}"`, bucket.Body().Attribute("bucket").Expr())
 
 	tf := f.Terraform()
 	s.Require().NotNil(tf)
-	s.Equal(`">= 1.5"`, tf.Body().Attribute("required_version").Expr)
+	s.Equal(`">= 1.5"`, tf.Body().Attribute("required_version").Expr())
 }
 
 func (s *TFWriteSuite) TestAddAndRemove() {
@@ -431,7 +431,7 @@ func (s *TFWriteSuite) TestCommentsInsideExpressionsAreNotItems() {
 	bucket := f.Resource("aws_s3_bucket", "logs")
 	var texts []string
 	for _, c := range bucket.Body().Comments() {
-		texts = append(texts, c.Text)
+		texts = append(texts, c.Text())
 	}
 	s.Equal([]string{
 		"# trailing comment",

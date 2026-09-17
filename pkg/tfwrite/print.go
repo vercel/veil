@@ -7,6 +7,9 @@ import "strings"
 // comments, blank lines and alignment survive. Only nodes that were
 // modified, and nodes built from scratch, are printed fresh.
 func (f *File) Bytes() []byte {
+	if f == nil {
+		return nil
+	}
 	var b strings.Builder
 	f.body.printRoot(f.src, &b)
 	return []byte(b.String())
@@ -21,6 +24,9 @@ func (f *File) String() string { return string(f.Bytes()) }
 // so do the text before the first item and after the last, which is
 // where a file's leading blank lines and its final newline live.
 func (b *Body) printRoot(src []byte, out *strings.Builder) {
+	if b == nil {
+		return
+	}
 	if first, ok := b.firstParsedSpan(); ok && first.start > 0 {
 		out.WriteString(string(src[:first.start]))
 	}
@@ -55,6 +61,9 @@ func blankPrefix(b []byte) int {
 }
 
 func (b *Body) firstParsedSpan() (srcSpan, bool) {
+	if b == nil {
+		return srcSpan{}, false
+	}
 	for _, item := range b.items {
 		if sp := item.span(); sp.valid {
 			return sp, true
@@ -67,7 +76,7 @@ func (b *Body) firstParsedSpan() (srcSpan, bool) {
 // original place. An appended item has no span, and there is then no
 // original tail to copy — the caller has already written past it.
 func (b *Body) lastParsedSpan() (srcSpan, bool) {
-	if len(b.items) == 0 {
+	if b == nil || len(b.items) == 0 {
 		return srcSpan{}, false
 	}
 	if sp := b.items[len(b.items)-1].span(); sp.valid {
@@ -77,6 +86,9 @@ func (b *Body) lastParsedSpan() (srcSpan, bool) {
 }
 
 func (b *Body) printItems(src []byte, indent int, out *strings.Builder) {
+	if b == nil {
+		return
+	}
 	prevEnd := -1
 	for i, item := range b.items {
 		sp := item.span()
@@ -113,7 +125,7 @@ func (c *Comment) print(src []byte, _ int, out *strings.Builder) {
 		out.WriteString(string(src[c.sp.start:c.sp.end]))
 		return
 	}
-	text := c.Text
+	text := c.text
 	if !strings.HasPrefix(text, "#") && !strings.HasPrefix(text, "//") && !strings.HasPrefix(text, "/*") {
 		text = "# " + text
 	}
@@ -125,9 +137,9 @@ func (a *Attribute) print(src []byte, _ int, out *strings.Builder) {
 		out.WriteString(string(src[a.sp.start:a.sp.end]))
 		return
 	}
-	out.WriteString(a.Name)
+	out.WriteString(a.name)
 	out.WriteString(" = ")
-	out.WriteString(a.Expr)
+	out.WriteString(a.expr)
 }
 
 func (b *block) print(src []byte, indent int, out *strings.Builder) {
@@ -153,6 +165,9 @@ func (b *block) print(src []byte, indent int, out *strings.Builder) {
 // longer as it was parsed — which is what decides between copying a
 // block's original text and printing it again.
 func (b *Body) modified() bool {
+	if b == nil {
+		return false
+	}
 	if b.dirty {
 		return true
 	}

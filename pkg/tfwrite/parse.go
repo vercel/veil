@@ -55,7 +55,7 @@ func lexComments(src []byte, filename string) ([]*Comment, error) {
 		text := string(t.Bytes)
 		trimmed := trimTrailingNewline(text)
 		out = append(out, &Comment{
-			Text: trimmed,
+			text: trimmed,
 			sp: srcSpan{
 				start: t.Range.Start.Byte,
 				end:   t.Range.End.Byte - (len(text) - len(trimmed)),
@@ -108,8 +108,8 @@ func buildBody(src []byte, syntax *hclsyntax.Body, comments []*Comment, bodyEnd 
 		exprRange := attr.Expr.Range()
 		claimed = append(claimed, childRange{exprRange.Start.Byte, exprRange.End.Byte})
 		placedItems = append(placedItems, placed{r.Start.Byte, &Attribute{
-			Name: attr.Name,
-			Expr: string(src[exprRange.Start.Byte:exprRange.End.Byte]),
+			name: attr.Name,
+			expr: string(src[exprRange.Start.Byte:exprRange.End.Byte]),
 			sp:   srcSpan{start: r.Start.Byte, end: r.End.Byte, valid: true},
 		}})
 	}
@@ -129,7 +129,7 @@ func buildBody(src []byte, syntax *hclsyntax.Body, comments []*Comment, bodyEnd 
 		if inChild {
 			continue
 		}
-		placedItems = append(placedItems, placed{c.sp.start, &Comment{Text: c.Text, sp: c.sp}})
+		placedItems = append(placedItems, placed{c.sp.start, &Comment{text: c.text, sp: c.sp}})
 	}
 
 	sort.SliceStable(placedItems, func(i, j int) bool { return placedItems[i].start < placedItems[j].start })

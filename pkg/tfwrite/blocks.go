@@ -18,34 +18,66 @@ package tfwrite
 // Resource is `resource "TYPE" "NAME"`.
 type Resource struct{ block }
 
-func (r *Resource) ResourceType() string     { return r.label(0) }
-func (r *Resource) SetResourceType(t string) { r.setLabel(0, t) }
-func (r *Resource) Name() string             { return r.label(1) }
-func (r *Resource) SetName(n string)         { r.setLabel(1, n) }
+func (r *Resource) ResourceType() string { return nilSafeLabel(r, r == nil, 0) }
+func (r *Resource) SetResourceType(t string) {
+	if r != nil {
+		r.setLabel(0, t)
+	}
+}
+func (r *Resource) Name() string { return nilSafeLabel(r, r == nil, 1) }
+func (r *Resource) SetName(n string) {
+	if r != nil {
+		r.setLabel(1, n)
+	}
+}
 
 // DataSource is `data "TYPE" "NAME"`.
 type DataSource struct{ block }
 
-func (d *DataSource) DataType() string     { return d.label(0) }
-func (d *DataSource) SetDataType(t string) { d.setLabel(0, t) }
-func (d *DataSource) Name() string         { return d.label(1) }
-func (d *DataSource) SetName(n string)     { d.setLabel(1, n) }
+func (d *DataSource) DataType() string { return nilSafeLabel(d, d == nil, 0) }
+func (d *DataSource) SetDataType(t string) {
+	if d != nil {
+		d.setLabel(0, t)
+	}
+}
+func (d *DataSource) Name() string { return nilSafeLabel(d, d == nil, 1) }
+func (d *DataSource) SetName(n string) {
+	if d != nil {
+		d.setLabel(1, n)
+	}
+}
 
 // Ephemeral is `ephemeral "TYPE" "NAME"`.
 type Ephemeral struct{ block }
 
-func (e *Ephemeral) EphemeralType() string     { return e.label(0) }
-func (e *Ephemeral) SetEphemeralType(t string) { e.setLabel(0, t) }
-func (e *Ephemeral) Name() string              { return e.label(1) }
-func (e *Ephemeral) SetName(n string)          { e.setLabel(1, n) }
+func (e *Ephemeral) EphemeralType() string { return nilSafeLabel(e, e == nil, 0) }
+func (e *Ephemeral) SetEphemeralType(t string) {
+	if e != nil {
+		e.setLabel(0, t)
+	}
+}
+func (e *Ephemeral) Name() string { return nilSafeLabel(e, e == nil, 1) }
+func (e *Ephemeral) SetName(n string) {
+	if e != nil {
+		e.setLabel(1, n)
+	}
+}
 
 // Action is `action "TYPE" "NAME"`.
 type Action struct{ block }
 
-func (a *Action) ActionType() string     { return a.label(0) }
-func (a *Action) SetActionType(t string) { a.setLabel(0, t) }
-func (a *Action) Name() string           { return a.label(1) }
-func (a *Action) SetName(n string)       { a.setLabel(1, n) }
+func (a *Action) ActionType() string { return nilSafeLabel(a, a == nil, 0) }
+func (a *Action) SetActionType(t string) {
+	if a != nil {
+		a.setLabel(0, t)
+	}
+}
+func (a *Action) Name() string { return nilSafeLabel(a, a == nil, 1) }
+func (a *Action) SetName(n string) {
+	if a != nil {
+		a.setLabel(1, n)
+	}
+}
 
 // ---- one label: a name -------------------------------------------------
 
@@ -53,52 +85,78 @@ func (a *Action) SetName(n string)       { a.setLabel(1, n) }
 // several blocks may share it, distinguished by an `alias` attribute.
 type Provider struct{ block }
 
-func (p *Provider) Name() string     { return p.label(0) }
-func (p *Provider) SetName(n string) { p.setLabel(0, n) }
+func (p *Provider) Name() string { return nilSafeLabel(p, p == nil, 0) }
+func (p *Provider) SetName(n string) {
+	if p != nil {
+		p.setLabel(0, n)
+	}
+}
 
 // Alias reads the `alias` attribute, which is how a configuration tells
 // two blocks for the same provider apart. Empty when unset.
 func (p *Provider) Alias() string {
-	attr := p.body.Attribute("alias")
+	if p == nil {
+		return ""
+	}
+	attr := p.block.body.Attribute("alias")
 	if attr == nil {
 		return ""
 	}
-	return unquote(attr.Expr)
+	return unquote(attr.Expr())
 }
 
 // Variable is `variable "NAME"`.
 type Variable struct{ block }
 
-func (v *Variable) Name() string     { return v.label(0) }
-func (v *Variable) SetName(n string) { v.setLabel(0, n) }
+func (v *Variable) Name() string { return nilSafeLabel(v, v == nil, 0) }
+func (v *Variable) SetName(n string) {
+	if v != nil {
+		v.setLabel(0, n)
+	}
+}
 
 // Output is `output "NAME"`.
 type Output struct{ block }
 
-func (o *Output) Name() string     { return o.label(0) }
-func (o *Output) SetName(n string) { o.setLabel(0, n) }
+func (o *Output) Name() string { return nilSafeLabel(o, o == nil, 0) }
+func (o *Output) SetName(n string) {
+	if o != nil {
+		o.setLabel(0, n)
+	}
+}
 
 // Module is `module "NAME"`.
 type Module struct{ block }
 
-func (m *Module) Name() string     { return m.label(0) }
-func (m *Module) SetName(n string) { m.setLabel(0, n) }
+func (m *Module) Name() string { return nilSafeLabel(m, m == nil, 0) }
+func (m *Module) SetName(n string) {
+	if m != nil {
+		m.setLabel(0, n)
+	}
+}
 
 // Source reads the module's `source`, the one attribute every module
 // must have. Empty when unset.
 func (m *Module) Source() string {
-	attr := m.body.Attribute("source")
+	if m == nil {
+		return ""
+	}
+	attr := m.block.body.Attribute("source")
 	if attr == nil {
 		return ""
 	}
-	return unquote(attr.Expr)
+	return unquote(attr.Expr())
 }
 
 // Check is `check "NAME"`.
 type Check struct{ block }
 
-func (c *Check) Name() string     { return c.label(0) }
-func (c *Check) SetName(n string) { c.setLabel(0, n) }
+func (c *Check) Name() string { return nilSafeLabel(c, c == nil, 0) }
+func (c *Check) SetName(n string) {
+	if c != nil {
+		c.setLabel(0, n)
+	}
+}
 
 // ---- no labels ---------------------------------------------------------
 
@@ -126,6 +184,9 @@ type Generic struct{ block }
 // for a modelled block the named setters say which label is which, and
 // a positional list is how you produce a shape Terraform rejects.
 func (g *Generic) SetLabels(labels []string) {
+	if g == nil {
+		return
+	}
 	g.labels = append([]string(nil), labels...)
 	g.labelsChanged = true
 }
@@ -241,4 +302,14 @@ func blockBase(b Block) *block {
 	default:
 		return nil
 	}
+}
+
+// nilSafeLabel reads a label position, or "" when the block is nil.
+// isNil is passed in because the typed nil has to be tested against its
+// own concrete type, not against the Block interface it satisfies.
+func nilSafeLabel(b Block, isNil bool, i int) string {
+	if isNil {
+		return ""
+	}
+	return blockBase(b).label(i)
 }

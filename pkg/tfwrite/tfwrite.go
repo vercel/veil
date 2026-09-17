@@ -64,10 +64,29 @@ type srcSpan struct {
 
 // Comment is a comment line or block standing between other items.
 type Comment struct {
-	Text string
+	text string
 	sp   srcSpan
 	// parent is the body holding this item, so it can remove itself.
 	parent *Body
+}
+
+// Text is the comment including its marker — "# note" — or "" when the
+// comment is nil. A reader rather than a field, for the same reason as
+// Attribute.Expr.
+func (c *Comment) Text() string {
+	if c == nil {
+		return ""
+	}
+	return c.text
+}
+
+// SetText replaces the comment's text.
+func (c *Comment) SetText(text string) {
+	if c == nil {
+		return
+	}
+	c.text = text
+	c.sp = srcSpan{}
 }
 
 // Delete removes this comment from the body holding it, reporting
@@ -85,8 +104,8 @@ func (c *Comment) span() srcSpan { return c.sp }
 // Attribute is a `name = expression` pair. Expr is the expression's
 // source text, unevaluated.
 type Attribute struct {
-	Name string
-	Expr string
+	name string
+	expr string
 
 	sp      srcSpan
 	changed bool
@@ -108,8 +127,30 @@ func (a *Attribute) span() srcSpan { return a.sp }
 // `var.region`, `"literal"`, `jsonencode({...})`. The text is written
 // as given, so the caller decides whether something is an expression or
 // a quoted string.
+// Name is the attribute's name, or "" when the attribute is nil.
+func (a *Attribute) Name() string {
+	if a == nil {
+		return ""
+	}
+	return a.name
+}
+
+// Expr is the attribute's expression as source text, unevaluated, or ""
+// when the attribute is nil. A reader rather than a field so a chain
+// through a lookup that found nothing returns "" instead of panicking.
+func (a *Attribute) Expr() string {
+	if a == nil {
+		return ""
+	}
+	return a.expr
+}
+
+// SetExpr replaces the expression with raw source text.
 func (a *Attribute) SetExpr(expr string) {
-	a.Expr = expr
+	if a == nil {
+		return
+	}
+	a.expr = expr
 	a.changed = true
 }
 
@@ -148,7 +189,7 @@ type block struct {
 // its own nil check, since a method promoted from this embedded struct
 // would dereference a nil block before it could test for one.
 func (b *block) remove() bool {
-	if b.parent == nil {
+	if b == nil || b.parent == nil {
 		return false
 	}
 	return b.parent.Remove(b.self)
@@ -177,7 +218,17 @@ func (b *block) label(i int) string {
 }
 
 // Filename is the name the file was parsed under, for diagnostics.
-func (f *File) Filename() string { return f.filename }
+func (f *File) Filename() string {
+	if f == nil {
+		return ""
+	}
+	return f.filename
+}
 
 // Body returns the file's top-level body.
-func (f *File) Body() *Body { return f.body }
+func (f *File) Body() *Body {
+	if f == nil {
+		return nil
+	}
+	return f.body
+}

@@ -41,6 +41,9 @@ type jsonFile struct {
 // source is not included: the caller cannot print, and the host still
 // holds the bytes that unmodified nodes print from.
 func (f *File) MarshalTree() ([]byte, error) {
+	if f == nil {
+		return nil, fmt.Errorf("tfwrite: MarshalTree on a nil File")
+	}
 	return json.Marshal(&jsonFile{
 		Filename: f.filename,
 		Items:    marshalItems(f.body.items),
@@ -54,12 +57,12 @@ func marshalItems(items []Item) []*jsonItem {
 		switch v := item.(type) {
 		case *Comment:
 			out = append(out, &jsonItem{
-				Kind: "comment", Text: v.Text,
+				Kind: "comment", Text: v.text,
 				Start: v.sp.start, End: v.sp.end, Spanned: v.sp.valid,
 			})
 		case *Attribute:
 			out = append(out, &jsonItem{
-				Kind: "attribute", Name: v.Name, Expr: v.Expr,
+				Kind: "attribute", Name: v.name, Expr: v.expr,
 				Start: v.sp.start, End: v.sp.end, Spanned: v.sp.valid, Changed: v.changed,
 			})
 		case Block:
@@ -102,11 +105,11 @@ func unmarshalBody(src []byte, items []*jsonItem, dirty bool) (*Body, error) {
 		}
 		switch it.Kind {
 		case "comment":
-			c := &Comment{Text: it.Text, sp: sp, parent: b}
+			c := &Comment{text: it.Text, sp: sp, parent: b}
 			b.items = append(b.items, c)
 		case "attribute":
 			b.items = append(b.items, &Attribute{
-				Name: it.Name, Expr: it.Expr, sp: sp, changed: it.Changed, parent: b,
+				name: it.Name, expr: it.Expr, sp: sp, changed: it.Changed, parent: b,
 			})
 		case "block":
 			inner, err := unmarshalBody(src, it.Items, it.Changed)
