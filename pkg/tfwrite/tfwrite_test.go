@@ -450,3 +450,33 @@ func (s *TFWriteSuite) TestCommentsInsideExpressionsAreNotItems() {
 	s.Require().NoError(err)
 	s.Equal(out, again.String())
 }
+
+// TestBuildFromBlank covers generating a file rather than editing one:
+// nothing to copy original bytes from, so every node is printed fresh.
+func (s *TFWriteSuite) TestBuildFromBlank() {
+	f, err := Parse([]byte(""), "main.tf")
+	s.Require().NoError(err)
+
+	tf := f.AddTerraform()
+	tf.Body().SetAttribute("required_version", `">= 1.5"`)
+	tf.Body().NestedBlock("required_providers").Body().
+		SetAttribute("aws", `{ source = "hashicorp/aws", version = "~> 5.0" }`)
+
+	f.AddVariable("region").Body().SetAttribute("type", "string")
+
+	r := f.AddResource("aws_s3_bucket", "logs")
+	r.Body().SetAttribute("bucket", `"acme-logs"`)
+	r.Body().NestedBlock("lifecycle").Body().SetAttribute("prevent_destroy", "true")
+
+	f.AddOutput("id").Body().SetAttribute("value", "aws_s3_bucket.logs.id")
+
+	out := f.String()
+	s.True(strings.HasSuffix(out, "}\n"), "a generated file ends with a newline")
+	s.Contains(out, "}\n\nvariable \"region\" {", "top-level blocks are separated by a blank line")
+	s.Contains(out, "  lifecycle {\n    prevent_destroy = true\n  }", "nested blocks are indented")
+
+	// The real check: what came out is Terraform, and stable.
+	again, err := Parse([]byte(out), "main.tf")
+	s.Require().NoError(err, "generated output has to parse")
+	s.Equal(out, again.String())
+}

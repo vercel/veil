@@ -165,7 +165,15 @@ const terraformClassesJS = `
   class TFBody {
     constructor(ownerNode, items) { this.ownerNode = ownerNode; this.items = items; }
 
-    _touch() { if (this.ownerNode) this.ownerNode.changed = true; }
+    // A block node records a change as "changed"; the file root records
+    // it as "dirty". Different names because they are different messages
+    // on the Go side, and the root's is what tells the printer a
+    // generated file needs its own trailing newline.
+    _touch() {
+      if (!this.ownerNode) return;
+      if (this.ownerNode.kind === 'block') this.ownerNode.changed = true;
+      else this.ownerNode.dirty = true;
+    }
     _removeNode(node) {
       var ok = removeFrom(this.items, node);
       if (ok) this._touch();

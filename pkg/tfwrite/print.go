@@ -12,7 +12,15 @@ func (f *File) Bytes() []byte {
 	}
 	var b strings.Builder
 	f.body.printRoot(f.src, &b)
-	return []byte(b.String())
+	out := b.String()
+	// A file built rather than parsed has no original trailing newline
+	// to copy, and every tool expects one. Only when something was added
+	// or removed: a parsed file is reproduced exactly, final newline or
+	// not.
+	if f.body.dirty && out != "" && !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return []byte(out)
 }
 
 // String is Bytes as a string.
@@ -103,7 +111,14 @@ func (b *Body) printItems(src []byte, indent int, out *strings.Builder) {
 			// would put it back.
 			out.WriteString(string(src[prevEnd:sp.start]))
 		case i > 0:
+			// A separator invented rather than copied, which happens
+			// between items that were not both parsed. Top-level blocks
+			// get a blank line between them, the way Terraform is
+			// conventionally written; everything else gets one newline.
 			out.WriteString("\n")
+			if indent == 0 && (isBlockItem(b.items[i-1]) || isBlockItem(item)) {
+				out.WriteString("\n")
+			}
 			out.WriteString(strings.Repeat("  ", indent))
 		default:
 			if indent > 0 {
@@ -208,4 +223,11 @@ func quoteLabel(s string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// isBlockItem reports whether an item is a block, for deciding how much
+// whitespace an invented separator needs.
+func isBlockItem(item Item) bool {
+	_, ok := item.(Block)
+	return ok
 }

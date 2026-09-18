@@ -1,0 +1,10 @@
+{
+  "$schema": "../public/r/tfcheck/kind.schema.json",
+  "metadata": {
+    "kind": "tfcheck",
+    "name": "tfwrite-suite"
+  },
+  "spec": {
+    "note": "Runs the pkg/tfwrite test suite again in JavaScript, against the same fixtures."
+  }
+}
