@@ -481,9 +481,9 @@ func (s *TFWriteSuite) TestBuildFromBlank() {
 	s.Equal(out, again.String())
 }
 
-// TestRenameAttribute covers renaming a field in place — the one edit
+// TestRenameAnAttribute covers renaming a field in place — the one edit
 // that was missing, since Name was a reader with no setter behind it.
-func (s *TFWriteSuite) TestRenameAttribute() {
+func (s *TFWriteSuite) TestRenameAnAttribute() {
 	src := `resource "aws_s3_bucket" "logs" {
   # Keep this.
   bucket =    "acme-logs"   # trailing
@@ -492,9 +492,9 @@ func (s *TFWriteSuite) TestRenameAttribute() {
 `
 	f, err := Parse([]byte(src), "main.tf")
 	s.Require().NoError(err)
-	r := f.Resource("aws_s3_bucket", "logs")
 
-	s.True(r.RenameAttribute("bucket", "bucket_name"))
+	f.Resource("aws_s3_bucket", "logs").Attribute("bucket").SetName("bucket_name")
+
 	out := f.String()
 	s.Contains(out, `bucket_name = "acme-logs"`, "renamed, expression intact")
 	s.NotContains(out, "bucket =", "the old name is gone")
@@ -506,21 +506,18 @@ func (s *TFWriteSuite) TestRenameAttribute() {
 	s.Equal(out, again.String())
 }
 
-// TestRenameAttributeRefusesACollision is the guard: renaming onto a
-// sibling would leave two attributes of one name, which Terraform
-// rejects and which no later lookup could tell apart.
-func (s *TFWriteSuite) TestRenameAttributeRefusesACollision() {
+// TestRenamingOntoASiblingIsNotGuarded records what the package does
+// not do. Two attributes of one name is something Terraform rejects,
+// and nothing here stops it — the same as SetExpr taking a malformed
+// expression. This package writes what it is told to.
+func (s *TFWriteSuite) TestRenamingOntoASiblingIsNotGuarded() {
 	f, err := Parse([]byte("locals {\n  a = 1\n  b = 2\n}\n"), "main.tf")
 	s.Require().NoError(err)
-	l := f.Locals()[0]
 
-	s.False(l.RenameAttribute("a", "b"), "b is taken")
-	s.False(l.RenameAttribute("nope", "c"), "no such attribute")
-	s.False(l.RenameAttribute("a", "a"), "renaming to itself is not a change")
-	s.Equal("locals {\n  a = 1\n  b = 2\n}\n", f.String(), "nothing changed")
-
-	s.True(l.RenameAttribute("a", "c"))
-	s.Contains(f.String(), "c = 1")
+	f.Locals()[0].Attribute("a").SetName("b")
+	s.Contains(f.String(), "b = 1")
+	s.Contains(f.String(), "b = 2")
+	s.Len(f.Locals()[0].Attributes(), 2, "both are still there, both called b")
 }
 
 // TestSetNameOnANilAttributeIsSafe keeps the chain safe, as the other

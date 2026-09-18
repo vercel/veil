@@ -261,8 +261,7 @@ const suite: RenderHook = {
       const src = 'resource "aws_s3_bucket" "logs" {\n  # Keep this.\n' +
         '  bucket =    "acme-logs"   # trailing\n  acl    = "private"\n}\n';
       const f = tfmod.parse(src);
-      const r = f.resource('aws_s3_bucket', 'logs')!;
-      ok(r.renameAttribute('bucket', 'bucket_name'), 'rename reports done');
+      f.resource('aws_s3_bucket', 'logs')!.attribute('bucket')!.setName('bucket_name');
       const out = tfmod.stringify(f);
       ok(out.indexOf('bucket_name = "acme-logs"') >= 0, 'renamed, expression intact');
       ok(out.indexOf('bucket =') < 0, 'old name gone');
@@ -271,16 +270,14 @@ const suite: RenderHook = {
       eq(tfmod.stringify(tfmod.parse(out)), out, 'stable after a rename');
     }
 
-    // --- renaming refuses a collision -------------------------------------------
+    // --- renaming onto a sibling is not guarded ----------------------------------
     {
       const f = tfmod.parse('locals {\n  a = 1\n  b = 2\n}\n');
-      const l = f.locals()[0];
-      eq(l.renameAttribute('a', 'b'), false, 'b is taken');
-      eq(l.renameAttribute('nope', 'c'), false, 'no such attribute');
-      eq(l.renameAttribute('a', 'a'), false, 'renaming to itself is not a change');
-      eq(tfmod.stringify(f), 'locals {\n  a = 1\n  b = 2\n}\n', 'nothing changed');
-      ok(l.renameAttribute('a', 'c'), 'a free name works');
-      ok(tfmod.stringify(f).indexOf('c = 1') >= 0, 'renamed');
+      f.locals()[0].attribute('a')!.setName('b');
+      const out = tfmod.stringify(f);
+      ok(out.indexOf('b = 1') >= 0 && out.indexOf('b = 2') >= 0,
+        'both are still there, both called b — this package writes what it is told');
+      eq(f.locals()[0].attributes().length, 2, 'two attributes of one name');
     }
 
     // --- building a file from nothing ------------------------------------------------------

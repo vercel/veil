@@ -135,9 +135,12 @@ func (a *Attribute) Name() string {
 	return a.name
 }
 
-// SetName renames the attribute. The name is not checked against its
-// siblings here — Body.RenameAttribute is the call that refuses to
-// collide with one.
+// SetName renames the attribute, keeping its position and expression.
+//
+// Nothing stops a rename onto a sibling, and two attributes of one name
+// is something Terraform rejects. This package writes what it is told
+// to write — SetExpr will take a malformed expression too — so checking
+// that is the caller's.
 func (a *Attribute) SetName(name string) {
 	if a == nil {
 		return
