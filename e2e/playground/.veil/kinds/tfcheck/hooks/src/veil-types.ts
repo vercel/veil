@@ -53,7 +53,10 @@ export interface TFBody {
   appendComment(text: string): TFComment;
   /** Add a block whose shape belongs to its parent rather than to the
    *  file — lifecycle, connection, validation, provisioner. */
-  nestedBlock(type: string, ...labels: string[]): TFGeneric;
+  addBlock(type: string, ...labels: string[]): TFGeneric;
+  /** Find one of those, or null. Top-level blocks have typed accessors
+   *  on TFFile instead. */
+  block(type: string, ...labels: string[]): TFBlock | null;
   remove(item: TFItem | null): boolean;
 }
 
@@ -62,8 +65,22 @@ export interface TFBody {
 export interface TFBlock {
   blockType(): string;
   labels(): string[];
+  /** The block's contents. The methods below reach straight through it,
+   *  so this is for holding onto a body rather than for every call. */
   body(): TFBody;
   delete(): boolean;
+
+  attribute(name: string): TFAttribute | null;
+  attributes(): TFAttribute[];
+  setAttribute(name: string, expr: string): TFAttribute;
+  removeAttribute(name: string): boolean;
+  blocks(): TFBlock[];
+  block(type: string, ...labels: string[]): TFBlock | null;
+  addBlock(type: string, ...labels: string[]): TFGeneric;
+  comments(): TFComment[];
+  appendComment(text: string): TFComment;
+  items(): TFItem[];
+  remove(item: TFItem | null): boolean;
 }
 
 export interface TFResource extends TFBlock {
@@ -116,8 +133,12 @@ export interface TFGeneric extends TFBlock {
 /** A parsed Terraform file. Each accessor takes exactly the labels its
  *  block has, and returns null when there is no such block. */
 export interface TFFile {
+  /** The top-level body. The methods below reach through it. */
   body(): TFBody;
   blocks(): TFBlock[];
+  /** Top-level comments. One inside a block belongs to that block. */
+  comments(): TFComment[];
+  items(): TFItem[];
   remove(item: TFItem | null): boolean;
 
   resource(type: string, name: string): TFResource | null;

@@ -40,12 +40,12 @@ const suite: RenderHook = {
     // --- comments are placed with their item -----------------------------
     {
       const f = tfmod.parse(messySrc);
-      const top = f.body().comments().map((c) => c.text());
+      const top = f.comments().map((c) => c.text());
       eq(top.length, 2, 'file-level comment count');
       eq(top[0], '# Top of file.', 'first file-level comment');
       eq(top[1], '# The bucket holds build logs.', 'second file-level comment');
 
-      const inner = f.resource('aws_s3_bucket', 'logs')!.body().comments().map((c) => c.text());
+      const inner = f.resource('aws_s3_bucket', 'logs')!.comments().map((c) => c.text());
       eq(inner.length, 2, 'comments inside the bucket block');
       ok(inner[1].indexOf('Nested comment') >= 0, 'nested comment belongs to its block');
     }
@@ -53,7 +53,7 @@ const suite: RenderHook = {
     // --- an edit is local -------------------------------------------------
     {
       const f = tfmod.parse(messySrc);
-      f.module('network')!.body().setAttribute('source', '"./modules/vpc"');
+      f.module('network')!.setAttribute('source', '"./modules/vpc"');
       const out = tfmod.stringify(f);
       ok(out.indexOf('source = "./modules/vpc"') >= 0, 'edited attribute');
       ok(out.indexOf('./modules/network') < 0, 'old value gone');
@@ -77,16 +77,16 @@ const suite: RenderHook = {
     // --- expressions stay source text -------------------------------------
     {
       const f = tfmod.parse(messySrc);
-      eq(f.resource('aws_s3_bucket', 'logs')!.body().attribute('bucket')!.expr(),
+      eq(f.resource('aws_s3_bucket', 'logs')!.attribute('bucket')!.expr(),
         '"acme-logs-${var.environment}"', 'a reference is not evaluated');
-      eq(f.terraform()!.body().attribute('required_version')!.expr(), '">= 1.5"', 'a literal keeps its quotes');
+      eq(f.terraform()!.attribute('required_version')!.expr(), '">= 1.5"', 'a literal keeps its quotes');
     }
 
     // --- add and remove ----------------------------------------------------
     {
       const f = tfmod.parse(messySrc);
-      f.addOutput('bucket_name').body().setAttribute('value', 'aws_s3_bucket.logs.id');
-      ok(f.module('network')!.body().removeAttribute('source'), 'removeAttribute reports found');
+      f.addOutput('bucket_name').setAttribute('value', 'aws_s3_bucket.logs.id');
+      ok(f.module('network')!.removeAttribute('source'), 'removeAttribute reports found');
       const out = tfmod.stringify(f);
       ok(out.indexOf('output "bucket_name" {') >= 0, 'block added');
       ok(out.indexOf('value = aws_s3_bucket.logs.id') >= 0, 'attribute added');
@@ -104,7 +104,7 @@ const suite: RenderHook = {
       eq(f.addVariable('region').name(), 'region', 'variable name');
       eq(f.locals().length, 1, 'the parsed locals block is its own type');
       const m = f.addModule('network');
-      m.body().setAttribute('source', '"./modules/network"');
+      m.setAttribute('source', '"./modules/network"');
       eq(m.source(), './modules/network', 'a modelled block reads its key attribute');
 
       const out = tfmod.stringify(f);
@@ -118,7 +118,7 @@ const suite: RenderHook = {
       const src = 'resource "aws_instance" "web" {\n  provisioner "local-exec" {\n    command = "echo hi"\n  }\n}\n';
       const f = tfmod.parse(src);
       eq(tfmod.stringify(f), src, 'a file with a nested block round trips');
-      const nested = f.resource('aws_instance', 'web')!.body().blocks();
+      const nested = f.resource('aws_instance', 'web')!.blocks();
       eq(nested.length, 1, 'one nested block');
       eq(nested[0].blockType(), 'provisioner', 'nested block type');
       eq(JSON.stringify(nested[0].labels()), '["local-exec"]', 'nested block labels');
@@ -131,7 +131,7 @@ const suite: RenderHook = {
         'resource "aws_s3_bucket" "c" {\n  bucket = "c"\n}\n';
       const f = tfmod.parse(src);
       ok(f.resource('aws_s3_bucket', 'b')!.delete(), 'delete a resource in the middle');
-      ok(f.body().comments()[1].delete(), 'delete the comment that described it');
+      ok(f.comments()[1].delete(), 'delete the comment that described it');
       const out = tfmod.stringify(f);
       ok(out.indexOf('"b"') < 0, 'the resource is gone');
       ok(out.indexOf('Drop this comment') < 0, 'and so is the comment');
@@ -157,7 +157,7 @@ const suite: RenderHook = {
         'variable "region" {\n  default = "us-east-1"\n}\n';
       const f = tfmod.parse(src);
       ok(f.variable('region')!.delete(), 'delete a variable by its own handle');
-      ok(f.resource('aws_s3_bucket', 'a')!.body().attribute('acl')!.delete(), 'delete an attribute');
+      ok(f.resource('aws_s3_bucket', 'a')!.attribute('acl')!.delete(), 'delete an attribute');
       const out = tfmod.stringify(f);
       ok(out.indexOf('region') < 0, 'variable gone');
       ok(out.indexOf('acl') < 0, 'attribute gone');
@@ -170,8 +170,8 @@ const suite: RenderHook = {
       eq(f.resource('nope', 'nope'), null, 'a missing resource is null');
       eq(f.provider('nope'), null, 'a missing provider is null');
       eq(f.variable('nope'), null, 'a missing variable is null');
-      eq(f.module('nope')?.body().attribute('source')?.expr() ?? '', '', 'a chain through a miss yields nothing');
-      eq(f.resource('nope', 'nope')?.body().attribute('acl')?.delete() ?? false, false, 'deleting through a miss');
+      eq(f.module('nope')?.attribute('source')?.expr() ?? '', '', 'a chain through a miss yields nothing');
+      eq(f.resource('nope', 'nope')?.attribute('acl')?.delete() ?? false, false, 'deleting through a miss');
       eq(tfmod.stringify(f), messySrc, 'none of it changed the file');
     }
 
@@ -182,12 +182,12 @@ const suite: RenderHook = {
         '  # Last comment\n}\n';
       const f = tfmod.parse(src);
       eq(tfmod.stringify(f), src, 'round trip');
-      const texts = f.resource('aws_s3_bucket', 'logs')!.body().comments().map((c) => c.text());
+      const texts = f.resource('aws_s3_bucket', 'logs')!.comments().map((c) => c.text());
       eq(JSON.stringify(texts),
         JSON.stringify(['# trailing comment', '# Standalone comment.', '# Last comment']),
         'the one inside the expression belongs to the attribute');
 
-      f.resource('aws_s3_bucket', 'logs')!.body().setAttribute('bucket', '"changed"');
+      f.resource('aws_s3_bucket', 'logs')!.setAttribute('bucket', '"changed"');
       const out = tfmod.stringify(f);
       eq(count(out, '# inside the expression'), 1, 'not duplicated by a reprint');
       eq(count(out, '# Last comment'), 1, 'not duplicated');
@@ -234,7 +234,7 @@ const suite: RenderHook = {
       // Two levels down.
       const lifecycle = res.blocks()[0];
       eq(lifecycle.blockType(), 'lifecycle', 'first nested block');
-      eq(lifecycle.body().blocks()[0].blockType(), 'precondition', 'nested two deep');
+      eq(lifecycle.blocks()[0].blockType(), 'precondition', 'nested two deep');
 
       ok(typesIn(f.variable('region')!.body()).indexOf('validation') >= 0, 'validation nests in variable');
       ok(typesIn(f.check('health')!.body()).indexOf('assert') >= 0, 'assert nests in check');
@@ -248,7 +248,7 @@ const suite: RenderHook = {
     {
       const f = tfmod.parse(everySrc);
       const blocks = f.blocks();
-      blocks.forEach((b) => b.body().setAttribute('veil_touched', '"yes"'));
+      blocks.forEach((b) => b.setAttribute('veil_touched', '"yes"'));
       const out = tfmod.stringify(f);
       eq(count(out, 'veil_touched'), blocks.length, 'every block took the edit exactly once');
       eq(tfmod.stringify(tfmod.parse(out)), out, 'an edited file is stable on reparse');
@@ -260,14 +260,14 @@ const suite: RenderHook = {
     {
       const f = tfmod.parse('');
       const tf = f.addTerraform();
-      tf.body().setAttribute('required_version', '">= 1.5"');
-      tf.body().nestedBlock('required_providers').body()
+      tf.setAttribute('required_version', '">= 1.5"');
+      tf.addBlock('required_providers')
         .setAttribute('aws', '{ source = "hashicorp/aws", version = "~> 5.0" }');
-      f.addVariable('region').body().setAttribute('type', 'string');
+      f.addVariable('region').setAttribute('type', 'string');
       const r = f.addResource('aws_s3_bucket', 'logs');
-      r.body().setAttribute('bucket', '"acme-logs"');
-      r.body().nestedBlock('lifecycle').body().setAttribute('prevent_destroy', 'true');
-      f.addOutput('id').body().setAttribute('value', 'aws_s3_bucket.logs.id');
+      r.setAttribute('bucket', '"acme-logs"');
+      r.addBlock('lifecycle').setAttribute('prevent_destroy', 'true');
+      f.addOutput('id').setAttribute('value', 'aws_s3_bucket.logs.id');
 
       const out = tfmod.stringify(f);
       ok(out.slice(-2) === '}\n', 'a generated file ends with a newline');

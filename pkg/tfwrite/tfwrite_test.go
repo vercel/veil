@@ -458,17 +458,17 @@ func (s *TFWriteSuite) TestBuildFromBlank() {
 	s.Require().NoError(err)
 
 	tf := f.AddTerraform()
-	tf.Body().SetAttribute("required_version", `">= 1.5"`)
-	tf.Body().NestedBlock("required_providers").Body().
+	tf.SetAttribute("required_version", `">= 1.5"`)
+	tf.AddBlock("required_providers").
 		SetAttribute("aws", `{ source = "hashicorp/aws", version = "~> 5.0" }`)
 
-	f.AddVariable("region").Body().SetAttribute("type", "string")
+	f.AddVariable("region").SetAttribute("type", "string")
 
 	r := f.AddResource("aws_s3_bucket", "logs")
-	r.Body().SetAttribute("bucket", `"acme-logs"`)
-	r.Body().NestedBlock("lifecycle").Body().SetAttribute("prevent_destroy", "true")
+	r.SetAttribute("bucket", `"acme-logs"`)
+	r.AddBlock("lifecycle").SetAttribute("prevent_destroy", "true")
 
-	f.AddOutput("id").Body().SetAttribute("value", "aws_s3_bucket.logs.id")
+	f.AddOutput("id").SetAttribute("value", "aws_s3_bucket.logs.id")
 
 	out := f.String()
 	s.True(strings.HasSuffix(out, "}\n"), "a generated file ends with a newline")

@@ -70,6 +70,21 @@ const terraformClassesJS = `
     labels() { return (this.node.labels || []).slice(); }
     body() { return new TFBody(this.node, this.node.items || (this.node.items = [])); }
     delete() { return this.owner._removeNode(this.node); }
+
+    // A block is the thing you looked up, so it answers about its own
+    // contents directly rather than routing through body() each time.
+    // body() is still there for holding onto one.
+    attribute(name) { return this.body().attribute(name); }
+    attributes() { return this.body().attributes(); }
+    setAttribute(name, expr) { return this.body().setAttribute(name, expr); }
+    removeAttribute(name) { return this.body().removeAttribute(name); }
+    blocks() { return this.body().blocks(); }
+    block(type) { return this.body().block.apply(this.body(), arguments); }
+    addBlock(type) { return this.body().addBlock.apply(this.body(), arguments); }
+    comments() { return this.body().comments(); }
+    appendComment(text) { return this.body().appendComment(text); }
+    items() { return this.body().items; }
+    remove(item) { return this.body().remove(item); }
   }
 
   class TFResource extends TFBlock {
@@ -256,11 +271,17 @@ const terraformClassesJS = `
       this._touch();
       return wrapBlock(node, this);
     }
-    // nestedBlock adds a block whose shape belongs to its parent rather
+    // addBlock adds a block whose shape belongs to its parent rather
     // than to the file — lifecycle, connection, validation, provisioner.
-    nestedBlock(type) {
+    addBlock(type) {
       var labels = Array.prototype.slice.call(arguments, 1).map(String);
       return this._add(type, labels);
+    }
+    // block finds one of those, or null. Top-level blocks have their own
+    // typed accessors on TFFile.
+    block(type) {
+      var labels = Array.prototype.slice.call(arguments, 1).map(String);
+      return this._find(type, labels);
     }
   }
 
@@ -274,6 +295,8 @@ const terraformClassesJS = `
     }
     body() { return this._body; }
     blocks() { return this._body.blocks(); }
+    comments() { return this._body.comments(); }
+    items() { return this._body.items; }
     remove(item) { return this._body.remove(item); }
 
     resource(t, n) { return this._body._find('resource', [t, n]); }

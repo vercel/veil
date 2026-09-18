@@ -29,9 +29,9 @@ const attachIamPolicy: ServiceDependentHook = {
     }
     // Each consumer gets the policy under its own database's name.
     policy.setName(db.replace(/-/g, '_'));
-    policy.body().setAttribute('name', JSON.stringify(`${db}-access`));
+    policy.setAttribute('name', JSON.stringify(`${db}-access`));
 
-    const arn = policy.body().attribute('policy');
+    const arn = policy.attribute('policy');
     if (arn) {
       arn.setExpr(
         arn

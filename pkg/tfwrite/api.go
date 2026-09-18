@@ -55,6 +55,13 @@ func (b *Body) blocksOfType(blockType string, labels ...string) []Block {
 	return out
 }
 
+// Block returns the first block of a type whose leading labels match,
+// or nil. For a top-level block prefer the typed accessors on File; this
+// is for the nested ones, whose shape belongs to their parent.
+func (b *Body) Block(blockType string, labels ...string) Block {
+	return b.firstOfType(blockType, labels...)
+}
+
 func (b *Body) firstOfType(blockType string, labels ...string) Block {
 	if b == nil {
 		return nil
@@ -205,10 +212,10 @@ func (b *Body) appendBlock(blockType string, labels ...string) Block {
 	return blk
 }
 
-// NestedBlock adds a block inside this body — lifecycle, connection,
+// AddBlock adds a block inside this body — lifecycle, connection,
 // validation, provisioner and the rest, whose shapes belong to their
 // parent rather than to the file.
-func (b *Body) NestedBlock(blockType string, labels ...string) *Generic {
+func (b *Body) AddBlock(blockType string, labels ...string) *Generic {
 	if b == nil {
 		return nil
 	}
@@ -596,6 +603,24 @@ func (f *File) AddImport() *Import {
 		return nil
 	}
 	return f.body.appendBlock("import").(*Import)
+}
+
+// Comments returns the file's top-level comments, in source order. A
+// comment inside a block belongs to that block.
+func (f *File) Comments() []*Comment {
+	if f == nil {
+		return nil
+	}
+	return f.body.Comments()
+}
+
+// Items returns everything at the top level in source order — blocks and
+// the comments between them.
+func (f *File) Items() []Item {
+	if f == nil {
+		return nil
+	}
+	return f.body.Items()
 }
 
 // Blocks returns every top-level block, whatever its type.
