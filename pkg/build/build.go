@@ -718,6 +718,9 @@ export interface TFAttribute {
   /** Replace the expression with raw source text, so the caller decides
    *  between a literal and a reference. */
   setExpr(expr: string): TFAttribute;
+  /** Replace it with an encoded value — the same encoding setAttribute
+   *  uses. */
+  setValue(value: unknown): TFAttribute;
   delete(): boolean;
 }
 
@@ -735,8 +738,16 @@ export interface TFBody {
   attributes(): TFAttribute[];
   comments(): TFComment[];
   attribute(name: string): TFAttribute | null;
-  /** Set an attribute, appending it when absent. expr is source text. */
-  setAttribute(name: string, expr: string): TFAttribute;
+  /** Set an attribute to a value, appending it when absent. The value is
+   *  encoded as HCL: a string becomes a quoted literal, a number or
+   *  boolean its own, an array a list, an object an object, nested as
+   *  deep as it goes. A string is a string — for a reference or a
+   *  function call use setAttributeRaw, or pass "${var.region}", which
+   *  is unwrapped back into the expression it denotes. */
+  setAttribute(name: string, value: unknown): TFAttribute;
+  /** Set an attribute to raw source text, for an expression rather than
+   *  a value. Written as given. */
+  setAttributeRaw(name: string, expr: string): TFAttribute;
   removeAttribute(name: string): boolean;
   appendComment(text: string): TFComment;
   /** Add a block whose shape belongs to its parent rather than to the
@@ -760,7 +771,8 @@ export interface TFBlock {
 
   attribute(name: string): TFAttribute | null;
   attributes(): TFAttribute[];
-  setAttribute(name: string, expr: string): TFAttribute;
+  setAttribute(name: string, value: unknown): TFAttribute;
+  setAttributeRaw(name: string, expr: string): TFAttribute;
   removeAttribute(name: string): boolean;
   blocks(): TFBlock[];
   block(type: string, ...labels: string[]): TFBlock | null;

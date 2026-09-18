@@ -24,6 +24,8 @@ package tfwrite
 
 import (
 	"strings"
+
+	"github.com/vercel/veil/pkg/codec"
 )
 
 // File is a parsed Terraform file.
@@ -157,6 +159,19 @@ func (a *Attribute) Expr() string {
 		return ""
 	}
 	return a.expr
+}
+
+// SetValue replaces the expression with an encoded value — the same
+// encoding Body.SetAttribute uses.
+func (a *Attribute) SetValue(value any) {
+	if a == nil {
+		return
+	}
+	expr, err := codec.HCLExpr(value)
+	if err != nil {
+		return
+	}
+	a.SetExpr(expr)
 }
 
 // SetExpr replaces the expression with raw source text.

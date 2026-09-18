@@ -787,6 +787,20 @@ func installHostFuncs(rt *qjs.Runtime, cfg options) error {
 	if err != nil {
 		return fmt.Errorf("wrapping terraform tree print: %w", err)
 	}
+	tfExprFn, err := qjs.FuncToJS(rt.Context(), func(jsonValue string) (string, error) {
+		var v any
+		if err := json.Unmarshal([]byte(jsonValue), &v); err != nil {
+			return "", fmt.Errorf("setAttribute: %w", err)
+		}
+		out, err := codec.HCLExpr(v)
+		if err != nil {
+			return "", fmt.Errorf("setAttribute: %w", err)
+		}
+		return out, nil
+	})
+	if err != nil {
+		return fmt.Errorf("wrapping terraform value encoder: %w", err)
+	}
 	validateFn, err := qjs.FuncToJS(rt.Context(), func(kind, resource, path, contents string) (string, error) {
 		if cfg.validateSource == nil {
 			return "", nil
@@ -809,6 +823,7 @@ func installHostFuncs(rt *qjs.Runtime, cfg options) error {
 	global.SetPropertyStr("__veilTerraformStringify", tfStringifyFn)
 	global.SetPropertyStr("__veilTfTree", tfTreeFn)
 	global.SetPropertyStr("__veilTfPrint", tfPrintFn)
+	global.SetPropertyStr("__veilTfExpr", tfExprFn)
 	global.SetPropertyStr("__veilValidateSource", validateFn)
 	return nil
 }
@@ -1093,6 +1108,7 @@ const hostNamespaceJS = `
   delete globalThis.__veilTerraformStringify;
   delete globalThis.__veilTfTree;
   delete globalThis.__veilTfPrint;
+  delete globalThis.__veilTfExpr;
   delete globalThis.__veilTF;
   delete globalThis.__veilValidateSource;
 })();

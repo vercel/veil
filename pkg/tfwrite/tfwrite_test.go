@@ -74,7 +74,7 @@ func (s *TFWriteSuite) TestEditIsLocal() {
 	f, err := Parse([]byte(messyFile), "main.tf")
 	s.Require().NoError(err)
 
-	f.Module("network").Body().SetAttribute("source", `"./modules/vpc"`)
+	f.Module("network").Body().SetAttribute("source", "./modules/vpc")
 	out := f.String()
 
 	s.Contains(out, `source = "./modules/vpc"`)
@@ -119,7 +119,7 @@ func (s *TFWriteSuite) TestAddAndRemove() {
 	f, err := Parse([]byte(messyFile), "main.tf")
 	s.Require().NoError(err)
 
-	f.AddOutput("bucket_name").Body().SetAttribute("value", "aws_s3_bucket.logs.id")
+	f.AddOutput("bucket_name").Body().SetAttributeRaw("value", "aws_s3_bucket.logs.id")
 
 	s.True(f.Module("network").Body().RemoveAttribute("source"))
 
@@ -160,7 +160,7 @@ func (s *TFWriteSuite) TestEachBlockTypeHasItsOwnLabels() {
 	s.Require().Len(f.Locals(), 1, "the parsed locals block came through as its own type")
 
 	m := f.AddModule("network")
-	m.Body().SetAttribute("source", `"./modules/network"`)
+	m.Body().SetAttribute("source", "./modules/network")
 	s.Equal("./modules/network", m.Source(), "a modelled block can read its own key attribute")
 
 	out := f.String()
@@ -440,7 +440,7 @@ func (s *TFWriteSuite) TestCommentsInsideExpressionsAreNotItems() {
 	}, texts, "the one inside the expression belongs to the attribute, not the body")
 
 	// Force a reprint and check nothing doubled.
-	bucket.Body().SetAttribute("bucket", `"changed"`)
+	bucket.Body().SetAttribute("bucket", "changed")
 	out := f.String()
 	s.Equal(1, strings.Count(out, "# inside the expression"))
 	s.Equal(1, strings.Count(out, "# Last comment"))
@@ -458,17 +458,17 @@ func (s *TFWriteSuite) TestBuildFromBlank() {
 	s.Require().NoError(err)
 
 	tf := f.AddTerraform()
-	tf.SetAttribute("required_version", `">= 1.5"`)
+	tf.SetAttribute("required_version", ">= 1.5")
 	tf.AddBlock("required_providers").
-		SetAttribute("aws", `{ source = "hashicorp/aws", version = "~> 5.0" }`)
+		SetAttribute("aws", map[string]any{"source": "hashicorp/aws", "version": "~> 5.0"})
 
-	f.AddVariable("region").SetAttribute("type", "string")
+	f.AddVariable("region").SetAttributeRaw("type", "string")
 
 	r := f.AddResource("aws_s3_bucket", "logs")
-	r.SetAttribute("bucket", `"acme-logs"`)
-	r.AddBlock("lifecycle").SetAttribute("prevent_destroy", "true")
+	r.SetAttribute("bucket", "acme-logs")
+	r.AddBlock("lifecycle").SetAttribute("prevent_destroy", true)
 
-	f.AddOutput("id").SetAttribute("value", "aws_s3_bucket.logs.id")
+	f.AddOutput("id").SetAttributeRaw("value", "aws_s3_bucket.logs.id")
 
 	out := f.String()
 	s.True(strings.HasSuffix(out, "}\n"), "a generated file ends with a newline")
@@ -538,7 +538,7 @@ func (s *TFWriteSuite) TestRenderRejectsWhatItCannotReparse() {
 	f, err := Parse([]byte("locals {\n  a = 1\n}\n"), "main.tf")
 	s.Require().NoError(err)
 
-	f.Locals()[0].SetAttribute("b", `this is ) not valid (`)
+	f.Locals()[0].SetAttributeRaw("b", `this is ) not valid (`)
 
 	// Bytes still prints it — that is the raw path.
 	s.Contains(f.String(), "not valid")
@@ -554,9 +554,41 @@ func (s *TFWriteSuite) TestRenderRejectsWhatItCannotReparse() {
 func (s *TFWriteSuite) TestRenderPassesValidOutput() {
 	f, err := Parse([]byte(messyFile), "main.tf")
 	s.Require().NoError(err)
-	f.Module("network").SetAttribute("source", `"./modules/vpc"`)
+	f.Module("network").SetAttribute("source", "./modules/vpc")
 
 	out, err := f.Render()
 	s.Require().NoError(err)
 	s.Equal(f.String(), string(out))
+}
+
+// TestSetAttributeEncodesValues covers the split between a value and an
+// expression. A string is a string; a reference goes through the raw
+// form, or through "${...}", which is unwrapped.
+func (s *TFWriteSuite) TestSetAttributeEncodesValues() {
+	f, err := Parse([]byte("locals {\n}\n"), "main.tf")
+	s.Require().NoError(err)
+	l := f.Locals()[0]
+
+	l.SetAttribute("str", "acme")
+	l.SetAttribute("num", 3)
+	l.SetAttribute("bool", true)
+	l.SetAttribute("list", []any{"a", "b"})
+	l.SetAttribute("obj", map[string]any{"env": "prod"})
+	l.SetAttribute("nested", map[string]any{"ports": []any{80, 443}})
+	l.SetAttribute("ref", "${var.region}")
+	l.SetAttributeRaw("call", "jsonencode({ a = 1 })")
+
+	out, err := f.Render()
+	s.Require().NoError(err, "everything encoded has to be valid Terraform")
+	got := string(out)
+
+	s.Contains(got, `"acme"`, "a string is quoted")
+	s.Contains(got, "= 3", "a number is a number")
+	s.Contains(got, "= true", "a bool is a bool")
+	s.Contains(got, `["a", "b"]`, "a slice is a list")
+	s.Contains(got, `env = "prod"`, "a map is an object")
+	s.Contains(got, "443", "nested values go all the way down")
+	s.Contains(got, "ref = var.region", "a whole interpolation is unwrapped")
+	s.NotContains(got, `"${var.region}"`, "and not left quoted")
+	s.Contains(got, "jsonencode({ a = 1 })", "raw is written as given")
 }

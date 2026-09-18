@@ -5,7 +5,7 @@ package tfwrite
 // A block is the thing you looked up, so it answers about its own
 // contents directly:
 //
-//	f.Resource("aws_s3_bucket", "logs").SetAttribute("acl", `"private"`)
+//	f.Resource("aws_s3_bucket", "logs").SetAttribute("acl", "private")
 //
 // rather than routing through Body() every time. Body() is still there
 // for holding onto one, which is what the printer and the JSON layer do.
@@ -26,11 +26,17 @@ func (r *Resource) Attributes() []*Attribute {
 	}
 	return r.block.body.Attributes()
 }
-func (r *Resource) SetAttribute(name, expr string) *Attribute {
+func (r *Resource) SetAttribute(name string, value any) *Attribute {
 	if r == nil {
 		return nil
 	}
-	return r.block.body.SetAttribute(name, expr)
+	return r.block.body.SetAttribute(name, value)
+}
+func (r *Resource) SetAttributeRaw(name, expr string) *Attribute {
+	if r == nil {
+		return nil
+	}
+	return r.block.body.SetAttributeRaw(name, expr)
 }
 func (r *Resource) RemoveAttribute(name string) bool {
 	if r == nil {
@@ -92,11 +98,17 @@ func (d *DataSource) Attributes() []*Attribute {
 	}
 	return d.block.body.Attributes()
 }
-func (d *DataSource) SetAttribute(name, expr string) *Attribute {
+func (d *DataSource) SetAttribute(name string, value any) *Attribute {
 	if d == nil {
 		return nil
 	}
-	return d.block.body.SetAttribute(name, expr)
+	return d.block.body.SetAttribute(name, value)
+}
+func (d *DataSource) SetAttributeRaw(name, expr string) *Attribute {
+	if d == nil {
+		return nil
+	}
+	return d.block.body.SetAttributeRaw(name, expr)
 }
 func (d *DataSource) RemoveAttribute(name string) bool {
 	if d == nil {
@@ -158,11 +170,17 @@ func (e *Ephemeral) Attributes() []*Attribute {
 	}
 	return e.block.body.Attributes()
 }
-func (e *Ephemeral) SetAttribute(name, expr string) *Attribute {
+func (e *Ephemeral) SetAttribute(name string, value any) *Attribute {
 	if e == nil {
 		return nil
 	}
-	return e.block.body.SetAttribute(name, expr)
+	return e.block.body.SetAttribute(name, value)
+}
+func (e *Ephemeral) SetAttributeRaw(name, expr string) *Attribute {
+	if e == nil {
+		return nil
+	}
+	return e.block.body.SetAttributeRaw(name, expr)
 }
 func (e *Ephemeral) RemoveAttribute(name string) bool {
 	if e == nil {
@@ -224,11 +242,17 @@ func (a *Action) Attributes() []*Attribute {
 	}
 	return a.block.body.Attributes()
 }
-func (a *Action) SetAttribute(name, expr string) *Attribute {
+func (a *Action) SetAttribute(name string, value any) *Attribute {
 	if a == nil {
 		return nil
 	}
-	return a.block.body.SetAttribute(name, expr)
+	return a.block.body.SetAttribute(name, value)
+}
+func (a *Action) SetAttributeRaw(name, expr string) *Attribute {
+	if a == nil {
+		return nil
+	}
+	return a.block.body.SetAttributeRaw(name, expr)
 }
 func (a *Action) RemoveAttribute(name string) bool {
 	if a == nil {
@@ -290,11 +314,17 @@ func (p *Provider) Attributes() []*Attribute {
 	}
 	return p.block.body.Attributes()
 }
-func (p *Provider) SetAttribute(name, expr string) *Attribute {
+func (p *Provider) SetAttribute(name string, value any) *Attribute {
 	if p == nil {
 		return nil
 	}
-	return p.block.body.SetAttribute(name, expr)
+	return p.block.body.SetAttribute(name, value)
+}
+func (p *Provider) SetAttributeRaw(name, expr string) *Attribute {
+	if p == nil {
+		return nil
+	}
+	return p.block.body.SetAttributeRaw(name, expr)
 }
 func (p *Provider) RemoveAttribute(name string) bool {
 	if p == nil {
@@ -356,11 +386,17 @@ func (v *Variable) Attributes() []*Attribute {
 	}
 	return v.block.body.Attributes()
 }
-func (v *Variable) SetAttribute(name, expr string) *Attribute {
+func (v *Variable) SetAttribute(name string, value any) *Attribute {
 	if v == nil {
 		return nil
 	}
-	return v.block.body.SetAttribute(name, expr)
+	return v.block.body.SetAttribute(name, value)
+}
+func (v *Variable) SetAttributeRaw(name, expr string) *Attribute {
+	if v == nil {
+		return nil
+	}
+	return v.block.body.SetAttributeRaw(name, expr)
 }
 func (v *Variable) RemoveAttribute(name string) bool {
 	if v == nil {
@@ -422,11 +458,17 @@ func (o *Output) Attributes() []*Attribute {
 	}
 	return o.block.body.Attributes()
 }
-func (o *Output) SetAttribute(name, expr string) *Attribute {
+func (o *Output) SetAttribute(name string, value any) *Attribute {
 	if o == nil {
 		return nil
 	}
-	return o.block.body.SetAttribute(name, expr)
+	return o.block.body.SetAttribute(name, value)
+}
+func (o *Output) SetAttributeRaw(name, expr string) *Attribute {
+	if o == nil {
+		return nil
+	}
+	return o.block.body.SetAttributeRaw(name, expr)
 }
 func (o *Output) RemoveAttribute(name string) bool {
 	if o == nil {
@@ -488,11 +530,17 @@ func (m *Module) Attributes() []*Attribute {
 	}
 	return m.block.body.Attributes()
 }
-func (m *Module) SetAttribute(name, expr string) *Attribute {
+func (m *Module) SetAttribute(name string, value any) *Attribute {
 	if m == nil {
 		return nil
 	}
-	return m.block.body.SetAttribute(name, expr)
+	return m.block.body.SetAttribute(name, value)
+}
+func (m *Module) SetAttributeRaw(name, expr string) *Attribute {
+	if m == nil {
+		return nil
+	}
+	return m.block.body.SetAttributeRaw(name, expr)
 }
 func (m *Module) RemoveAttribute(name string) bool {
 	if m == nil {
@@ -554,11 +602,17 @@ func (c *Check) Attributes() []*Attribute {
 	}
 	return c.block.body.Attributes()
 }
-func (c *Check) SetAttribute(name, expr string) *Attribute {
+func (c *Check) SetAttribute(name string, value any) *Attribute {
 	if c == nil {
 		return nil
 	}
-	return c.block.body.SetAttribute(name, expr)
+	return c.block.body.SetAttribute(name, value)
+}
+func (c *Check) SetAttributeRaw(name, expr string) *Attribute {
+	if c == nil {
+		return nil
+	}
+	return c.block.body.SetAttributeRaw(name, expr)
 }
 func (c *Check) RemoveAttribute(name string) bool {
 	if c == nil {
@@ -620,11 +674,17 @@ func (t *Terraform) Attributes() []*Attribute {
 	}
 	return t.block.body.Attributes()
 }
-func (t *Terraform) SetAttribute(name, expr string) *Attribute {
+func (t *Terraform) SetAttribute(name string, value any) *Attribute {
 	if t == nil {
 		return nil
 	}
-	return t.block.body.SetAttribute(name, expr)
+	return t.block.body.SetAttribute(name, value)
+}
+func (t *Terraform) SetAttributeRaw(name, expr string) *Attribute {
+	if t == nil {
+		return nil
+	}
+	return t.block.body.SetAttributeRaw(name, expr)
 }
 func (t *Terraform) RemoveAttribute(name string) bool {
 	if t == nil {
@@ -686,11 +746,17 @@ func (l *Locals) Attributes() []*Attribute {
 	}
 	return l.block.body.Attributes()
 }
-func (l *Locals) SetAttribute(name, expr string) *Attribute {
+func (l *Locals) SetAttribute(name string, value any) *Attribute {
 	if l == nil {
 		return nil
 	}
-	return l.block.body.SetAttribute(name, expr)
+	return l.block.body.SetAttribute(name, value)
+}
+func (l *Locals) SetAttributeRaw(name, expr string) *Attribute {
+	if l == nil {
+		return nil
+	}
+	return l.block.body.SetAttributeRaw(name, expr)
 }
 func (l *Locals) RemoveAttribute(name string) bool {
 	if l == nil {
@@ -752,11 +818,17 @@ func (mv *Moved) Attributes() []*Attribute {
 	}
 	return mv.block.body.Attributes()
 }
-func (mv *Moved) SetAttribute(name, expr string) *Attribute {
+func (mv *Moved) SetAttribute(name string, value any) *Attribute {
 	if mv == nil {
 		return nil
 	}
-	return mv.block.body.SetAttribute(name, expr)
+	return mv.block.body.SetAttribute(name, value)
+}
+func (mv *Moved) SetAttributeRaw(name, expr string) *Attribute {
+	if mv == nil {
+		return nil
+	}
+	return mv.block.body.SetAttributeRaw(name, expr)
 }
 func (mv *Moved) RemoveAttribute(name string) bool {
 	if mv == nil {
@@ -818,11 +890,17 @@ func (rm *Removed) Attributes() []*Attribute {
 	}
 	return rm.block.body.Attributes()
 }
-func (rm *Removed) SetAttribute(name, expr string) *Attribute {
+func (rm *Removed) SetAttribute(name string, value any) *Attribute {
 	if rm == nil {
 		return nil
 	}
-	return rm.block.body.SetAttribute(name, expr)
+	return rm.block.body.SetAttribute(name, value)
+}
+func (rm *Removed) SetAttributeRaw(name, expr string) *Attribute {
+	if rm == nil {
+		return nil
+	}
+	return rm.block.body.SetAttributeRaw(name, expr)
 }
 func (rm *Removed) RemoveAttribute(name string) bool {
 	if rm == nil {
@@ -884,11 +962,17 @@ func (i *Import) Attributes() []*Attribute {
 	}
 	return i.block.body.Attributes()
 }
-func (i *Import) SetAttribute(name, expr string) *Attribute {
+func (i *Import) SetAttribute(name string, value any) *Attribute {
 	if i == nil {
 		return nil
 	}
-	return i.block.body.SetAttribute(name, expr)
+	return i.block.body.SetAttribute(name, value)
+}
+func (i *Import) SetAttributeRaw(name, expr string) *Attribute {
+	if i == nil {
+		return nil
+	}
+	return i.block.body.SetAttributeRaw(name, expr)
 }
 func (i *Import) RemoveAttribute(name string) bool {
 	if i == nil {
@@ -950,11 +1034,17 @@ func (g *Generic) Attributes() []*Attribute {
 	}
 	return g.block.body.Attributes()
 }
-func (g *Generic) SetAttribute(name, expr string) *Attribute {
+func (g *Generic) SetAttribute(name string, value any) *Attribute {
 	if g == nil {
 		return nil
 	}
-	return g.block.body.SetAttribute(name, expr)
+	return g.block.body.SetAttribute(name, value)
+}
+func (g *Generic) SetAttributeRaw(name, expr string) *Attribute {
+	if g == nil {
+		return nil
+	}
+	return g.block.body.SetAttributeRaw(name, expr)
 }
 func (g *Generic) RemoveAttribute(name string) bool {
 	if g == nil {

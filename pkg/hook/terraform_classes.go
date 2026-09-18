@@ -23,6 +23,7 @@ const terraformClassesJS = `
   // and these have to keep working after that.
   var nativeTree = globalThis.__veilTfTree;
   var nativePrint = globalThis.__veilTfPrint;
+  var nativeExpr = globalThis.__veilTfExpr;
 
   function labelAt(node, i) {
     return node && node.labels && node.labels.length > i ? node.labels[i] : '';
@@ -52,6 +53,9 @@ const terraformClassesJS = `
     setName(n) { this.node.name = String(n); this.node.changed = true; return this; }
     expr() { return this.node.expr; }
     setExpr(expr) { this.node.expr = String(expr); this.node.changed = true; return this; }
+    // The same encoding setAttribute uses, so an attribute already in
+    // hand can be given a value rather than source text.
+    setValue(v) { return this.setExpr(nativeExpr(JSON.stringify(v === undefined ? null : v))); }
     delete() { return this.owner._removeNode(this.node); }
   }
 
@@ -77,7 +81,8 @@ const terraformClassesJS = `
     // body() is still there for holding onto one.
     attribute(name) { return this.body().attribute(name); }
     attributes() { return this.body().attributes(); }
-    setAttribute(name, expr) { return this.body().setAttribute(name, expr); }
+    setAttribute(name, value) { return this.body().setAttribute(name, value); }
+    setAttributeRaw(name, expr) { return this.body().setAttributeRaw(name, expr); }
     removeAttribute(name) { return this.body().removeAttribute(name); }
     blocks() { return this.body().blocks(); }
     block(type) { return this.body().block.apply(this.body(), arguments); }
@@ -218,7 +223,24 @@ const terraformClassesJS = `
       }
       return null;
     }
-    setAttribute(name, expr) {
+    // setAttribute takes a value and encodes it as HCL: a string becomes
+    // a quoted literal, a number or bool its own, an array a list, an
+    // object an object, nested as deep as it goes. Encoding happens on
+    // the host so both sides agree exactly.
+    //
+    //   setAttribute('bucket', 'acme-logs')      bucket = "acme-logs"
+    //   setAttribute('count', 2)                 count  = 2
+    //   setAttribute('tags', { env: 'prod' })    tags   = { env = "prod" }
+    //
+    // A string is a string, so a reference goes through
+    // setAttributeRaw — or through '${var.region}', which is unwrapped
+    // back into the expression it denotes.
+    setAttribute(name, value) {
+      return this.setAttributeRaw(name, nativeExpr(JSON.stringify(value === undefined ? null : value)));
+    }
+    // setAttributeRaw takes source text, for an expression rather than a
+    // value: a reference, a function call, a heredoc.
+    setAttributeRaw(name, expr) {
       var existing = this.attribute(name);
       if (existing) return existing.setExpr(expr);
       var node = { kind: 'attribute', name: name, expr: String(expr), spanned: false, changed: true };

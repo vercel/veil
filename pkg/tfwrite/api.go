@@ -1,5 +1,7 @@
 package tfwrite
 
+import "github.com/vercel/veil/pkg/codec"
+
 // ---- reading a body ----------------------------------------------------
 
 // Items returns the body's contents in source order.
@@ -116,10 +118,32 @@ func (b *Body) Comments() []*Comment {
 
 // ---- editing a body ----------------------------------------------------
 
-// SetAttribute sets an attribute's expression, appending it when it is
-// not already present. expr is raw source text, so the caller decides
-// between a literal and an expression.
-func (b *Body) SetAttribute(name, expr string) *Attribute {
+// SetAttribute sets an attribute to a value, appending it when it is not
+// already present. The value is encoded as HCL: a string becomes a
+// quoted literal, a number or bool its own literal, a slice a list, a
+// map an object, nested as deep as it goes.
+//
+//	SetAttribute("bucket", "acme-logs")                 bucket = "acme-logs"
+//	SetAttribute("count", 2)                            count  = 2
+//	SetAttribute("tags", map[string]any{"env": "prod"}) tags   = { env = "prod" }
+//
+// A string is a string, so writing a reference goes through
+// SetAttributeRaw — or through "${var.region}", which is unwrapped back
+// into the expression it denotes.
+//
+// An unencodable value leaves the body alone and returns nil.
+func (b *Body) SetAttribute(name string, value any) *Attribute {
+	expr, err := codec.HCLExpr(value)
+	if err != nil {
+		return nil
+	}
+	return b.SetAttributeRaw(name, expr)
+}
+
+// SetAttributeRaw sets an attribute to raw source text, for an
+// expression rather than a value: a reference, a function call, a
+// heredoc. Written as given, so what it means is the caller's.
+func (b *Body) SetAttributeRaw(name, expr string) *Attribute {
 	if b == nil {
 		return nil
 	}

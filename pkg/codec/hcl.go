@@ -64,6 +64,26 @@ var terraformBlockLabels = map[string]int{
 // written unquoted in native syntax, so they go back unquoted.
 var wholeInterpolation = regexp.MustCompile(`^\$\{([\s\S]*)\}$`)
 
+// HCLExpr renders one value as an HCL expression: a string becomes a
+// quoted literal, a number or bool its own literal, a slice a list, a
+// map an object. Nested values go the same way, so an object of lists of
+// strings comes out as one.
+//
+// The exception is a string that is entirely one interpolation —
+// "${var.region}" — which is written unquoted as the expression it
+// denotes, the same as anywhere else in this package.
+func HCLExpr(value any) (string, error) {
+	tokens, err := tokensFor(value)
+	if err != nil {
+		return "", err
+	}
+	// Format it the way hclwrite would, so a generated object or list
+	// comes out spaced and indented rather than as a run of tokens.
+	// Formatting wants a whole line, so it gets one and gives it back.
+	formatted := hclwrite.Format([]byte("_ = " + string(tokens.Bytes())))
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(formatted)), "_ =")), nil
+}
+
 // JSONToHCL renders the Terraform JSON shape back as native HCL.
 //
 // It is the inverse of HCLToJSON for structure and values, not for
@@ -238,6 +258,30 @@ func ctyValue(value any) (cty.Value, error) {
 		return cty.StringVal(v), nil
 	case float64:
 		return cty.NumberFloatVal(v), nil
+	case float32:
+		return cty.NumberFloatVal(float64(v)), nil
+	// JSON only ever yields float64, but a Go caller writes 3, not 3.0,
+	// and an unhandled int used to fail the whole encode silently.
+	case int:
+		return cty.NumberIntVal(int64(v)), nil
+	case int8:
+		return cty.NumberIntVal(int64(v)), nil
+	case int16:
+		return cty.NumberIntVal(int64(v)), nil
+	case int32:
+		return cty.NumberIntVal(int64(v)), nil
+	case int64:
+		return cty.NumberIntVal(v), nil
+	case uint:
+		return cty.NumberUIntVal(uint64(v)), nil
+	case uint8:
+		return cty.NumberUIntVal(uint64(v)), nil
+	case uint16:
+		return cty.NumberUIntVal(uint64(v)), nil
+	case uint32:
+		return cty.NumberUIntVal(uint64(v)), nil
+	case uint64:
+		return cty.NumberUIntVal(v), nil
 	case json.Number:
 		f, err := v.Float64()
 		if err != nil {

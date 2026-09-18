@@ -864,5 +864,5 @@ func (s *E2ESuite) TestDependentHookShipsItsOwnFileToTheConsumer() {
 func (s *E2ESuite) TestTFWriteSuiteRunsInJavaScript() {
 	out := s.render("resources/tfcheck.json")
 	ran := strings.TrimSpace(s.read(out, "tfwrite-suite", "sources/tfwrite-checks.txt"))
-	s.Equal("108", ran, "every check in the JS port ran")
+	s.Equal("117", ran, "every check in the JS port ran")
 }

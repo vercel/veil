@@ -67,7 +67,7 @@ func (s *TFWriteSuite) TestNilBodyIsSafe() {
 	s.Nil(b.Attributes())
 	s.Nil(b.Comments())
 	s.Nil(b.Attribute("x"))
-	s.Nil(b.SetAttribute("x", `"y"`))
+	s.Nil(b.SetAttribute("x", "y"))
 	s.Nil(b.AppendComment("hi"))
 	s.Nil(b.AddBlock("lifecycle"))
 	s.False(b.RemoveAttribute("x"))

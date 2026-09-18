@@ -53,7 +53,7 @@ const suite: RenderHook = {
     // --- an edit is local -------------------------------------------------
     {
       const f = tfmod.parse(messySrc);
-      f.module('network')!.setAttribute('source', '"./modules/vpc"');
+      f.module('network')!.setAttribute('source', './modules/vpc');
       const out = tfmod.stringify(f);
       ok(out.indexOf('source = "./modules/vpc"') >= 0, 'edited attribute');
       ok(out.indexOf('./modules/network') < 0, 'old value gone');
@@ -85,7 +85,7 @@ const suite: RenderHook = {
     // --- add and remove ----------------------------------------------------
     {
       const f = tfmod.parse(messySrc);
-      f.addOutput('bucket_name').setAttribute('value', 'aws_s3_bucket.logs.id');
+      f.addOutput('bucket_name').setAttributeRaw('value', 'aws_s3_bucket.logs.id');
       ok(f.module('network')!.removeAttribute('source'), 'removeAttribute reports found');
       const out = tfmod.stringify(f);
       ok(out.indexOf('output "bucket_name" {') >= 0, 'block added');
@@ -104,7 +104,7 @@ const suite: RenderHook = {
       eq(f.addVariable('region').name(), 'region', 'variable name');
       eq(f.locals().length, 1, 'the parsed locals block is its own type');
       const m = f.addModule('network');
-      m.setAttribute('source', '"./modules/network"');
+      m.setAttribute('source', './modules/network');
       eq(m.source(), './modules/network', 'a modelled block reads its key attribute');
 
       const out = tfmod.stringify(f);
@@ -187,7 +187,7 @@ const suite: RenderHook = {
         JSON.stringify(['# trailing comment', '# Standalone comment.', '# Last comment']),
         'the one inside the expression belongs to the attribute');
 
-      f.resource('aws_s3_bucket', 'logs')!.setAttribute('bucket', '"changed"');
+      f.resource('aws_s3_bucket', 'logs')!.setAttribute('bucket', 'changed');
       const out = tfmod.stringify(f);
       eq(count(out, '# inside the expression'), 1, 'not duplicated by a reprint');
       eq(count(out, '# Last comment'), 1, 'not duplicated');
@@ -248,7 +248,7 @@ const suite: RenderHook = {
     {
       const f = tfmod.parse(everySrc);
       const blocks = f.blocks();
-      blocks.forEach((b) => b.setAttribute('veil_touched', '"yes"'));
+      blocks.forEach((b) => b.setAttribute('veil_touched', 'yes'));
       const out = tfmod.stringify(f);
       eq(count(out, 'veil_touched'), blocks.length, 'every block took the edit exactly once');
       eq(tfmod.stringify(tfmod.parse(out)), out, 'an edited file is stable on reparse');
@@ -290,7 +290,7 @@ const suite: RenderHook = {
     // --- stringify refuses output that is not Terraform --------------------------
     {
       const f = tfmod.parse('locals {\n  a = 1\n}\n');
-      f.locals()[0].setAttribute('b', 'this is ) not valid (');
+      f.locals()[0].setAttributeRaw('b', 'this is ) not valid (');
       let threw = false;
       try {
         tfmod.stringify(f);
@@ -300,18 +300,44 @@ const suite: RenderHook = {
       ok(threw, 'a malformed expression is caught at stringify, not at terraform plan');
     }
 
+    // --- setAttribute encodes native values ---------------------------------------
+    {
+      const f = tfmod.parse('locals {\n}\n');
+      const l = f.locals()[0];
+      l.setAttribute('str', 'acme');
+      l.setAttribute('num', 3);
+      l.setAttribute('bool', true);
+      l.setAttribute('list', ['a', 'b']);
+      l.setAttribute('obj', { env: 'prod', n: 2 });
+      l.setAttribute('nested', { tags: { k: 'v' }, ports: [80, 443] });
+      l.setAttribute('ref', '${var.region}');
+      l.setAttributeRaw('call', 'jsonencode({ a = 1 })');
+
+      const out = tfmod.stringify(f);
+      ok(out.indexOf('str  = "acme"') >= 0 || out.indexOf('str = "acme"') >= 0, 'string is quoted');
+      ok(out.indexOf('num') >= 0 && out.indexOf('= 3') >= 0, 'number is a number');
+      ok(out.indexOf('= true') >= 0, 'bool is a bool');
+      ok(out.indexOf('["a", "b"]') >= 0 || out.indexOf('["a","b"]') >= 0, 'array is a list');
+      ok(out.indexOf('env') >= 0 && out.indexOf('"prod"') >= 0, 'object is an object');
+      ok(out.indexOf('ports') >= 0 && out.indexOf('443') >= 0, 'nested values go all the way down');
+      ok(out.indexOf('ref') >= 0 && out.indexOf('var.region') >= 0 && out.indexOf('"${var.region}"') < 0,
+        'a whole interpolation is unwrapped into the expression');
+      ok(out.indexOf('jsonencode({ a = 1 })') >= 0, 'setAttributeRaw writes source text as given');
+      eq(tfmod.stringify(tfmod.parse(out)), out, 'encoded output is valid and stable');
+    }
+
     // --- building a file from nothing ------------------------------------------------------
     {
       const f = tfmod.parse('');
       const tf = f.addTerraform();
-      tf.setAttribute('required_version', '">= 1.5"');
+      tf.setAttribute('required_version', '>= 1.5');
       tf.addBlock('required_providers')
-        .setAttribute('aws', '{ source = "hashicorp/aws", version = "~> 5.0" }');
-      f.addVariable('region').setAttribute('type', 'string');
+        .setAttribute('aws', { source: 'hashicorp/aws', version: '~> 5.0' });
+      f.addVariable('region').setAttributeRaw('type', 'string');
       const r = f.addResource('aws_s3_bucket', 'logs');
-      r.setAttribute('bucket', '"acme-logs"');
-      r.addBlock('lifecycle').setAttribute('prevent_destroy', 'true');
-      f.addOutput('id').setAttribute('value', 'aws_s3_bucket.logs.id');
+      r.setAttribute('bucket', 'acme-logs');
+      r.addBlock('lifecycle').setAttribute('prevent_destroy', true);
+      f.addOutput('id').setAttributeRaw('value', 'aws_s3_bucket.logs.id');
 
       const out = tfmod.stringify(f);
       ok(out.slice(-2) === '}\n', 'a generated file ends with a newline');

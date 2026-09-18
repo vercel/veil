@@ -284,7 +284,7 @@ func (s *TFWriteSuite) TestEditEveryBlockTypeStaysStable() {
 	s.Require().NoError(err)
 
 	for _, blk := range f.Blocks() {
-		blk.Body().SetAttribute("veil_touched", `"yes"`)
+		blk.Body().SetAttribute("veil_touched", "yes")
 	}
 	out := f.String()
 

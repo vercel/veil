@@ -1232,8 +1232,8 @@ const h = {
 
     // Edits: rename a resource, set an attribute, add a block, delete one.
     f.resource('aws_s3_bucket', 'logs').setName('build_logs');
-    f.module('network').body().setAttribute('source', '"./modules/vpc"');
-    f.addOutput('bucket').body().setAttribute('value', 'aws_s3_bucket.build_logs.id');
+    f.module('network').setAttribute('source', './modules/vpc');
+    f.addOutput('bucket').setAttributeRaw('value', 'aws_s3_bucket.build_logs.id');
     f.variable('unused').delete();
 
     fs.get("main.tf").setContent(ctx.std.terraform.stringify(f));
