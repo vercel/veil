@@ -22,7 +22,6 @@ const attachIamPolicy: ServiceDependentHook = {
     const db = ctx.self.metadata.name;
     const region = String(ctx.vars.region);
     const tf = ctx.std.terraform.parse(String(template.getContent()));
-
     const policy = tf.resource('aws_iam_policy', 'db_access');
     if (!policy) {
       throw new Error('iam-policy.tf should declare aws_iam_policy.db_access');

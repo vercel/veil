@@ -135,6 +135,17 @@ func (a *Attribute) Name() string {
 	return a.name
 }
 
+// SetName renames the attribute. The name is not checked against its
+// siblings here — Body.RenameAttribute is the call that refuses to
+// collide with one.
+func (a *Attribute) SetName(name string) {
+	if a == nil {
+		return
+	}
+	a.name = name
+	a.changed = true
+}
+
 // Expr is the attribute's expression as source text, unevaluated, or ""
 // when the attribute is nil. A reader rather than a field so a chain
 // through a lookup that found nothing returns "" instead of panicking.

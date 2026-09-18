@@ -49,6 +49,7 @@ const terraformClassesJS = `
   class TFAttribute {
     constructor(node, owner) { this.node = node; this.owner = owner; }
     name() { return this.node.name; }
+    setName(n) { this.node.name = String(n); this.node.changed = true; return this; }
     expr() { return this.node.expr; }
     setExpr(expr) { this.node.expr = String(expr); this.node.changed = true; return this; }
     delete() { return this.owner._removeNode(this.node); }
@@ -78,6 +79,7 @@ const terraformClassesJS = `
     attributes() { return this.body().attributes(); }
     setAttribute(name, expr) { return this.body().setAttribute(name, expr); }
     removeAttribute(name) { return this.body().removeAttribute(name); }
+    renameAttribute(from, to) { return this.body().renameAttribute(from, to); }
     blocks() { return this.body().blocks(); }
     block(type) { return this.body().block.apply(this.body(), arguments); }
     addBlock(type) { return this.body().addBlock.apply(this.body(), arguments); }
@@ -228,6 +230,15 @@ const terraformClassesJS = `
     removeAttribute(name) {
       var a = this.attribute(name);
       return a ? a.delete() : false;
+    }
+    // Refuses to collide with a sibling: two attributes of one name is
+    // something Terraform rejects and no later call could tell apart.
+    renameAttribute(from, to) {
+      if (from === to) return false;
+      var a = this.attribute(from);
+      if (!a || this.attribute(to)) return false;
+      a.setName(to);
+      return true;
     }
     appendComment(text) {
       var node = { kind: 'comment', text: String(text), spanned: false, changed: true };

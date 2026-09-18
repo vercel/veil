@@ -32,6 +32,12 @@ func (r *Resource) SetAttribute(name, expr string) *Attribute {
 	}
 	return r.block.body.SetAttribute(name, expr)
 }
+func (r *Resource) RenameAttribute(from, to string) bool {
+	if r == nil {
+		return false
+	}
+	return r.block.body.RenameAttribute(from, to)
+}
 func (r *Resource) RemoveAttribute(name string) bool {
 	if r == nil {
 		return false
@@ -97,6 +103,12 @@ func (d *DataSource) SetAttribute(name, expr string) *Attribute {
 		return nil
 	}
 	return d.block.body.SetAttribute(name, expr)
+}
+func (d *DataSource) RenameAttribute(from, to string) bool {
+	if d == nil {
+		return false
+	}
+	return d.block.body.RenameAttribute(from, to)
 }
 func (d *DataSource) RemoveAttribute(name string) bool {
 	if d == nil {
@@ -164,6 +176,12 @@ func (e *Ephemeral) SetAttribute(name, expr string) *Attribute {
 	}
 	return e.block.body.SetAttribute(name, expr)
 }
+func (e *Ephemeral) RenameAttribute(from, to string) bool {
+	if e == nil {
+		return false
+	}
+	return e.block.body.RenameAttribute(from, to)
+}
 func (e *Ephemeral) RemoveAttribute(name string) bool {
 	if e == nil {
 		return false
@@ -229,6 +247,12 @@ func (a *Action) SetAttribute(name, expr string) *Attribute {
 		return nil
 	}
 	return a.block.body.SetAttribute(name, expr)
+}
+func (a *Action) RenameAttribute(from, to string) bool {
+	if a == nil {
+		return false
+	}
+	return a.block.body.RenameAttribute(from, to)
 }
 func (a *Action) RemoveAttribute(name string) bool {
 	if a == nil {
@@ -296,6 +320,12 @@ func (p *Provider) SetAttribute(name, expr string) *Attribute {
 	}
 	return p.block.body.SetAttribute(name, expr)
 }
+func (p *Provider) RenameAttribute(from, to string) bool {
+	if p == nil {
+		return false
+	}
+	return p.block.body.RenameAttribute(from, to)
+}
 func (p *Provider) RemoveAttribute(name string) bool {
 	if p == nil {
 		return false
@@ -361,6 +391,12 @@ func (v *Variable) SetAttribute(name, expr string) *Attribute {
 		return nil
 	}
 	return v.block.body.SetAttribute(name, expr)
+}
+func (v *Variable) RenameAttribute(from, to string) bool {
+	if v == nil {
+		return false
+	}
+	return v.block.body.RenameAttribute(from, to)
 }
 func (v *Variable) RemoveAttribute(name string) bool {
 	if v == nil {
@@ -428,6 +464,12 @@ func (o *Output) SetAttribute(name, expr string) *Attribute {
 	}
 	return o.block.body.SetAttribute(name, expr)
 }
+func (o *Output) RenameAttribute(from, to string) bool {
+	if o == nil {
+		return false
+	}
+	return o.block.body.RenameAttribute(from, to)
+}
 func (o *Output) RemoveAttribute(name string) bool {
 	if o == nil {
 		return false
@@ -493,6 +535,12 @@ func (m *Module) SetAttribute(name, expr string) *Attribute {
 		return nil
 	}
 	return m.block.body.SetAttribute(name, expr)
+}
+func (m *Module) RenameAttribute(from, to string) bool {
+	if m == nil {
+		return false
+	}
+	return m.block.body.RenameAttribute(from, to)
 }
 func (m *Module) RemoveAttribute(name string) bool {
 	if m == nil {
@@ -560,6 +608,12 @@ func (c *Check) SetAttribute(name, expr string) *Attribute {
 	}
 	return c.block.body.SetAttribute(name, expr)
 }
+func (c *Check) RenameAttribute(from, to string) bool {
+	if c == nil {
+		return false
+	}
+	return c.block.body.RenameAttribute(from, to)
+}
 func (c *Check) RemoveAttribute(name string) bool {
 	if c == nil {
 		return false
@@ -625,6 +679,12 @@ func (t *Terraform) SetAttribute(name, expr string) *Attribute {
 		return nil
 	}
 	return t.block.body.SetAttribute(name, expr)
+}
+func (t *Terraform) RenameAttribute(from, to string) bool {
+	if t == nil {
+		return false
+	}
+	return t.block.body.RenameAttribute(from, to)
 }
 func (t *Terraform) RemoveAttribute(name string) bool {
 	if t == nil {
@@ -692,6 +752,12 @@ func (l *Locals) SetAttribute(name, expr string) *Attribute {
 	}
 	return l.block.body.SetAttribute(name, expr)
 }
+func (l *Locals) RenameAttribute(from, to string) bool {
+	if l == nil {
+		return false
+	}
+	return l.block.body.RenameAttribute(from, to)
+}
 func (l *Locals) RemoveAttribute(name string) bool {
 	if l == nil {
 		return false
@@ -757,6 +823,12 @@ func (mv *Moved) SetAttribute(name, expr string) *Attribute {
 		return nil
 	}
 	return mv.block.body.SetAttribute(name, expr)
+}
+func (mv *Moved) RenameAttribute(from, to string) bool {
+	if mv == nil {
+		return false
+	}
+	return mv.block.body.RenameAttribute(from, to)
 }
 func (mv *Moved) RemoveAttribute(name string) bool {
 	if mv == nil {
@@ -824,6 +896,12 @@ func (rm *Removed) SetAttribute(name, expr string) *Attribute {
 	}
 	return rm.block.body.SetAttribute(name, expr)
 }
+func (rm *Removed) RenameAttribute(from, to string) bool {
+	if rm == nil {
+		return false
+	}
+	return rm.block.body.RenameAttribute(from, to)
+}
 func (rm *Removed) RemoveAttribute(name string) bool {
 	if rm == nil {
 		return false
@@ -890,6 +968,12 @@ func (i *Import) SetAttribute(name, expr string) *Attribute {
 	}
 	return i.block.body.SetAttribute(name, expr)
 }
+func (i *Import) RenameAttribute(from, to string) bool {
+	if i == nil {
+		return false
+	}
+	return i.block.body.RenameAttribute(from, to)
+}
 func (i *Import) RemoveAttribute(name string) bool {
 	if i == nil {
 		return false
@@ -955,6 +1039,12 @@ func (g *Generic) SetAttribute(name, expr string) *Attribute {
 		return nil
 	}
 	return g.block.body.SetAttribute(name, expr)
+}
+func (g *Generic) RenameAttribute(from, to string) bool {
+	if g == nil {
+		return false
+	}
+	return g.block.body.RenameAttribute(from, to)
 }
 func (g *Generic) RemoveAttribute(name string) bool {
 	if g == nil {

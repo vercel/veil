@@ -153,6 +153,23 @@ func (b *Body) RemoveAttribute(name string) bool {
 	return false
 }
 
+// RenameAttribute renames an attribute in place, keeping its position
+// and its expression. Reports false when there is no such attribute, or
+// when the new name is already taken — renaming onto a sibling would
+// leave the body with two attributes of one name, which Terraform
+// rejects and which no later call could tell apart.
+func (b *Body) RenameAttribute(from, to string) bool {
+	if b == nil || from == to {
+		return false
+	}
+	attr := b.Attribute(from)
+	if attr == nil || b.Attribute(to) != nil {
+		return false
+	}
+	attr.SetName(to)
+	return true
+}
+
 // AppendComment adds a comment at the end of the body.
 func (b *Body) AppendComment(text string) *Comment {
 	if b == nil {

@@ -480,3 +480,53 @@ func (s *TFWriteSuite) TestBuildFromBlank() {
 	s.Require().NoError(err, "generated output has to parse")
 	s.Equal(out, again.String())
 }
+
+// TestRenameAttribute covers renaming a field in place — the one edit
+// that was missing, since Name was a reader with no setter behind it.
+func (s *TFWriteSuite) TestRenameAttribute() {
+	src := `resource "aws_s3_bucket" "logs" {
+  # Keep this.
+  bucket =    "acme-logs"   # trailing
+  acl    = "private"
+}
+`
+	f, err := Parse([]byte(src), "main.tf")
+	s.Require().NoError(err)
+	r := f.Resource("aws_s3_bucket", "logs")
+
+	s.True(r.RenameAttribute("bucket", "bucket_name"))
+	out := f.String()
+	s.Contains(out, `bucket_name = "acme-logs"`, "renamed, expression intact")
+	s.NotContains(out, "bucket =", "the old name is gone")
+	s.Contains(out, "# Keep this.", "comments survive")
+	s.Contains(out, `acl    = "private"`, "the untouched sibling keeps its alignment")
+
+	again, err := Parse([]byte(out), "main.tf")
+	s.Require().NoError(err)
+	s.Equal(out, again.String())
+}
+
+// TestRenameAttributeRefusesACollision is the guard: renaming onto a
+// sibling would leave two attributes of one name, which Terraform
+// rejects and which no later lookup could tell apart.
+func (s *TFWriteSuite) TestRenameAttributeRefusesACollision() {
+	f, err := Parse([]byte("locals {\n  a = 1\n  b = 2\n}\n"), "main.tf")
+	s.Require().NoError(err)
+	l := f.Locals()[0]
+
+	s.False(l.RenameAttribute("a", "b"), "b is taken")
+	s.False(l.RenameAttribute("nope", "c"), "no such attribute")
+	s.False(l.RenameAttribute("a", "a"), "renaming to itself is not a change")
+	s.Equal("locals {\n  a = 1\n  b = 2\n}\n", f.String(), "nothing changed")
+
+	s.True(l.RenameAttribute("a", "c"))
+	s.Contains(f.String(), "c = 1")
+}
+
+// TestSetNameOnANilAttributeIsSafe keeps the chain safe, as the other
+// setters are.
+func (s *TFWriteSuite) TestSetNameOnANilAttributeIsSafe() {
+	var a *Attribute
+	a.SetName("x")
+	s.Equal("", a.Name())
+}

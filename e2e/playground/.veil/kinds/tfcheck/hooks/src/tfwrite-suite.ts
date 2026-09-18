@@ -256,6 +256,33 @@ const suite: RenderHook = {
       ok(out.indexOf('# trailing comment on a local') >= 0, 'trailing comments too');
     }
 
+    // --- renaming an attribute -------------------------------------------------
+    {
+      const src = 'resource "aws_s3_bucket" "logs" {\n  # Keep this.\n' +
+        '  bucket =    "acme-logs"   # trailing\n  acl    = "private"\n}\n';
+      const f = tfmod.parse(src);
+      const r = f.resource('aws_s3_bucket', 'logs')!;
+      ok(r.renameAttribute('bucket', 'bucket_name'), 'rename reports done');
+      const out = tfmod.stringify(f);
+      ok(out.indexOf('bucket_name = "acme-logs"') >= 0, 'renamed, expression intact');
+      ok(out.indexOf('bucket =') < 0, 'old name gone');
+      ok(out.indexOf('# Keep this.') >= 0, 'comments survive a rename');
+      ok(out.indexOf('acl    = "private"') >= 0, 'the untouched sibling keeps its alignment');
+      eq(tfmod.stringify(tfmod.parse(out)), out, 'stable after a rename');
+    }
+
+    // --- renaming refuses a collision -------------------------------------------
+    {
+      const f = tfmod.parse('locals {\n  a = 1\n  b = 2\n}\n');
+      const l = f.locals()[0];
+      eq(l.renameAttribute('a', 'b'), false, 'b is taken');
+      eq(l.renameAttribute('nope', 'c'), false, 'no such attribute');
+      eq(l.renameAttribute('a', 'a'), false, 'renaming to itself is not a change');
+      eq(tfmod.stringify(f), 'locals {\n  a = 1\n  b = 2\n}\n', 'nothing changed');
+      ok(l.renameAttribute('a', 'c'), 'a free name works');
+      ok(tfmod.stringify(f).indexOf('c = 1') >= 0, 'renamed');
+    }
+
     // --- building a file from nothing ------------------------------------------------------
     {
       const f = tfmod.parse('');

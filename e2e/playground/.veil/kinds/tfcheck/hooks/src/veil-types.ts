@@ -24,6 +24,9 @@ export type TFItem = TFAttribute | TFBlock | TFComment;
 
 export interface TFAttribute {
   name(): string;
+  /** Rename in place, keeping position and expression. Body.renameAttribute
+   *  is the call that refuses to collide with a sibling. */
+  setName(name: string): TFAttribute;
   /** The expression as source text, unevaluated: var.region stays
    *  var.region rather than becoming a value. */
   expr(): string;
@@ -50,6 +53,9 @@ export interface TFBody {
   /** Set an attribute, appending it when absent. expr is source text. */
   setAttribute(name: string, expr: string): TFAttribute;
   removeAttribute(name: string): boolean;
+  /** Rename an attribute in place. False when there is no such attribute,
+   *  or when the new name is already taken. */
+  renameAttribute(from: string, to: string): boolean;
   appendComment(text: string): TFComment;
   /** Add a block whose shape belongs to its parent rather than to the
    *  file — lifecycle, connection, validation, provisioner. */
@@ -74,6 +80,7 @@ export interface TFBlock {
   attributes(): TFAttribute[];
   setAttribute(name: string, expr: string): TFAttribute;
   removeAttribute(name: string): boolean;
+  renameAttribute(from: string, to: string): boolean;
   blocks(): TFBlock[];
   block(type: string, ...labels: string[]): TFBlock | null;
   addBlock(type: string, ...labels: string[]): TFGeneric;
