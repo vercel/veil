@@ -1,6 +1,9 @@
 package tfwrite
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Bytes renders the file. Anything untouched comes back exactly as it
 // was parsed — the original bytes are copied, not regenerated — so
@@ -25,6 +28,23 @@ func (f *File) Bytes() []byte {
 
 // String is Bytes as a string.
 func (f *File) String() string { return string(f.Bytes()) }
+
+// Render prints the file and checks the result parses, so a caller that
+// wrote something malformed hears about it here rather than from
+// terraform much later.
+//
+// Nothing else validates the way out. Expressions and labels are
+// written as given — SetExpr takes any text at all — so the one thing
+// worth proving about the output is that it is still Terraform. What it
+// *means* is Terraform's to judge: whether a resource type exists, or an
+// attribute belongs to it, needs providers this package will never have.
+func (f *File) Render() ([]byte, error) {
+	out := f.Bytes()
+	if _, err := Parse(out, f.Filename()); err != nil {
+		return nil, fmt.Errorf("tfwrite: the edited file is not valid Terraform: %w", err)
+	}
+	return out, nil
+}
 
 // printRoot prints a top-level body. Between two items that both came
 // from the source and are still in their original order, the original

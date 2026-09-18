@@ -775,7 +775,14 @@ func installHostFuncs(rt *qjs.Runtime, cfg options) error {
 		if err != nil {
 			return "", fmt.Errorf("terraform.stringify: %w", err)
 		}
-		return f.String(), nil
+		// Render rather than String: printing is where a hook that wrote
+		// a malformed expression finds out, instead of the broken file
+		// reaching the output directory and surfacing at terraform plan.
+		out, err := f.Render()
+		if err != nil {
+			return "", fmt.Errorf("terraform.stringify: %w", err)
+		}
+		return string(out), nil
 	})
 	if err != nil {
 		return fmt.Errorf("wrapping terraform tree print: %w", err)

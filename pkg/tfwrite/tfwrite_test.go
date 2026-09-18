@@ -506,18 +506,21 @@ func (s *TFWriteSuite) TestRenameAnAttribute() {
 	s.Equal(out, again.String())
 }
 
-// TestRenamingOntoASiblingIsNotGuarded records what the package does
-// not do. Two attributes of one name is something Terraform rejects,
-// and nothing here stops it — the same as SetExpr taking a malformed
-// expression. This package writes what it is told to.
-func (s *TFWriteSuite) TestRenamingOntoASiblingIsNotGuarded() {
+// TestRenamingOntoASiblingIsCaughtOnTheWayOut records where the check
+// for this lives. The rename itself is allowed — this package writes
+// what it is told, the same as SetExpr taking any text — but Render
+// refuses the result, because HCL rejects a redefined argument. No
+// special case in rename was needed to get there.
+func (s *TFWriteSuite) TestRenamingOntoASiblingIsCaughtOnTheWayOut() {
 	f, err := Parse([]byte("locals {\n  a = 1\n  b = 2\n}\n"), "main.tf")
 	s.Require().NoError(err)
 
 	f.Locals()[0].Attribute("a").SetName("b")
-	s.Contains(f.String(), "b = 1")
-	s.Contains(f.String(), "b = 2")
-	s.Len(f.Locals()[0].Attributes(), 2, "both are still there, both called b")
+	s.Len(f.Locals()[0].Attributes(), 2, "two attributes now called b")
+
+	_, err = f.Render()
+	s.Require().Error(err, "the duplicate is refused on the way out")
+	s.Contains(err.Error(), "not valid Terraform")
 }
 
 // TestSetNameOnANilAttributeIsSafe keeps the chain safe, as the other
@@ -526,4 +529,34 @@ func (s *TFWriteSuite) TestSetNameOnANilAttributeIsSafe() {
 	var a *Attribute
 	a.SetName("x")
 	s.Equal("", a.Name())
+}
+
+// TestRenderRejectsWhatItCannotReparse is the one check on the way out.
+// Expressions are written as given, so a hook can put anything in one;
+// printing is where that stops being silent.
+func (s *TFWriteSuite) TestRenderRejectsWhatItCannotReparse() {
+	f, err := Parse([]byte("locals {\n  a = 1\n}\n"), "main.tf")
+	s.Require().NoError(err)
+
+	f.Locals()[0].SetAttribute("b", `this is ) not valid (`)
+
+	// Bytes still prints it — that is the raw path.
+	s.Contains(f.String(), "not valid")
+
+	// Render refuses.
+	_, err = f.Render()
+	s.Require().Error(err)
+	s.Contains(err.Error(), "not valid Terraform")
+}
+
+// TestRenderPassesValidOutput keeps the check from being a tax on the
+// normal path.
+func (s *TFWriteSuite) TestRenderPassesValidOutput() {
+	f, err := Parse([]byte(messyFile), "main.tf")
+	s.Require().NoError(err)
+	f.Module("network").SetAttribute("source", `"./modules/vpc"`)
+
+	out, err := f.Render()
+	s.Require().NoError(err)
+	s.Equal(f.String(), string(out))
 }

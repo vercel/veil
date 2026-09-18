@@ -270,14 +270,34 @@ const suite: RenderHook = {
       eq(tfmod.stringify(tfmod.parse(out)), out, 'stable after a rename');
     }
 
-    // --- renaming onto a sibling is not guarded ----------------------------------
+    // --- renaming onto a sibling is caught on the way out -------------------------
     {
       const f = tfmod.parse('locals {\n  a = 1\n  b = 2\n}\n');
+      // The rename itself is allowed: this package writes what it is told.
       f.locals()[0].attribute('a')!.setName('b');
-      const out = tfmod.stringify(f);
-      ok(out.indexOf('b = 1') >= 0 && out.indexOf('b = 2') >= 0,
-        'both are still there, both called b — this package writes what it is told');
-      eq(f.locals()[0].attributes().length, 2, 'two attributes of one name');
+      eq(f.locals()[0].attributes().length, 2, 'two attributes now called b');
+      // stringify is where it stops, because HCL rejects a redefined
+      // argument — no special case in rename needed to get there.
+      let threw = false;
+      try {
+        tfmod.stringify(f);
+      } catch (e) {
+        threw = true;
+      }
+      ok(threw, 'a duplicate attribute is refused at stringify');
+    }
+
+    // --- stringify refuses output that is not Terraform --------------------------
+    {
+      const f = tfmod.parse('locals {\n  a = 1\n}\n');
+      f.locals()[0].setAttribute('b', 'this is ) not valid (');
+      let threw = false;
+      try {
+        tfmod.stringify(f);
+      } catch (e) {
+        threw = true;
+      }
+      ok(threw, 'a malformed expression is caught at stringify, not at terraform plan');
     }
 
     // --- building a file from nothing ------------------------------------------------------
