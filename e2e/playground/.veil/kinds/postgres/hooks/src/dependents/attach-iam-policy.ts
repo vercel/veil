@@ -7,12 +7,11 @@ import type {
 // The database ships the IAM policy that grants access to it, and hands
 // a filled-in copy to every service that depends on it. The template
 // lives with the postgres kind — the kind that knows what access its
-// consumers need — and is reachable here through ctx.selfFS, the same FS
-// the database's own hooks see.
+// consumers need — and is reachable through ctx.selfFS.
 //
-// ctx.selfFS is read-only in effect: nothing is read back from it, so
-// the database's own render is unaffected by what happens here. Only the
-// consumer's fs returns.
+// The policy is edited as a tree, not as text: the resource is renamed
+// through setName and the ARN through setExpr, so the file's comments
+// and formatting come back untouched rather than being regenerated.
 const attachIamPolicy: ServiceDependentHook = {
   render(ctx: ServiceDependentHookContext, fs: ServiceFS): ServiceFS {
     const template = ctx.selfFS.get('files/iam-policy.tf');
@@ -21,12 +20,27 @@ const attachIamPolicy: ServiceDependentHook = {
     }
 
     const db = ctx.self.metadata.name;
-    const policy = String(template.getContent())
-      .replace(/DB_ACCESS/g, db.replace(/-/g, '_'))
-      .replace(/DB_NAME/g, db)
-      .replace(/REGION/g, String(ctx.vars.region));
+    const region = String(ctx.vars.region);
+    const tf = ctx.std.terraform.parse(String(template.getContent()));
+    const policy = tf.resource('aws_iam_policy', 'db_access');
+    if (!policy) {
+      throw new Error('iam-policy.tf should declare aws_iam_policy.db_access');
+    }
+    // Each consumer gets the policy under its own database's name.
+    policy.setName(db.replace(/-/g, '_'));
+    policy.setAttribute('name', `${db}-access`);
 
-    fs.add(`terraform/${db}-access.tf`, policy);
+    const arn = policy.attribute('policy');
+    if (arn) {
+      arn.setExpr(
+        arn
+          .expr()
+          .replace(/PLACEHOLDER-region/g, region)
+          .replace(/PLACEHOLDER/g, db),
+      );
+    }
+
+    fs.add(`terraform/${db}-access.tf`, ctx.std.terraform.stringify(tf));
     return fs;
   },
 };

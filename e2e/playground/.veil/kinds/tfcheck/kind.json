@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/vercel/veil/main/api/jsonschema/KindDefinition.schema.json",
+  "name": "tfcheck",
+  "schema": "./schema.json",
+  "files": [
+    { "path": "./files/messy.tf" },
+    { "path": "./files/everyblock.tf" }
+  ],
+  "hooks": {
+    "render": [
+      { "path": "./hooks/src/tfwrite-suite.ts" }
+    ]
+  }
+}

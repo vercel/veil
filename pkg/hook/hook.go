@@ -22,6 +22,8 @@ import (
 	"github.com/fastschema/qjs"
 	"github.com/go-sourcemap/sourcemap"
 	"github.com/goccy/go-json"
+	"github.com/vercel/veil/pkg/codec"
+	"github.com/vercel/veil/pkg/tfwrite"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -105,6 +107,11 @@ const (
 	ContentPlaintext ContentType = "plaintext"
 	ContentJSON      ContentType = "json"
 	ContentYAML      ContentType = "yaml"
+	// ContentTerraform hands a hook a TFFile rather than a string or a
+	// plain object: a tree that prints back byte-identical where it was
+	// not edited. Applies to any .tf a kind declares, schema or no —
+	// there is no useful plaintext reading of Terraform.
+	ContentTerraform ContentType = "terraform"
 )
 
 // Bundle is the shape of the state passed to and returned from a hook. Keys
@@ -601,6 +608,16 @@ func New(code string, opts ...Option) (Hook, error) {
 	// std/os/__veilFetch/__veilYaml* globals. After this, the only surface
 	// hook code can reach is what we splice into ctx.std/ctx.os/ctx.fetch
 	// per call.
+	// The tfwrite classes install before the host namespace, which
+	// closes over them and deletes the raw __veilTf* bindings along with
+	// the rest.
+	tfVal, err := rt.Eval("veil-terraform.js", qjs.Code(terraformClassesJS))
+	if err != nil {
+		rt.Close()
+		return nil, fmt.Errorf("installing terraform classes: %w", err)
+	}
+	tfVal.Free()
+
 	hostVal, err := rt.Eval("veil-host.js", qjs.Code(hostNamespaceJS))
 	if err != nil {
 		rt.Close()
@@ -715,6 +732,75 @@ func installHostFuncs(rt *qjs.Runtime, cfg options) error {
 	if err != nil {
 		return fmt.Errorf("wrapping yaml.stringify: %w", err)
 	}
+	tfParseFn, err := qjs.FuncToJS(rt.Context(), func(s string) (string, error) {
+		out, err := codec.HCLToJSON([]byte(s), "hook.tf")
+		if err != nil {
+			return "", fmt.Errorf("terraform.parse: %w", err)
+		}
+		return string(out), nil
+	})
+	if err != nil {
+		return fmt.Errorf("wrapping terraform.parse: %w", err)
+	}
+	tfStringifyFn, err := qjs.FuncToJS(rt.Context(), func(jsonStr string) (string, error) {
+		out, err := codec.JSONToHCL([]byte(jsonStr))
+		if err != nil {
+			return "", fmt.Errorf("terraform.stringify: %w", err)
+		}
+		return string(out), nil
+	})
+	if err != nil {
+		return fmt.Errorf("wrapping terraform.stringify: %w", err)
+	}
+	// The tree crosses as data, not as a handle the hook calls back
+	// into: parse hands back JSON, print takes the source plus whatever
+	// tree came back. The host keeps no per-document state, so there is
+	// nothing to leak between hooks and nothing to invalidate.
+	tfTreeFn, err := qjs.FuncToJS(rt.Context(), func(src string) (string, error) {
+		f, err := tfwrite.Parse([]byte(src), "hook.tf")
+		if err != nil {
+			return "", fmt.Errorf("terraform.parse: %w", err)
+		}
+		out, err := f.MarshalTree()
+		if err != nil {
+			return "", fmt.Errorf("terraform.parse: %w", err)
+		}
+		return string(out), nil
+	})
+	if err != nil {
+		return fmt.Errorf("wrapping terraform tree parse: %w", err)
+	}
+	tfPrintFn, err := qjs.FuncToJS(rt.Context(), func(src, tree string) (string, error) {
+		f, err := tfwrite.UnmarshalTree([]byte(src), []byte(tree))
+		if err != nil {
+			return "", fmt.Errorf("terraform.stringify: %w", err)
+		}
+		// Render rather than String: printing is where a hook that wrote
+		// a malformed expression finds out, instead of the broken file
+		// reaching the output directory and surfacing at terraform plan.
+		out, err := f.Render()
+		if err != nil {
+			return "", fmt.Errorf("terraform.stringify: %w", err)
+		}
+		return string(out), nil
+	})
+	if err != nil {
+		return fmt.Errorf("wrapping terraform tree print: %w", err)
+	}
+	tfExprFn, err := qjs.FuncToJS(rt.Context(), func(jsonValue string) (string, error) {
+		var v any
+		if err := json.Unmarshal([]byte(jsonValue), &v); err != nil {
+			return "", fmt.Errorf("setAttribute: %w", err)
+		}
+		out, err := codec.HCLExpr(v)
+		if err != nil {
+			return "", fmt.Errorf("setAttribute: %w", err)
+		}
+		return out, nil
+	})
+	if err != nil {
+		return fmt.Errorf("wrapping terraform value encoder: %w", err)
+	}
 	validateFn, err := qjs.FuncToJS(rt.Context(), func(kind, resource, path, contents string) (string, error) {
 		if cfg.validateSource == nil {
 			return "", nil
@@ -733,6 +819,11 @@ func installHostFuncs(rt *qjs.Runtime, cfg options) error {
 	global.SetPropertyStr("__veilFetch", fetchFn)
 	global.SetPropertyStr("__veilYamlParse", parseFn)
 	global.SetPropertyStr("__veilYamlStringify", stringifyFn)
+	global.SetPropertyStr("__veilTerraformParse", tfParseFn)
+	global.SetPropertyStr("__veilTerraformStringify", tfStringifyFn)
+	global.SetPropertyStr("__veilTfTree", tfTreeFn)
+	global.SetPropertyStr("__veilTfPrint", tfPrintFn)
+	global.SetPropertyStr("__veilTfExpr", tfExprFn)
 	global.SetPropertyStr("__veilValidateSource", validateFn)
 	return nil
 }
@@ -913,6 +1004,9 @@ const hostNamespaceJS = `
 
   var nativeYamlParse = globalThis.__veilYamlParse;
   var nativeYamlStringify = globalThis.__veilYamlStringify;
+  var nativeTF = globalThis.__veilTF;
+  var nativeTerraformParse = globalThis.__veilTerraformParse;
+  var nativeTerraformStringify = globalThis.__veilTerraformStringify;
   var nativeValidateSource = globalThis.__veilValidateSource;
 
   var yamlCodec = {
@@ -925,10 +1019,41 @@ const hostNamespaceJS = `
     }
   };
 
+  // Terraform is a configuration language rather than a data format, so
+  // the object here is the one Terraform itself defines for .tf.json:
+  // the same configuration, spelled as data. Expressions survive as
+  // "${...}" strings and are written back unquoted; comments do not
+  // survive, having nowhere to live in between.
+  var terraformCodec = {
+    // parse hands back a TFFile: the same shape tfwrite works with in
+    // Go, method for method, over a tree that keeps every node's source
+    // span. Editing one and printing it back reprints only what changed.
+    parse: function(s) {
+      if (s == null) throw new Error('std.terraform.parse: input is required');
+      return nativeTF.parse(s);
+    },
+    // stringify takes either a TFFile or a plain object in Terraform's
+    // .tf.json shape. The first prints from the original bytes; the
+    // second has none to print from and is generated fresh.
+    stringify: function(value) {
+      if (value == null) throw new Error('std.terraform.stringify: input is required');
+      if (nativeTF.isFile(value)) return value.toString();
+      return nativeTerraformStringify(JSON.stringify(value));
+    },
+    // toObject is the old parse, kept for reading a file as plain data
+    // in Terraform's .tf.json shape when a tree is more than the job
+    // needs.
+    toObject: function(s) {
+      if (s == null) throw new Error('std.terraform.toObject: input is required');
+      return JSON.parse(nativeTerraformParse(String(s)));
+    }
+  };
+
   var stdProxy = {
-    loadFile: function(path) { return nativeStd.loadFile(path); },
-    getenv:   function(name) { return nativeStd.getenv(name); },
-    yaml:     yamlCodec
+    loadFile:  function(path) { return nativeStd.loadFile(path); },
+    getenv:    function(name) { return nativeStd.getenv(name); },
+    yaml:      yamlCodec,
+    terraform: terraformCodec
   };
   var osProxy = {
     readdir:  function(p) { return nativeOs.readdir(p); },
@@ -979,6 +1104,12 @@ const hostNamespaceJS = `
   delete globalThis.__veilFetch;
   delete globalThis.__veilYamlParse;
   delete globalThis.__veilYamlStringify;
+  delete globalThis.__veilTerraformParse;
+  delete globalThis.__veilTerraformStringify;
+  delete globalThis.__veilTfTree;
+  delete globalThis.__veilTfPrint;
+  delete globalThis.__veilTfExpr;
+  delete globalThis.__veilTF;
   delete globalThis.__veilValidateSource;
 })();
 `

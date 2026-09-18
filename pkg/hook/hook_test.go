@@ -1150,3 +1150,164 @@ export default h;
 	s.Require().Error(err)
 	s.Contains(err.Error(), "replicas must be a number")
 }
+
+// TestStdTerraformRoundTrip drives the object codec — toObject and
+// stringify over Terraform's .tf.json shape — through the real runtime.
+// That is the reading-as-data path; the tree API is the editing one.
+func (s *HookSuite) TestStdTerraformRoundTrip() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    const tf = ctx.std.terraform.toObject(fs.get("main.tf").getContent());
+    const body = tf.resource.aws_iam_policy.db[0];
+    fs.add("name.txt", body.name);
+    // An expression survives as an interpolation string.
+    fs.add("expr.txt", body.tags.env);
+    body.name = "renamed";
+    fs.get("main.tf").setContent(ctx.std.terraform.stringify(tf));
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code)
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	src := "resource \"aws_iam_policy\" \"db\" {\n  name = \"orders-db-access\"\n  tags = { env = var.environment }\n}\n"
+	bundle := Bundle{"main.tf": File{Path: "main.tf", Content: src, Render: true}}
+	out, err := hk.RenderHook(map[string]any{}, bundle)
+	s.Require().NoError(err)
+
+	s.Equal("orders-db-access", out["name.txt"].Content)
+	s.Equal("${var.environment}", out["expr.txt"].Content,
+		"an unevaluated expression reads back as an interpolation string")
+
+	rendered := out["main.tf"].Content
+	s.Contains(rendered, `name = "renamed"`)
+	s.Contains(rendered, "env = var.environment",
+		"and is written back as an expression, not a quoted string")
+}
+
+// TestStdTerraformRejectsMalformed keeps the failure surfacing as a
+// throw the hook author can see, rather than silently producing nothing.
+func (s *HookSuite) TestStdTerraformRejectsMalformed() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    try {
+      ctx.std.terraform.parse('resource "x" {');
+      fs.add("result.txt", "no error");
+    } catch (e) {
+      fs.add("result.txt", "threw");
+    }
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code)
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	out, err := hk.RenderHook(map[string]any{}, Bundle{})
+	s.Require().NoError(err)
+	s.Equal("threw", out["result.txt"].Content)
+}
+
+// TestStdTerraformTreeAPI drives the tfwrite classes through the real
+// runtime — the same method names the Go package uses, on the same
+// shapes, editing a file and printing it back.
+func (s *HookSuite) TestStdTerraformTreeAPI() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    const f = ctx.std.terraform.parse(fs.get("main.tf").getContent());
+
+    // Typed lookups, each taking the labels its block actually has.
+    fs.add("resource.txt", f.resource('aws_s3_bucket', 'logs').resourceType());
+    fs.add("provider.txt", f.provider('aws').name());
+    fs.add("module-src.txt", f.module('network').source());
+    fs.add("missing.txt", String(f.resource('nope', 'nope')));
+
+    // Edits: rename a resource, set an attribute, add a block, delete one.
+    f.resource('aws_s3_bucket', 'logs').setName('build_logs');
+    f.module('network').setAttribute('source', './modules/vpc');
+    f.addOutput('bucket').setAttributeRaw('value', 'aws_s3_bucket.build_logs.id');
+    f.variable('unused').delete();
+
+    fs.get("main.tf").setContent(ctx.std.terraform.stringify(f));
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code)
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	src := `# Keep this comment.
+resource "aws_s3_bucket" "logs" {
+  bucket =    "acme-logs"   # odd spacing
+}
+
+provider "aws" {
+  region = var.region
+}
+
+variable "unused" {
+  type = string
+}
+
+module "network" {
+  source = "./modules/network"
+}
+`
+	out, err := hk.RenderHook(map[string]any{},
+		Bundle{"main.tf": File{Path: "main.tf", Content: src, Render: true}})
+	s.Require().NoError(err)
+
+	s.Equal("aws_s3_bucket", out["resource.txt"].Content)
+	s.Equal("aws", out["provider.txt"].Content)
+	s.Equal("./modules/network", out["module-src.txt"].Content)
+	s.Equal("null", out["missing.txt"].Content, "a miss is null, as it is nil in Go")
+
+	got := out["main.tf"].Content
+	s.Contains(got, `resource "aws_s3_bucket" "build_logs" {`, "renamed")
+	s.Contains(got, `source = "./modules/vpc"`, "attribute set")
+	s.Contains(got, `output "bucket" {`, "block added")
+	s.NotContains(got, `variable "unused"`, "block deleted")
+
+	// The half a JSON round trip cannot do: untouched formatting and
+	// comments survive.
+	s.Contains(got, "# Keep this comment.")
+	s.Contains(got, `bucket =    "acme-logs"   # odd spacing`)
+}
+
+// TestStdTerraformStringifyTakesEither pins the two inputs stringify
+// accepts: a tree, which prints from the original bytes, and a plain
+// .tf.json object, which has none and is generated.
+func (s *HookSuite) TestStdTerraformStringifyTakesEither() {
+	code := s.compile(`
+const h = {
+  render(ctx, fs) {
+    const f = ctx.std.terraform.parse('locals {\n  a = 1\n}\n');
+    fs.add("from-tree.txt", ctx.std.terraform.stringify(f));
+    fs.add("from-object.txt", ctx.std.terraform.stringify({ locals: [{ b: 2 }] }));
+    fs.add("as-object.txt", JSON.stringify(ctx.std.terraform.toObject('locals {\n  c = 3\n}\n')));
+    return fs;
+  }
+};
+export default h;
+`)
+	hk, err := New(code)
+	s.Require().NoError(err)
+	defer hk.Close()
+
+	out, err := hk.RenderHook(map[string]any{}, Bundle{})
+	s.Require().NoError(err)
+
+	s.Equal("locals {\n  a = 1\n}\n", out["from-tree.txt"].Content, "printed from the original bytes")
+	s.Contains(out["from-object.txt"].Content, "b = 2", "generated from the .tf.json shape")
+	s.Contains(out["as-object.txt"].Content, `"c":3`, "toObject still reads as plain data")
+}

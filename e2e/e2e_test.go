@@ -829,8 +829,9 @@ func (s *E2ESuite) TestDependentHookShipsItsOwnFileToTheConsumer() {
 	s.Contains(policy, `name = "orders-db-access"`, "templated with the database's name")
 	s.Contains(policy, "arn:aws:rds-db:us-east-1:acme:dbuser:orders-db/*",
 		"and with the render's region")
-	s.NotContains(policy, "DB_NAME", "no placeholder should survive")
-	s.NotContains(policy, "REGION")
+	s.NotContains(policy, "PLACEHOLDER", "no placeholder should survive")
+	s.Contains(policy, "policy = jsonencode(",
+		"the expression round-tripped through the terraform codec unquoted")
 
 	// It arrives through a forwarded edge too — checkout reaches
 	// orders-db via the platform, not by declaring it.
@@ -846,4 +847,22 @@ func (s *E2ESuite) TestDependentHookShipsItsOwnFileToTheConsumer() {
 	db := s.render("resources/data/orders-db.json")
 	s.NoFileExists(filepath.Join(db, "orders-db", "files", "iam-policy.tf"))
 	s.NoDirExists(filepath.Join(db, "orders-db", "terraform"))
+}
+
+// TestTFWriteSuiteRunsInJavaScript runs the pkg/tfwrite test suite again
+// on the JS side, through the real binary, against the same fixtures.
+//
+// Go proving the tree is correct says nothing about the class layer over
+// it: the JS holds its own copy of the label positions, the block-type
+// mapping and the dirty marking, and those can drift from Go's. Porting
+// the suite is what catches that — it already has once, on the flag the
+// file root uses to record a change.
+//
+// Each check throws on failure, so a break fails the render rather than
+// turning up as a wrong file later. The count is asserted too, so a
+// check that silently stops running is also a failure.
+func (s *E2ESuite) TestTFWriteSuiteRunsInJavaScript() {
+	out := s.render("resources/tfcheck.json")
+	ran := strings.TrimSpace(s.read(out, "tfwrite-suite", "sources/tfwrite-checks.txt"))
+	s.Equal("117", ran, "every check in the JS port ran")
 }

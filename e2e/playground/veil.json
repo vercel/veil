@@ -6,7 +6,8 @@
     "./.veil/kinds/postgres/kind.json",
     "./.veil/kinds/redis/kind.json",
     "./.veil/kinds/platform/kind.json",
-    "./.veil/kinds/service/kind.json"
+    "./.veil/kinds/service/kind.json",
+    "./.veil/kinds/tfcheck/kind.json"
   ],
   "registries": {
     "": "./public/r/registry.json"

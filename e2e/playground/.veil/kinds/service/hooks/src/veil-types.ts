@@ -27,6 +27,211 @@ export interface YamlCodec {
   stringify(value: unknown): string;
 }
 
+/** One item in a body: an attribute, a nested block, or a comment. */
+export type TFItem = TFAttribute | TFBlock | TFComment;
+
+export interface TFAttribute {
+  name(): string;
+  /** Rename in place, keeping position and expression. Nothing stops a
+   *  rename onto a sibling, and two attributes of one name is something
+   *  Terraform rejects — checking that is the caller's. */
+  setName(name: string): TFAttribute;
+  /** The expression as source text, unevaluated: var.region stays
+   *  var.region rather than becoming a value. */
+  expr(): string;
+  /** Replace the expression with raw source text, so the caller decides
+   *  between a literal and a reference. */
+  setExpr(expr: string): TFAttribute;
+  /** Replace it with an encoded value — the same encoding setAttribute
+   *  uses. */
+  setValue(value: unknown): TFAttribute;
+  delete(): boolean;
+}
+
+export interface TFComment {
+  /** The comment including its marker: "# note". */
+  text(): string;
+  setText(text: string): TFComment;
+  delete(): boolean;
+}
+
+/** An ordered list of items — order is source order, which is what keeps
+ *  a comment next to the thing it describes. */
+export interface TFBody {
+  blocks(): TFBlock[];
+  attributes(): TFAttribute[];
+  comments(): TFComment[];
+  attribute(name: string): TFAttribute | null;
+  /** Set an attribute to a value, appending it when absent. The value is
+   *  encoded as HCL: a string becomes a quoted literal, a number or
+   *  boolean its own, an array a list, an object an object, nested as
+   *  deep as it goes. A string is a string — for a reference or a
+   *  function call use setAttributeRaw, or pass "${var.region}", which
+   *  is unwrapped back into the expression it denotes. */
+  setAttribute(name: string, value: unknown): TFAttribute;
+  /** Set an attribute to raw source text, for an expression rather than
+   *  a value. Written as given. */
+  setAttributeRaw(name: string, expr: string): TFAttribute;
+  removeAttribute(name: string): boolean;
+  appendComment(text: string): TFComment;
+  /** Add a block whose shape belongs to its parent rather than to the
+   *  file — lifecycle, connection, validation, provisioner. */
+  addBlock(type: string, ...labels: string[]): TFGeneric;
+  /** Find one of those, or null. Top-level blocks have typed accessors
+   *  on TFFile instead. */
+  block(type: string, ...labels: string[]): TFBlock | null;
+  remove(item: TFItem | null): boolean;
+}
+
+/** What every block shares. The interfaces below add only the labels
+ *  their own block has: Terraform gives them no uniform shape. */
+export interface TFBlock {
+  blockType(): string;
+  labels(): string[];
+  /** The block's contents. The methods below reach straight through it,
+   *  so this is for holding onto a body rather than for every call. */
+  body(): TFBody;
+  delete(): boolean;
+
+  attribute(name: string): TFAttribute | null;
+  attributes(): TFAttribute[];
+  setAttribute(name: string, value: unknown): TFAttribute;
+  setAttributeRaw(name: string, expr: string): TFAttribute;
+  removeAttribute(name: string): boolean;
+  blocks(): TFBlock[];
+  block(type: string, ...labels: string[]): TFBlock | null;
+  addBlock(type: string, ...labels: string[]): TFGeneric;
+  comments(): TFComment[];
+  appendComment(text: string): TFComment;
+  items(): TFItem[];
+  remove(item: TFItem | null): boolean;
+}
+
+export interface TFResource extends TFBlock {
+  resourceType(): string;
+  setResourceType(type: string): TFResource;
+  name(): string;
+  setName(name: string): TFResource;
+}
+export interface TFDataSource extends TFBlock {
+  dataType(): string;
+  setDataType(type: string): TFDataSource;
+  name(): string;
+  setName(name: string): TFDataSource;
+}
+export interface TFEphemeral extends TFBlock {
+  ephemeralType(): string;
+  setEphemeralType(type: string): TFEphemeral;
+  name(): string;
+  setName(name: string): TFEphemeral;
+}
+export interface TFAction extends TFBlock {
+  actionType(): string;
+  setActionType(type: string): TFAction;
+  name(): string;
+  setName(name: string): TFAction;
+}
+/** provider takes one label — the provider's local name. Several blocks
+ *  may share it, told apart by an alias attribute. */
+export interface TFProvider extends TFBlock {
+  name(): string;
+  setName(name: string): TFProvider;
+  alias(): string;
+}
+export interface TFNamedBlock extends TFBlock {
+  name(): string;
+  setName(name: string): TFNamedBlock;
+}
+export interface TFModule extends TFNamedBlock {
+  /** The module's source, the one attribute every module must have. */
+  source(): string;
+}
+/** A block with no labels: terraform, locals, moved, removed, import. */
+export interface TFUnlabelledBlock extends TFBlock {}
+/** A block this layer does not model — a nested one, or a type Terraform
+ *  adds later. Readable and editable, without named label accessors. */
+export interface TFGeneric extends TFBlock {
+  setLabels(labels: string[]): TFGeneric;
+}
+
+/** A parsed Terraform file. Each accessor takes exactly the labels its
+ *  block has, and returns null when there is no such block. */
+export interface TFFile {
+  /** The top-level body. The methods below reach through it. */
+  body(): TFBody;
+  blocks(): TFBlock[];
+  /** Top-level comments. One inside a block belongs to that block. */
+  comments(): TFComment[];
+  items(): TFItem[];
+  remove(item: TFItem | null): boolean;
+
+  resource(type: string, name: string): TFResource | null;
+  resources(type?: string): TFResource[];
+  addResource(type: string, name: string): TFResource;
+
+  dataSource(type: string, name: string): TFDataSource | null;
+  dataSources(type?: string): TFDataSource[];
+  addDataSource(type: string, name: string): TFDataSource;
+
+  ephemeral(type: string, name: string): TFEphemeral | null;
+  addEphemeral(type: string, name: string): TFEphemeral;
+
+  action(type: string, name: string): TFAction | null;
+  addAction(type: string, name: string): TFAction;
+
+  provider(name: string): TFProvider | null;
+  providers(): TFProvider[];
+  addProvider(name: string): TFProvider;
+
+  variable(name: string): TFNamedBlock | null;
+  variables(): TFNamedBlock[];
+  addVariable(name: string): TFNamedBlock;
+
+  output(name: string): TFNamedBlock | null;
+  outputs(): TFNamedBlock[];
+  addOutput(name: string): TFNamedBlock;
+
+  module(name: string): TFModule | null;
+  modules(): TFModule[];
+  addModule(name: string): TFModule;
+
+  check(name: string): TFNamedBlock | null;
+  checks(): TFNamedBlock[];
+  addCheck(name: string): TFNamedBlock;
+
+  terraform(): TFUnlabelledBlock | null;
+  addTerraform(): TFUnlabelledBlock;
+  locals(): TFUnlabelledBlock[];
+  addLocals(): TFUnlabelledBlock;
+  moved(): TFUnlabelledBlock[];
+  addMoved(): TFUnlabelledBlock;
+  removed(): TFUnlabelledBlock[];
+  addRemoved(): TFUnlabelledBlock;
+  imports(): TFUnlabelledBlock[];
+  addImport(): TFUnlabelledBlock;
+
+  /** Print the file. Every node not edited comes back as its original
+   *  bytes, so comments and formatting survive. */
+  toString(): string;
+}
+
+export interface TerraformCodec {
+  /** Parse HCL into a tree: typed block lookups, editable in place, and
+   *  printing back with every node you did not touch coming out as its
+   *  original bytes. Comments and formatting survive. Throws on
+   *  malformed HCL. */
+  parse(s: string): TFFile;
+  /** Serialize back to HCL. A TFFile prints from the original bytes; a
+   *  plain object in Terraform.tf.json shape has none to print from and
+   *  is generated canonically. */
+  stringify(value: TFFile | unknown): string;
+  /** Read HCL as plain data in the .tf.json shape Terraform defines,
+   *  when a tree is more than the job needs. Expressions arrive as
+   *  "${var.region}" strings and comments are not represented, so this
+   *  is for reading rather than for editing a file in place. */
+  toObject(s: string): unknown;
+}
+
 export interface Std {
   /** Read the entire file as a string, or null on failure. The path is
    *  resolved relative to the veil project root — the first ancestor
@@ -39,6 +244,9 @@ export interface Std {
    *  by gopkg.in/yaml.v3 on the host side. JSON is available via the
    *  native JSON global. */
   yaml: YamlCodec;
+  /** Terraform/HCL codec, for reading and writing .tf as data rather
+   *  than as text. Backed by hashicorp/hcl on the host side. */
+  terraform: TerraformCodec;
 }
 
 /** File metadata returned by os.stat / os.lstat. All values are numbers. */
